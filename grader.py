@@ -17,6 +17,16 @@ class GradeResult:
 
 
 def grade():
+    """
+    Grader verifies:
+
+    1. Deployment UID preserved
+    2. Image unchanged (nginx:1.25-alpine)
+    3. Memory limit unchanged (128Mi)
+    4. keepalive_timeout updated to 65
+    5. Deployment ready
+    6. HTTPS endpoint responds correctly
+    """
 
     results = {}
 

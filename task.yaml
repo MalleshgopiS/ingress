@@ -11,9 +11,9 @@ description: |
 
       keepalive_timeout 0;
 
-  When TLS termination is enabled, disabling connection reuse causes
-  excessive TLS session creation and memory growth, eventually leading
-  to gateway crashes.
+  With TLS termination enabled this disables connection reuse, forcing
+  new TLS handshakes for every request. Under load this causes excessive
+  memory usage and eventually crashes the gateway.
 
   Your task is to fix the nginx configuration.
 
@@ -34,13 +34,12 @@ constraints:
 
 success_criteria:
   - Deployment becomes ready
-  - TLS endpoint responds successfully
-  - HTTPS response contains:
+  - HTTPS endpoint responds successfully
+  - Response contains:
 
         Ingress Controller Running
 
 notes: |
-  The ingress controller uses nginx for TLS termination.
   After modifying a ConfigMap mounted into a running pod,
   the deployment may need to be restarted so nginx reloads
   the configuration.

@@ -17,6 +17,7 @@ kubectl create rolebinding ubuntu-user-admin-binding \
   --user=ubuntu-user \
   -n $NS || true
 
+
 echo "Creating TLS certificate..."
 
 openssl req -x509 -nodes -days 365 \
@@ -29,6 +30,7 @@ kubectl create secret tls ingress-tls \
 --cert=/tmp/tls.crt \
 --key=/tmp/tls.key \
 -n $NS || true
+
 
 echo "Creating broken nginx config..."
 
@@ -59,6 +61,7 @@ data:
     }
 EOF
 
+
 echo "Creating deployment..."
 
 kubectl apply -f - <<EOF
@@ -80,25 +83,26 @@ spec:
       containers:
       - name: nginx
         image: nginx:1.25-alpine
+        ports:
+        - containerPort: 443
         resources:
           limits:
             memory: "128Mi"
-        ports:
-        - containerPort: 443
         volumeMounts:
-        - name: nginx-config
+        - name: config
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
         - name: tls
           mountPath: /etc/nginx/tls
       volumes:
-      - name: nginx-config
+      - name: config
         configMap:
           name: ingress-nginx-config
       - name: tls
         secret:
           secretName: ingress-tls
 EOF
+
 
 echo "Creating service..."
 
@@ -116,11 +120,16 @@ spec:
     targetPort: 443
 EOF
 
+
+echo "Waiting for deployment..."
+
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
+
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
 
 chmod 400 /grader/original_uid
 
-echo "Setup complete."
+
+echo "Setup completed successfully."
