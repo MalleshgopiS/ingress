@@ -93,11 +93,11 @@ spec:
     targetPort: 80
 EOF
 
-echo "Waiting for pod..."
+echo "Waiting for deployment..."
 
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=180s
 
-echo "Saving original UID..."
+echo "Saving deployment UID..."
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid

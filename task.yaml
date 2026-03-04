@@ -1,17 +1,18 @@
 name: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
+
 difficulty: medium
 
 description: |
   A Kubernetes ingress controller is experiencing periodic crashes due to
-  a configuration error in nginx.
+  a configuration issue in nginx.
 
   The ConfigMap `ingress-nginx-config` currently sets:
 
       keepalive_timeout 0;
 
-  This disables connection reuse and causes excessive resource consumption.
+  This disables connection reuse and leads to excessive resource usage.
 
-  Your task is to fix the configuration by updating the timeout to a valid value.
+  Your task is to correct the configuration.
 
 environment:
   namespace: ingress-system
@@ -19,22 +20,25 @@ environment:
   configmap: ingress-nginx-config
 
 objectives:
-  - Update `keepalive_timeout` from `0` to `65`
-  - Ensure the deployment reloads the configuration
+  - Update keepalive_timeout from 0 to 65
+  - Ensure the deployment reloads the updated configuration
 
 constraints:
   - Do NOT delete or recreate the deployment
   - Deployment UID must remain unchanged
-  - Container image must remain `nginx:1.25-alpine`
-  - Memory limit must remain `128Mi`
+  - Container image must remain nginx:1.25-alpine
+  - Memory limit must remain 128Mi
 
 success_criteria:
   - Deployment becomes ready
   - nginx serves HTTP successfully
-  - HTTP response contains the text:
+  - HTTP response contains:
 
         Ingress Controller Running
 
 notes: |
-  After modifying a ConfigMap used by a running pod, the application may need
-  to be restarted so that the new configuration is loaded.
+  After modifying a ConfigMap used by a running pod, the application
+  may need to be restarted so that the new configuration is loaded.
+
+  The environment is initialized by setup.sh which creates the namespace,
+  deployment, service, and configmap used in this task.
