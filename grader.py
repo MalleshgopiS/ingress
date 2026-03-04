@@ -17,16 +17,6 @@ class GradeResult:
 
 
 def grade():
-    """
-    Grader verifies:
-
-    1. Deployment UID unchanged
-    2. Image unchanged (nginx:1.25-alpine)
-    3. Memory limit unchanged (128Mi)
-    4. keepalive_timeout updated to 65
-    5. Deployment ready
-    6. HTTP response correct
-    """
 
     results = {}
 
@@ -68,9 +58,9 @@ def grade():
         f"kubectl get svc ingress-controller -n {NS} -o jsonpath='{{.spec.clusterIP}}'"
     )
 
-    http = run(f"curl -s http://{svc_ip}")
+    http = run(f"curl -k -s https://{svc_ip}")
 
-    results["http_serving"] = "Ingress Controller Running" in http
+    results["https_serving"] = "Ingress Controller Running" in http
 
     score = sum(results.values()) / len(results)
 

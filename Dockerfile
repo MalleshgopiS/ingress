@@ -5,7 +5,8 @@ USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     jq=1.6* \
-    curl=7.81* && \
+    curl=7.81* \
+    openssl && \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /grader
@@ -15,7 +16,7 @@ COPY setup.sh /setup.sh
 COPY solution.sh /solution.sh
 COPY grader.py /mcp_server/tests/grader.py
 
-RUN chmod +x /setup.sh
-RUN chmod +x /solution.sh
+RUN chmod +x /setup.sh /solution.sh
+RUN chmod 700 /grader
 
 CMD ["/bin/bash", "/setup.sh"]

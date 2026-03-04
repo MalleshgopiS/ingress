@@ -3,14 +3,13 @@ set -e
 
 NS="ingress-system"
 
-echo "Creating namespace..."
 kubectl create namespace $NS || true
 
-echo "Granting ubuntu-user access..."
+echo "Granting ubuntu-user permissions..."
 
 kubectl create role ubuntu-user-admin \
   --verb=get,list,watch,create,update,patch,delete \
-  --resource=configmaps,deployments,pods,services \
+  --resource=configmaps,deployments,pods,services,secrets \
   -n $NS || true
 
 kubectl create rolebinding ubuntu-user-admin-binding \
@@ -18,7 +17,20 @@ kubectl create rolebinding ubuntu-user-admin-binding \
   --user=ubuntu-user \
   -n $NS || true
 
-echo "Creating broken ConfigMap..."
+echo "Creating TLS certificate..."
+
+openssl req -x509 -nodes -days 365 \
+-newkey rsa:2048 \
+-keyout /tmp/tls.key \
+-out /tmp/tls.crt \
+-subj "/CN=ingress.local"
+
+kubectl create secret tls ingress-tls \
+--cert=/tmp/tls.crt \
+--key=/tmp/tls.key \
+-n $NS || true
+
+echo "Creating broken nginx config..."
 
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -31,10 +43,14 @@ data:
     events {}
 
     http {
+
       keepalive_timeout 0;
 
       server {
-        listen 80;
+        listen 443 ssl;
+
+        ssl_certificate /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
 
         location / {
           return 200 "Ingress Controller Running";
@@ -67,14 +83,21 @@ spec:
         resources:
           limits:
             memory: "128Mi"
+        ports:
+        - containerPort: 443
         volumeMounts:
         - name: nginx-config
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
+        - name: tls
+          mountPath: /etc/nginx/tls
       volumes:
       - name: nginx-config
         configMap:
           name: ingress-nginx-config
+      - name: tls
+        secret:
+          secretName: ingress-tls
 EOF
 
 echo "Creating service..."
@@ -89,17 +112,15 @@ spec:
   selector:
     app: ingress-controller
   ports:
-  - port: 80
-    targetPort: 80
+  - port: 443
+    targetPort: 443
 EOF
 
-echo "Waiting for deployment..."
-
-kubectl rollout status deployment/ingress-controller -n $NS --timeout=180s
-
-echo "Saving deployment UID..."
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
+
+chmod 400 /grader/original_uid
 
 echo "Setup complete."
