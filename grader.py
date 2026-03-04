@@ -11,15 +11,15 @@ def run(cmd):
 
 
 class GradeResult:
-    def __init__(self, score, subscores):
+    def __init__(self, score, subscores, weights):
         self.score = score
         self.subscores = subscores
+        self.weights = weights
 
 
 def grade(context=None):
     """
     Grader verifies:
-
     1. Deployment UID preserved
     2. Image unchanged (nginx:alpine)
     3. Memory limit unchanged (128Mi)
@@ -74,4 +74,6 @@ def grade(context=None):
 
     score = sum(results.values()) / len(results)
 
-    return GradeResult(score, results)
+    weights = {k: 1 for k in results.keys()}
+
+    return GradeResult(score, results, weights)
