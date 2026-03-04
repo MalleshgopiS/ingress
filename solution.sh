@@ -1,9 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-kubectl -n ingress-system patch configmap ingress-nginx-config \
---type merge \
--p '{"data":{"nginx.conf":"events {}\n\nhttp {\n  keepalive_timeout 65;\n\n  server {\n    listen 80;\n\n    location / {\n      return 200 \"Ingress Controller Running\";\n    }\n  }\n}\n"}}'
+NS="ingress-system"
 
-kubectl -n ingress-system rollout restart deployment ingress-controller
-kubectl -n ingress-system rollout status deployment ingress-controller
+echo "Fixing keepalive timeout..."
+
+kubectl get configmap ingress-nginx-config -n $NS -o yaml \
+| sed 's/keepalive_timeout 0;/keepalive_timeout 65;/' \
+| kubectl apply -f -
+
+echo "Restarting deployment..."
+
+kubectl rollout restart deployment ingress-controller -n $NS
+
+kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
+
+echo "Solution applied successfully."

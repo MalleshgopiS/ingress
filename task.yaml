@@ -1,72 +1,40 @@
-name: Ingress-Controller-TLS-Memory-Leak
-author: apex
-version: 1
-
-description: >
-  The ingress controller running in namespace ingress-system is experiencing
-  periodic gateway crashes caused by a TLS configuration memory leak.
-
-  The nginx configuration stored in the ConfigMap ingress-nginx-config
-  disables keepalive connections which causes TLS session exhaustion.
-
-  Your task is to fix the configuration so nginx uses a valid
-  keepalive timeout.
-
-category: kubernetes
+name: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 difficulty: medium
 
-tags:
-  - kubernetes
-  - nginx
-  - ingress
-  - debugging
+description: |
+  A Kubernetes ingress controller is experiencing periodic crashes due to
+  a configuration error in nginx.
 
-estimated_duration: 15
-max_agent_steps: 25
-timeout: 600
-
-prompt: |
-  The ingress controller in namespace `ingress-system` is experiencing
-  periodic gateway crashes.
-
-  Investigation shows a TLS termination configuration memory leak.
-
-  The issue is caused by the nginx configuration in the ConfigMap:
-
-      ingress-nginx-config
-
-  The configuration currently disables keepalive connections:
+  The ConfigMap `ingress-nginx-config` currently sets:
 
       keepalive_timeout 0;
 
-  This causes excessive TLS session allocations.
+  This disables connection reuse and causes excessive resource consumption.
 
-  Fix the configuration so nginx uses:
+  Your task is to fix the configuration by updating the timeout to a valid value.
 
-      keepalive_timeout 65;
+environment:
+  namespace: ingress-system
+  deployment: ingress-controller
+  configmap: ingress-nginx-config
 
-  Constraints:
+objectives:
+  - Update `keepalive_timeout` from `0` to `65`
+  - Ensure the deployment reloads the configuration
 
-  - Do NOT delete or recreate the Deployment
+constraints:
+  - Do NOT delete or recreate the deployment
   - Deployment UID must remain unchanged
-  - Container image must remain nginx:alpine
-  - Memory limit must remain 128Mi
-  - Deployment must remain healthy
-  - nginx must continue serving HTTP successfully
+  - Container image must remain `nginx:1.25-alpine`
+  - Memory limit must remain `128Mi`
 
-instructions: |
-  Inspect the ConfigMap `ingress-nginx-config` in namespace
-  `ingress-system`.
+success_criteria:
+  - Deployment becomes ready
+  - nginx serves HTTP successfully
+  - HTTP response contains the text:
 
-  The nginx configuration currently contains an invalid
-  keepalive timeout that causes a memory leak.
+        Ingress Controller Running
 
-  Update the configuration so nginx uses:
-
-      keepalive_timeout 65;
-
-  Ensure the ingress controller reloads the configuration.
-
-setup_script: setup.sh
-solution_script: solution.sh
-grader_script: grader.py
+notes: |
+  After modifying a ConfigMap used by a running pod, the application may need
+  to be restarted so that the new configuration is loaded.

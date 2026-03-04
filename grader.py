@@ -1,59 +1,89 @@
 import subprocess
-import json
+import time
+import re
+
+NS = "ingress-system"
+DEPLOY = "ingress-controller"
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, shell=True).decode().strip()
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def wait_until(cmd, timeout=180):
+    start = time.time()
+    while time.time() - start < timeout:
+        if run(cmd):
+            return True
+        time.sleep(2)
+    return False
+
+
+class GradeResult:
+    def __init__(self, score, details):
+        self.score = score
+        self.details = details
 
 
 def grade():
+    """
+    Grader verifies:
+
+    1. Deployment UID unchanged
+    2. Image unchanged (nginx:1.25-alpine)
+    3. Memory limit unchanged (128Mi)
+    4. keepalive_timeout updated to valid value
+    5. Deployment ready
+    6. HTTP response correct
+    """
 
     results = {}
 
-    uid = run(
-        "kubectl -n ingress-system get deployment ingress-controller -o jsonpath='{.metadata.uid}'"
+    # UID preserved
+    original = run("cat /grader/original_uid")
+    current = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.metadata.uid}}'"
     )
-    results["uid_preserved"] = bool(uid)
 
+    results["uid_preserved"] = original == current
+
+    # Image unchanged
     image = run(
-        "kubectl -n ingress-system get deployment ingress-controller -o jsonpath='{.spec.template.spec.containers[0].image}'"
+        f"kubectl get deploy {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].image}}'"
     )
-    results["image_preserved"] = image == "nginx:alpine"
+    results["image_unchanged"] = image == "nginx:1.25-alpine"
 
+    # Memory limit unchanged
     memory = run(
-        "kubectl -n ingress-system get deployment ingress-controller -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
+        f"kubectl get deploy {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].resources.limits.memory}}'"
     )
-    results["memory_preserved"] = memory == "128Mi"
+    results["memory_limit"] = memory == "128Mi"
 
+    # Timeout fixed
     config = run(
-        "kubectl -n ingress-system get configmap ingress-nginx-config -o json"
+        f"kubectl get configmap ingress-nginx-config -n {NS} -o jsonpath='{{.data.nginx\\.conf}}'"
     )
-    config = json.loads(config)
 
-    results["valid_timeout"] = "keepalive_timeout 65;" in config["data"]["nginx.conf"]
+    results["timeout_valid"] = bool(
+        re.search(r"keepalive_timeout\s+65;", config)
+    )
 
+    # Deployment ready
     ready = run(
-        "kubectl -n ingress-system get deployment ingress-controller -o jsonpath='{.status.readyReplicas}'"
+        f"kubectl get deploy {DEPLOY} -n {NS} -o jsonpath='{{.status.readyReplicas}}'"
     )
     results["deployment_ready"] = ready == "1"
 
+    # HTTP test
     svc = run(
-        "kubectl -n ingress-system get svc ingress-controller -o jsonpath='{.spec.clusterIP}'"
+        f"kubectl get svc ingress-controller -n {NS} -o jsonpath='{{.spec.clusterIP}}'"
     )
 
-    http = run(
-        f"kubectl run curl --rm -i --tty --restart=Never --image=curlimages/curl -- curl -s http://{svc} || true"
-    )
+    http = run(f"curl -s http://{svc}")
 
     results["nginx_serving"] = "Ingress Controller Running" in http
 
     score = sum(results.values()) / len(results)
 
-    return {
-        "subscores": results,
-        "score": score,
-    }
-
-
-if __name__ == "__main__":
-    print(json.dumps(grade(), indent=2))
+    return GradeResult(score, results)

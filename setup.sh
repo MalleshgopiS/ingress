@@ -1,14 +1,31 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-kubectl create namespace ingress-system || true
+NS="ingress-system"
 
-cat <<EOF | kubectl apply -f -
+echo "Creating namespace..."
+kubectl create namespace $NS || true
+
+echo "Granting ubuntu-user access..."
+
+kubectl create role ubuntu-user-admin \
+  --verb=get,list,watch,create,update,patch,delete \
+  --resource=configmaps,deployments,pods,services \
+  -n $NS || true
+
+kubectl create rolebinding ubuntu-user-admin-binding \
+  --role=ubuntu-user-admin \
+  --user=ubuntu-user \
+  -n $NS || true
+
+echo "Creating broken ConfigMap..."
+
+kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: ingress-nginx-config
-  namespace: ingress-system
+  namespace: $NS
 data:
   nginx.conf: |
     events {}
@@ -26,14 +43,14 @@ data:
     }
 EOF
 
-cat <<EOF | kubectl apply -f -
+echo "Creating deployment..."
+
+kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ingress-controller
-  namespace: ingress-system
-  labels:
-    app: ingress-controller
+  namespace: $NS
 spec:
   replicas: 1
   selector:
@@ -46,10 +63,10 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: nginx:alpine
+        image: nginx:1.25-alpine
         resources:
           limits:
-            memory: 128Mi
+            memory: "128Mi"
         volumeMounts:
         - name: nginx-config
           mountPath: /etc/nginx/nginx.conf
@@ -60,12 +77,14 @@ spec:
           name: ingress-nginx-config
 EOF
 
-cat <<EOF | kubectl apply -f -
+echo "Creating service..."
+
+kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Service
 metadata:
   name: ingress-controller
-  namespace: ingress-system
+  namespace: $NS
 spec:
   selector:
     app: ingress-controller
@@ -73,3 +92,14 @@ spec:
   - port: 80
     targetPort: 80
 EOF
+
+echo "Waiting for pod..."
+
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=180s
+
+echo "Saving original UID..."
+
+kubectl get deployment ingress-controller -n $NS \
+-o jsonpath='{.metadata.uid}' > /grader/original_uid
+
+echo "Setup complete."
