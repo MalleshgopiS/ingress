@@ -16,7 +16,7 @@ class GradeResult:
         self.details = details
 
 
-def grade():
+def grade(context=None):
     """
     Grader verifies:
 
