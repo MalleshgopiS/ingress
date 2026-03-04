@@ -12,9 +12,10 @@ kubectl create role ubuntu-user-admin \
   --resource=configmaps,deployments,pods,services,secrets \
   -n $NS || true
 
+# FIX: bind to serviceaccount instead of user
 kubectl create rolebinding ubuntu-user-admin-binding \
   --role=ubuntu-user-admin \
-  --user=ubuntu-user \
+  --serviceaccount=default:ubuntu-user \
   -n $NS || true
 
 
