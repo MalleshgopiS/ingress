@@ -21,7 +21,7 @@ def grade():
     Grader verifies:
 
     1. Deployment UID preserved
-    2. Image unchanged (nginx:1.25-alpine)
+    2. Image unchanged (nginx:alpine)
     3. Memory limit unchanged (128Mi)
     4. keepalive_timeout updated to 65
     5. Deployment ready
@@ -42,7 +42,7 @@ def grade():
         f"kubectl get deploy {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].image}}'"
     )
 
-    results["image_correct"] = image == "nginx:1.25-alpine"
+    results["image_correct"] = image == "nginx:alpine"
 
     memory = run(
         f"kubectl get deploy {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].resources.limits.memory}}'"

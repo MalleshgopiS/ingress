@@ -82,7 +82,7 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: nginx:1.25-alpine
+        image: nginx:alpine
         ports:
         - containerPort: 443
         resources:
