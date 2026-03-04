@@ -11,9 +11,9 @@ def run(cmd):
 
 
 class GradeResult:
-    def __init__(self, score, details):
+    def __init__(self, score, subscores):
         self.score = score
-        self.details = details
+        self.subscores = subscores
 
 
 def grade(context=None):
