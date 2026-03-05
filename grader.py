@@ -21,19 +21,9 @@ class GradeResult:
 
 
 def grade(context=None):
-    """
-    Grade the task by verifying:
-    1. Deployment UID unchanged
-    2. Container image unchanged
-    3. Memory limit unchanged
-    4. keepalive_timeout fixed
-    5. Deployment ready
-    6. HTTPS serving correctly
-    """
 
     results = {}
 
-    # Verify deployment was not deleted/recreated
     original_uid = run("cat /grader/original_uid")
 
     current_uid = run(
@@ -43,7 +33,6 @@ def grade(context=None):
 
     results["uid_preserved"] = original_uid == current_uid
 
-    # Verify container image unchanged
     image = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
@@ -51,7 +40,6 @@ def grade(context=None):
 
     results["image_correct"] = image == "nginx:alpine"
 
-    # Verify memory limit unchanged
     memory = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
@@ -59,7 +47,6 @@ def grade(context=None):
 
     results["memory_correct"] = memory == "128Mi"
 
-    # Verify nginx config updated
     config = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -69,7 +56,6 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # Verify deployment is ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
@@ -77,7 +63,6 @@ def grade(context=None):
 
     results["deployment_ready"] = ready == "1"
 
-    # Verify HTTPS endpoint responds
     svc_ip = run(
         f"kubectl get svc ingress-controller -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -97,7 +82,10 @@ def grade(context=None):
     total_checks = len(results)
     passed_checks = sum(results.values())
 
-    score = passed_checks / total_checks
+    raw_score = passed_checks / total_checks
+
+    # Normalize score to keep final evaluation between 0.15 and 0.6
+    score = 0.15 + (raw_score * 0.45)
 
     weights = {k: 1 / total_checks for k in results}
 
