@@ -1,45 +1,43 @@
-name: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
+id: ingress-controller-tls-memory-leak
 
-difficulty: medium
+title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 
-description: |
-  The Kubernetes ingress controller responsible for TLS termination is
-  periodically crashing under load.
-
-  Investigation shows that the nginx configuration in the ConfigMap
-  `ingress-nginx-config` incorrectly sets:
+prompt: |
+  The Kubernetes ingress controller responsible for TLS termination is periodically crashing.
+  
+  Investigation shows the nginx configuration inside the ingress controller
+  contains the following directive:
 
       keepalive_timeout 0;
 
-  With TLS termination enabled this disables connection reuse, forcing
-  new TLS handshakes for every request. Under load this causes excessive
-  memory usage and eventually crashes the gateway.
+  Under TLS traffic this causes connections to remain open indefinitely,
+  leading to excessive memory consumption and periodic gateway crashes.
 
-  Your task is to fix the nginx configuration.
+  Your task is to fix the nginx configuration so idle TLS connections
+  are closed properly.
 
-environment:
-  namespace: ingress-system
-  deployment: ingress-controller
-  configmap: ingress-nginx-config
+  Requirements:
+  • Update the configuration so keepalive_timeout is set to 65 seconds
+  • Restart the ingress controller deployment so the change takes effect
+  • Do not modify the container image
+  • Do not modify resource limits
+  • Only fix the configuration issue
 
-objectives:
-  - Update keepalive_timeout from 0 to 65
-  - Ensure the ingress controller reloads the updated configuration
+difficulty: medium
 
-constraints:
-  - Do NOT delete or recreate the deployment
-  - Deployment UID must remain unchanged
-  - Container image must remain nginx:alpine
-  - Memory limit must remain 128Mi
+category: kubernetes
 
-success_criteria:
-  - Deployment becomes ready
-  - HTTPS endpoint responds successfully
-  - Response contains:
+tags:
+  - kubernetes
+  - ingress
+  - nginx
+  - tls
+  - memory
 
-        Ingress Controller Running
+setup: setup.sh
 
-notes: |
-  After modifying a ConfigMap mounted into a running pod,
-  the deployment may need to be restarted so nginx reloads
-  the configuration.
+solution: solution.sh
+
+grader: grader.py
+
+timeout_sec: 600
