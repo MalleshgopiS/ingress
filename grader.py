@@ -2,12 +2,14 @@ import subprocess
 import re
 import time
 
-NS = "default"
+NS = "bleater"
 DEPLOY = "ingress-controller"
 
 
 def run(cmd):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, shell=True, capture_output=True, text=True
+    )
     return result.stdout.strip()
 
 
@@ -23,6 +25,7 @@ def grade(context=None):
 
     results = {}
 
+    # Check 1 — Deployment UID preserved
     original_uid = run("cat /grader/original_uid")
 
     current_uid = run(
@@ -32,6 +35,7 @@ def grade(context=None):
 
     results["uid_preserved"] = original_uid == current_uid
 
+    # Check 2 — Image unchanged
     image = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
@@ -39,6 +43,7 @@ def grade(context=None):
 
     results["image_correct"] = image == "nginx:alpine"
 
+    # Check 3 — Memory unchanged
     memory = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
@@ -46,6 +51,7 @@ def grade(context=None):
 
     results["memory_correct"] = memory == "128Mi"
 
+    # Check 4 — ConfigMap fixed
     config = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -55,6 +61,7 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
+    # Check 5 — Deployment ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
@@ -62,6 +69,7 @@ def grade(context=None):
 
     results["deployment_ready"] = ready == "1"
 
+    # Check 6 — HTTPS responding
     svc_ip = run(
         f"kubectl get svc ingress-controller -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -69,8 +77,9 @@ def grade(context=None):
 
     https_ok = False
 
-    for _ in range(5):
-        response = run(f"curl -k -s https://{svc_ip}")
+    # allow nginx time to restart
+    for _ in range(10):
+        response = run(f"curl -k -s https://{svc_ip} || true")
         if "Ingress Controller Running" in response:
             https_ok = True
             break

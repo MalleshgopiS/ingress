@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-NS="default"
+NS="bleater"
 
 echo "Fixing nginx keepalive timeout..."
 

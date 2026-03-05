@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-NS="default"
+NS="bleater"
 
 echo "Generating TLS certificate..."
 
@@ -15,6 +15,7 @@ kubectl create secret tls ingress-tls \
   --cert=/tmp/tls.crt \
   --key=/tmp/tls.key \
   -n $NS || true
+
 
 echo "Creating broken nginx configuration..."
 
@@ -44,6 +45,7 @@ data:
       }
     }
 EOF
+
 
 echo "Creating ingress controller deployment..."
 
@@ -86,6 +88,7 @@ spec:
             secretName: ingress-tls
 EOF
 
+
 echo "Creating service..."
 
 kubectl apply -f - <<EOF
@@ -101,6 +104,7 @@ spec:
     - port: 443
       targetPort: 443
 EOF
+
 
 echo "Waiting for deployment..."
 
