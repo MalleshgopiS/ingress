@@ -137,9 +137,12 @@ def grade(context=None):
 
     weights = {k: 1 / total_checks for k in results}
 
-    feedback = {
-        k: "PASS" if v else "FAIL"
-        for k, v in results.items()
-    }
+    # FIX: feedback must be string, not dict
+    feedback_lines = []
+    for k, v in results.items():
+        status = "PASS" if v else "FAIL"
+        feedback_lines.append(f"{k}: {status}")
+
+    feedback = "\n".join(feedback_lines)
 
     return GradeResult(mean_score, results, weights, feedback)
