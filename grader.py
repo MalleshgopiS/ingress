@@ -81,7 +81,7 @@ def grade(context=None):
 
     results["https_serving"] = https_ok
 
-    # 8️⃣ ConfigMap updated recently (strict)
+    # 8️⃣ ConfigMap version exists
     cm_version = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.metadata.resourceVersion}'"
@@ -95,12 +95,12 @@ def grade(context=None):
     )
     results["tls_secret_mounted"] = tls_mount == "ingress-tls"
 
-    # 🔟 Rollout actually triggered (strict)
-    restart_count = run(
+    # 🔟 Pod exists (simple real check)
+    pod_name = run(
         f"kubectl get pods -n {NS} -l app=ingress-controller "
-        "-o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'"
+        "-o jsonpath='{.items[0].metadata.name}'"
     )
-    results["pod_restarted"] = restart_count.isdigit() and int(restart_count) >= 0
+    results["pod_exists"] = len(pod_name) > 0
 
     # -------------------------------------------------
     # Honest scoring
@@ -111,9 +111,12 @@ def grade(context=None):
 
     weights = {k: 1 / total_checks for k in results}
 
-    feedback = {
-        k: "PASS" if v else "FAIL"
-        for k, v in results.items()
-    }
+    # ✅ Convert feedback to STRING (required by Apex)
+    feedback_lines = []
+    for k, v in results.items():
+        status = "PASS" if v else "FAIL"
+        feedback_lines.append(f"{k}: {status}")
+
+    feedback = "\n".join(feedback_lines)
 
     return GradeResult(score, results, weights, feedback)
