@@ -110,7 +110,6 @@ echo "Waiting for deployment..."
 
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
 
-
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
 
