@@ -9,14 +9,22 @@ echo "Granting ubuntu-user permissions..."
 
 kubectl create role ubuntu-user-admin \
   --verb=get,list,watch,create,update,patch,delete \
-  --resource=configmaps,deployments,pods,services,secrets \
+  --resource=configmaps,deployments,pods,services,secrets,ingresses \
   -n $NS || true
 
-# FIX: bind to serviceaccount instead of user
 kubectl create rolebinding ubuntu-user-admin-binding \
   --role=ubuntu-user-admin \
   --serviceaccount=default:ubuntu-user \
   -n $NS || true
+
+# Allow namespace discovery (needed for agents)
+kubectl create clusterrole ubuntu-user-namespace-reader \
+  --verb=get,list \
+  --resource=namespaces || true
+
+kubectl create clusterrolebinding ubuntu-user-namespace-reader-binding \
+  --clusterrole=ubuntu-user-namespace-reader \
+  --serviceaccount=default:ubuntu-user || true
 
 
 echo "Creating TLS certificate..."
@@ -131,6 +139,5 @@ kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
 
 chmod 400 /grader/original_uid
-
 
 echo "Setup completed successfully."

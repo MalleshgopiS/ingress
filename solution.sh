@@ -6,7 +6,7 @@ NS="ingress-system"
 echo "Fixing keepalive timeout..."
 
 kubectl get configmap ingress-nginx-config -n $NS -o yaml \
-| sed 's/keepalive_timeout 0;/keepalive_timeout 65;/' \
+| sed -E 's/keepalive_timeout[[:space:]]+0;/keepalive_timeout 65;/' \
 | kubectl apply -f -
 
 echo "Restarting deployment..."
