@@ -22,35 +22,35 @@ def grade(context=None):
     """
     Grader verifies:
     1. Deployment UID preserved
-    2. Image unchanged (nginx:alpine)
-    3. Memory limit unchanged (128Mi)
-    4. keepalive_timeout updated to 65
+    2. Image unchanged
+    3. Memory limit unchanged
+    4. keepalive_timeout updated
     5. Deployment ready
-    6. HTTPS endpoint responds correctly
+    6. HTTPS endpoint responds
     """
 
     results = {}
 
-    # Check 1: Deployment UID preserved
+    # UID check
     original_uid = run("cat /grader/original_uid")
     current_uid = run(
         f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.metadata.uid}}'"
     )
     results["uid_preserved"] = original_uid == current_uid
 
-    # Check 2: Image unchanged
+    # Image check
     image = run(
         f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].image}}'"
     )
     results["image_correct"] = image == "nginx:alpine"
 
-    # Check 3: Memory limit unchanged
+    # Memory check
     memory = run(
         f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.spec.template.spec.containers[0].resources.limits.memory}}'"
     )
     results["memory_correct"] = memory == "128Mi"
 
-    # Check 4: keepalive_timeout fixed
+    # ConfigMap timeout check
     config = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} -o jsonpath='{{.data.nginx\\.conf}}'"
     )
@@ -58,25 +58,24 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # Check 5: Deployment ready
+    # Deployment readiness
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.status.readyReplicas}}'"
     )
     results["deployment_ready"] = ready == "1"
 
-    # Check 6: HTTPS endpoint serving
+    # HTTPS response check
     svc_ip = run(
         f"kubectl get svc ingress-controller -n {NS} -o jsonpath='{{.spec.clusterIP}}'"
     )
     http = run(f"curl -k -s https://{svc_ip}")
     results["https_serving"] = "Ingress Controller Running" in http
 
-    # -------- Mean Score Calculation --------
+    # ---- Mean Score Calculation ----
     total_checks = len(results)
-    passed_checks = sum(1 for v in results.values() if v)
-
-    score = passed_checks / total_checks
-    # ----------------------------------------
+    passed_checks = sum(results.values())
+    mean_score = passed_checks / total_checks
+    # --------------------------------
 
     weights = {k: 1 for k in results}
 
@@ -85,4 +84,7 @@ def grade(context=None):
         for k, v in results.items()
     }
 
-    return GradeResult(score, results, weights, feedback)
+    # add mean score to feedback so it prints
+    feedback["mean_score"] = f"{passed_checks}/{total_checks} = {mean_score:.2f}"
+
+    return GradeResult(mean_score, results, weights, feedback)
