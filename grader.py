@@ -11,10 +11,11 @@ def run(cmd):
 
 
 class GradeResult:
-    def __init__(self, score, subscores, weights):
+    def __init__(self, score, subscores, weights, feedback):
         self.score = score
         self.subscores = subscores
         self.weights = weights
+        self.feedback = feedback
 
 
 def grade(context=None):
@@ -74,6 +75,11 @@ def grade(context=None):
 
     score = sum(results.values()) / len(results)
 
-    weights = {k: 1 for k in results.keys()}
+    weights = {k: 1 for k in results}
 
-    return GradeResult(score, results, weights)
+    feedback = {
+        k: "PASS" if v else "FAIL"
+        for k, v in results.items()
+    }
+
+    return GradeResult(score, results, weights, feedback)
