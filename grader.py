@@ -1,88 +1,79 @@
+#!/usr/bin/env python3
 import subprocess
+import json
 import re
-
-NS = "default"
-DEPLOY = "ingress-controller"
-
+from pathlib import Path
 
 def run(cmd):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    return result.stdout.strip()
+    return subprocess.check_output(cmd, shell=True, text=True).strip()
 
+def safe_run(cmd):
+    try:
+        return run(cmd)
+    except:
+        return ""
 
-class GradeResult:
-    def __init__(self, score, subscores, weights, feedback):
-        self.score = score
-        self.subscores = subscores
-        self.weights = weights
-        self.feedback = feedback
+results = {}
 
+# 1️⃣ Deployment UID preserved (not deleted/recreated)
+old_uid = Path("/grader/original_uid").read_text().strip()
+new_uid = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.metadata.uid}'").strip("'")
+results["uid_preserved"] = (old_uid == new_uid)
 
-def grade(context=None):
+# 2️⃣ Container image unchanged
+image = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[0].image}'").strip("'")
+results["image_correct"] = (image == "nginx:alpine")
 
-    results = {}
+# 3️⃣ Memory limit unchanged
+memory = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'").strip("'")
+results["memory_correct"] = (memory == "128Mi")
 
-    # 1️⃣ Deployment UID preserved (not deleted/recreated)
-    original_uid = run("cat /grader/original_uid")
-    current_uid = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.metadata.uid}}'"
-    )
-    results["uid_preserved"] = original_uid == current_uid
+# 4️⃣ keepalive_timeout fixed to 65 seconds
+config = safe_run("kubectl get configmap ingress-nginx-config -o jsonpath='{.data.nginx.conf}'").strip("'")
+results["timeout_fixed"] = bool(re.search(r"keepalive_timeout\s+65\s*;", config))
 
-    # 2️⃣ Image unchanged
-    image = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].image}'"
-    )
-    results["image_correct"] = image == "nginx:alpine"
+# 5️⃣ Pod restarted (UID changed)
+old_pod_uid = Path("/grader/original_pod_uid").read_text().strip()
+new_pod_uid = safe_run("kubectl get pods -l app=ingress-controller -o jsonpath='{.items[0].metadata.uid}'").strip("'")
+results["pod_restarted"] = (old_pod_uid != new_pod_uid)
 
-    # 3️⃣ Memory limit unchanged
-    memory = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
-    )
-    results["memory_correct"] = memory == "128Mi"
+# 6️⃣ Deployment ready
+ready = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.status.readyReplicas}'").strip("'")
+results["deployment_ready"] = (ready == "1")
 
-    # 4️⃣ keepalive_timeout fixed to 65 seconds
-    config = run(
-        f"kubectl get configmap ingress-nginx-config -n {NS} "
-        "-o jsonpath='{.data.nginx\\.conf}'"
-    )
-    results["timeout_fixed"] = bool(
-        re.search(r"keepalive_timeout\s+65\s*;", config)
-    )
+# -----------------------------
+# Stricter Quality Checks
+# -----------------------------
 
-    # 5️⃣ Deployment restarted (pod UID changed)
-    old_pod_uid = run("cat /grader/original_pod_uid")
-    pod_uid = run(
-        f"kubectl get pods -n {NS} -l app=ingress-controller "
-        "-o jsonpath='{.items[0].metadata.uid}'"
-    )
-    results["pod_restarted"] = pod_uid != old_pod_uid
+# 7️⃣ ConfigMap formatting strict (often fails if spacing differs)
+results["formatting_strict"] = bool(re.search(r"keepalive_timeout 65;", config))
 
-    # 6️⃣ Deployment ready
-    ready = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.status.readyReplicas}'"
-    )
-    desired = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.replicas}'"
-    )
-    results["deployment_ready"] = ready == desired
+# 8️⃣ Worker connections explicitly present (good config hygiene)
+results["worker_connections_set"] = bool(re.search(r"worker_connections\s+\d+;", config))
 
-    # -----------------------------
-    # Honest scoring
-    # -----------------------------
-    total = len(results)
-    passed = sum(results.values())
-    score = passed / total
+# 9️⃣ ConfigMap updated (resource version changed)
+rv = safe_run("kubectl get configmap ingress-nginx-config -o jsonpath='{.metadata.resourceVersion}'").strip("'")
+results["config_updated"] = rv.isdigit() and int(rv) > 1
 
-    weights = {k: 1 / total for k in results}
+# 🔟 Pod has exactly 1 container (strict structure check)
+container_count = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[*].name}'")
+results["single_container"] = (len(container_count.split()) == 1)
 
-    feedback = "\n".join(
-        f"{k}: {'PASS' if v else 'FAIL'}"
-        for k, v in results.items()
-    )
+# -----------------------------
+# Scoring
+# -----------------------------
 
-    return GradeResult(score, results, weights, feedback)
+total = len(results)
+passed = sum(1 for v in results.values() if v)
+score = passed / total
+
+feedback_lines = []
+for k, v in results.items():
+    feedback_lines.append(f"{k}: {'PASS' if v else 'FAIL'}")
+
+print(json.dumps({
+    "score": score,
+    "subscores": results,
+    "weights": {k: 1/total for k in results},
+    "feedback": "\n".join(feedback_lines)
+}))
