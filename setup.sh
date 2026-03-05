@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -e
-
 NS="default"
-
-echo "Creating TLS certificate..."
 
 openssl req -x509 -nodes -days 365 \
 -newkey rsa:2048 \
@@ -12,14 +9,12 @@ openssl req -x509 -nodes -days 365 \
 -subj "/CN=ingress.local"
 
 kubectl delete secret ingress-tls -n $NS --ignore-not-found
-
 kubectl create secret tls ingress-tls \
 --cert=/tmp/tls.crt \
 --key=/tmp/tls.key \
 -n $NS
 
-
-echo "Creating broken nginx config..."
+sleep 2
 
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -32,26 +27,18 @@ data:
     events {
       worker_connections 1;
     }
-
     http {
-
       keepalive_timeout 0;
-
       server {
         listen 443 ssl;
-
         ssl_certificate /etc/nginx/tls/tls.crt;
         ssl_certificate_key /etc/nginx/tls/tls.key;
-
         location / {
           return 200 "Ingress Controller Running";
         }
       }
     }
 EOF
-
-
-echo "Creating deployment..."
 
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -77,6 +64,13 @@ spec:
         resources:
           limits:
             memory: "128Mi"
+        readinessProbe:
+          httpGet:
+            scheme: HTTPS
+            path: /
+            port: 443
+          initialDelaySeconds: 5
+          periodSeconds: 5
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
@@ -92,9 +86,6 @@ spec:
           secretName: ingress-tls
 EOF
 
-
-echo "Creating service..."
-
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -109,16 +100,9 @@ spec:
     targetPort: 443
 EOF
 
-
-echo "Waiting for deployment..."
-
 kubectl wait --for=condition=available deployment/ingress-controller \
 -n $NS --timeout=240s
 
-
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
-
 chmod 400 /grader/original_uid
-
-echo "Setup completed successfully."
