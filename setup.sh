@@ -14,7 +14,7 @@ kubectl create secret tls ingress-tls \
 --key=/tmp/tls.key \
 -n $NS
 
-sleep 2
+kubectl wait --for=condition=Ready secret/ingress-tls -n $NS --timeout=60s || true
 
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -69,7 +69,7 @@ spec:
             scheme: HTTPS
             path: /
             port: 443
-          initialDelaySeconds: 5
+          initialDelaySeconds: 10
           periodSeconds: 5
         volumeMounts:
         - name: config
@@ -100,8 +100,7 @@ spec:
     targetPort: 443
 EOF
 
-kubectl wait --for=condition=available deployment/ingress-controller \
--n $NS --timeout=240s
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=300s
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
