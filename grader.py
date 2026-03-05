@@ -2,42 +2,11 @@ import subprocess
 import re
 import time
 
-"""
-Grader for task:
-Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
-
-This grader verifies the following conditions:
-
-1. uid_preserved
-   The Deployment UID must remain unchanged to ensure the deployment
-   was not deleted and recreated.
-
-2. image_correct
-   The container image must remain 'nginx:alpine'.
-
-3. memory_correct
-   The container memory limit must remain '128Mi'.
-
-4. timeout_fixed
-   The nginx configuration must update:
-       keepalive_timeout 0;
-   to:
-       keepalive_timeout 65;
-
-5. deployment_ready
-   The deployment must have at least one ready replica.
-
-6. https_serving
-   The service must successfully serve HTTPS traffic and return
-   the expected response: "Ingress Controller Running".
-"""
-
-NS = "ingress-system"
+NS = "default"
 DEPLOY = "ingress-controller"
 
 
 def run(cmd):
-    """Execute shell command and return stdout."""
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return result.stdout.strip()
 
@@ -54,9 +23,6 @@ def grade(context=None):
 
     results = {}
 
-    # -------------------------------------------------
-    # Check 1: Deployment UID must remain unchanged
-    # -------------------------------------------------
     original_uid = run("cat /grader/original_uid")
 
     current_uid = run(
@@ -66,9 +32,6 @@ def grade(context=None):
 
     results["uid_preserved"] = original_uid == current_uid
 
-    # -------------------------------------------------
-    # Check 2: Container image unchanged
-    # -------------------------------------------------
     image = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
@@ -76,9 +39,6 @@ def grade(context=None):
 
     results["image_correct"] = image == "nginx:alpine"
 
-    # -------------------------------------------------
-    # Check 3: Memory limit unchanged
-    # -------------------------------------------------
     memory = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
@@ -86,9 +46,6 @@ def grade(context=None):
 
     results["memory_correct"] = memory == "128Mi"
 
-    # -------------------------------------------------
-    # Check 4: keepalive_timeout fixed
-    # -------------------------------------------------
     config = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -98,9 +55,6 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # -------------------------------------------------
-    # Check 5: Deployment ready
-    # -------------------------------------------------
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
@@ -108,9 +62,6 @@ def grade(context=None):
 
     results["deployment_ready"] = ready == "1"
 
-    # -------------------------------------------------
-    # Check 6: HTTPS endpoint responding
-    # -------------------------------------------------
     svc_ip = run(
         f"kubectl get svc ingress-controller -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -127,9 +78,6 @@ def grade(context=None):
 
     results["https_serving"] = https_ok
 
-    # -------------------------------------------------
-    # Mean score calculation
-    # -------------------------------------------------
     total_checks = len(results)
     passed_checks = sum(results.values())
 
@@ -137,7 +85,6 @@ def grade(context=None):
 
     weights = {k: 1 / total_checks for k in results}
 
-    # FIX: feedback must be string, not dict
     feedback_lines = []
     for k, v in results.items():
         status = "PASS" if v else "FAIL"

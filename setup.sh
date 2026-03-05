@@ -1,31 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-NS="ingress-system"
-
-kubectl create namespace $NS || true
-
-echo "Granting ubuntu-user permissions..."
-
-kubectl create role ubuntu-user-admin \
-  --verb=get,list,watch,create,update,patch,delete \
-  --resource=configmaps,deployments,pods,services,secrets,ingresses \
-  -n $NS || true
-
-kubectl create rolebinding ubuntu-user-admin-binding \
-  --role=ubuntu-user-admin \
-  --serviceaccount=default:ubuntu-user \
-  -n $NS || true
-
-# Allow namespace discovery (needed for agents)
-kubectl create clusterrole ubuntu-user-namespace-reader \
-  --verb=get,list \
-  --resource=namespaces || true
-
-kubectl create clusterrolebinding ubuntu-user-namespace-reader-binding \
-  --clusterrole=ubuntu-user-namespace-reader \
-  --serviceaccount=default:ubuntu-user || true
-
+NS="default"
 
 echo "Creating TLS certificate..."
 

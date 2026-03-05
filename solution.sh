@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-NS="ingress-system"
+NS="default"
 
 echo "Fixing keepalive timeout..."
 
