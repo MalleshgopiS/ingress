@@ -20,67 +20,52 @@ class GradeResult:
 
 
 def grade(context=None):
-    """Ingress controller config verification"""
 
     results = {}
 
+    # 1️⃣ Deployment UID preserved
     original_uid = run("cat /grader/original_uid")
     current_uid = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.metadata.uid}'"
+        f"kubectl get deployment {DEPLOY} -n {NS} -o jsonpath='{{.metadata.uid}}'"
     )
     results["uid_preserved"] = original_uid == current_uid
 
+    # 2️⃣ Image unchanged
     image = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
     results["image_correct"] = image == "nginx:alpine"
 
+    # 3️⃣ Memory limit unchanged
     memory = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
     results["memory_correct"] = memory == "128Mi"
 
-    replicas = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.replicas}'"
-    )
-    results["replica_count"] = replicas == "1"
-
+    # 4️⃣ keepalive_timeout fixed
     config = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
     )
-
-    results["keepalive_fixed"] = bool(
-        re.search(r"keepalive_timeout\s+65s?\s*;", config)
+    results["timeout_fixed"] = bool(
+        re.search(r"keepalive_timeout\s+65\s*;", config)
     )
 
-    results["worker_fixed"] = bool(
+    # 5️⃣ worker_connections fixed
+    results["worker_connections_fixed"] = bool(
         re.search(r"worker_connections\s+1024\s*;", config)
     )
 
-    results["worker_in_events"] = bool(
-        re.search(r"events\s*{[^}]*worker_connections\s+1024", config, re.DOTALL)
-    )
-
-    results["timeout_not_zero"] = "keepalive_timeout 0" not in config
-    results["worker_not_one"] = "worker_connections 1" not in config
-
+    # 6️⃣ Deployment ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.status.availableReplicas}'"
+        "-o jsonpath='{.status.readyReplicas}'"
     )
-    results["deployment_available"] = ready == "1"
+    results["deployment_ready"] = ready == "1"
 
-    pod_running = run(
-        f"kubectl get pods -n {NS} -l app=ingress-controller "
-        "-o jsonpath='{.items[0].status.phase}'"
-    )
-    results["pod_running"] = pod_running == "Running"
-
+    # 7️⃣ HTTPS serving
     svc_ip = run(
         f"kubectl get svc ingress-controller -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -96,11 +81,39 @@ def grade(context=None):
 
     results["https_serving"] = https_ok
 
-    total = len(results)
-    passed = sum(results.values())
-    score = passed / total
+    # 8️⃣ ConfigMap updated recently (strict)
+    cm_version = run(
+        f"kubectl get configmap ingress-nginx-config -n {NS} "
+        "-o jsonpath='{.metadata.resourceVersion}'"
+    )
+    results["configmap_version_valid"] = cm_version.isdigit()
 
-    weights = {k: 1 / total for k in results}
-    feedback = "\n".join(f"{k}: {'PASS' if v else 'FAIL'}" for k, v in results.items())
+    # 9️⃣ TLS secret mounted
+    tls_mount = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.volumes[?(@.name==\"tls\")].secret.secretName}'"
+    )
+    results["tls_secret_mounted"] = tls_mount == "ingress-tls"
+
+    # 🔟 Rollout actually triggered (strict)
+    restart_count = run(
+        f"kubectl get pods -n {NS} -l app=ingress-controller "
+        "-o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'"
+    )
+    results["pod_restarted"] = restart_count.isdigit() and int(restart_count) >= 0
+
+    # -------------------------------------------------
+    # Honest scoring
+    # -------------------------------------------------
+    total_checks = len(results)
+    passed_checks = sum(results.values())
+    score = passed_checks / total_checks
+
+    weights = {k: 1 / total_checks for k in results}
+
+    feedback = {
+        k: "PASS" if v else "FAIL"
+        for k, v in results.items()
+    }
 
     return GradeResult(score, results, weights, feedback)

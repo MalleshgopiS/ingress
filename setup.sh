@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
+
 NS="default"
+
+echo "Creating TLS certificate..."
 
 openssl req -x509 -nodes -days 365 \
 -newkey rsa:2048 \
@@ -8,13 +11,13 @@ openssl req -x509 -nodes -days 365 \
 -out /tmp/tls.crt \
 -subj "/CN=ingress.local"
 
-kubectl delete secret ingress-tls -n $NS --ignore-not-found
 kubectl create secret tls ingress-tls \
 --cert=/tmp/tls.crt \
 --key=/tmp/tls.key \
--n $NS
+-n $NS || true
 
-kubectl wait --for=condition=Ready secret/ingress-tls -n $NS --timeout=60s || true
+
+echo "Creating broken nginx config..."
 
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -24,21 +27,27 @@ metadata:
   namespace: $NS
 data:
   nginx.conf: |
-    events {
-      worker_connections 1;
-    }
+    events {}
+
     http {
+
       keepalive_timeout 0;
+
       server {
         listen 443 ssl;
+
         ssl_certificate /etc/nginx/tls/tls.crt;
         ssl_certificate_key /etc/nginx/tls/tls.key;
+
         location / {
           return 200 "Ingress Controller Running";
         }
       }
     }
 EOF
+
+
+echo "Creating deployment..."
 
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -64,13 +73,6 @@ spec:
         resources:
           limits:
             memory: "128Mi"
-        readinessProbe:
-          httpGet:
-            scheme: HTTPS
-            path: /
-            port: 443
-          initialDelaySeconds: 10
-          periodSeconds: 5
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
@@ -86,6 +88,9 @@ spec:
           secretName: ingress-tls
 EOF
 
+
+echo "Creating service..."
+
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -100,8 +105,15 @@ spec:
     targetPort: 443
 EOF
 
-kubectl rollout status deployment/ingress-controller -n $NS --timeout=300s
+
+echo "Waiting for deployment..."
+
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
+
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
+
 chmod 400 /grader/original_uid
+
+echo "Setup completed successfully."
