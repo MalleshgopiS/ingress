@@ -3,21 +3,20 @@ set -e
 
 NS="default"
 
-echo "Creating TLS certificate..."
+echo "Generating TLS certificate..."
 
 openssl req -x509 -nodes -days 365 \
--newkey rsa:2048 \
--keyout /tmp/tls.key \
--out /tmp/tls.crt \
--subj "/CN=ingress.local"
+  -newkey rsa:2048 \
+  -keyout /tmp/tls.key \
+  -out /tmp/tls.crt \
+  -subj "/CN=ingress.local"
 
 kubectl create secret tls ingress-tls \
---cert=/tmp/tls.crt \
---key=/tmp/tls.key \
--n $NS || true
+  --cert=/tmp/tls.crt \
+  --key=/tmp/tls.key \
+  -n $NS || true
 
-
-echo "Creating broken nginx config..."
+echo "Creating broken nginx configuration..."
 
 kubectl apply -f - <<EOF
 apiVersion: v1
@@ -46,8 +45,7 @@ data:
     }
 EOF
 
-
-echo "Creating deployment..."
+echo "Creating ingress controller deployment..."
 
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
@@ -66,28 +64,27 @@ spec:
         app: ingress-controller
     spec:
       containers:
-      - name: nginx
-        image: nginx:alpine
-        ports:
-        - containerPort: 443
-        resources:
-          limits:
-            memory: "128Mi"
-        volumeMounts:
-        - name: config
-          mountPath: /etc/nginx/nginx.conf
-          subPath: nginx.conf
-        - name: tls
-          mountPath: /etc/nginx/tls
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 443
+          resources:
+            limits:
+              memory: "128Mi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: tls
+              mountPath: /etc/nginx/tls
       volumes:
-      - name: config
-        configMap:
-          name: ingress-nginx-config
-      - name: tls
-        secret:
-          secretName: ingress-tls
+        - name: config
+          configMap:
+            name: ingress-nginx-config
+        - name: tls
+          secret:
+            secretName: ingress-tls
 EOF
-
 
 echo "Creating service..."
 
@@ -101,19 +98,17 @@ spec:
   selector:
     app: ingress-controller
   ports:
-  - port: 443
-    targetPort: 443
+    - port: 443
+      targetPort: 443
 EOF
-
 
 echo "Waiting for deployment..."
 
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
 
-
 kubectl get deployment ingress-controller -n $NS \
--o jsonpath='{.metadata.uid}' > /grader/original_uid
+  -o jsonpath='{.metadata.uid}' > /grader/original_uid
 
 chmod 400 /grader/original_uid
 
-echo "Setup completed successfully."
+echo "Setup completed."

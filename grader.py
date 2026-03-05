@@ -78,18 +78,16 @@ def grade(context=None):
 
     results["https_serving"] = https_ok
 
-    total_checks = len(results)
-    passed_checks = sum(results.values())
+    total = len(results)
+    passed = sum(results.values())
 
-    mean_score = passed_checks / total_checks
+    score = passed / total
 
-    weights = {k: 1 / total_checks for k in results}
+    weights = {k: 1 / total for k in results}
 
-    feedback_lines = []
-    for k, v in results.items():
-        status = "PASS" if v else "FAIL"
-        feedback_lines.append(f"{k}: {status}")
+    feedback = "\n".join(
+        f"{k}: {'PASS' if v else 'FAIL'}"
+        for k, v in results.items()
+    )
 
-    feedback = "\n".join(feedback_lines)
-
-    return GradeResult(mean_score, results, weights, feedback)
+    return GradeResult(score, results, weights, feedback)
