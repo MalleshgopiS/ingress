@@ -11,10 +11,12 @@ openssl req -x509 -nodes -days 365 \
 -out /tmp/tls.crt \
 -subj "/CN=ingress.local"
 
+kubectl delete secret ingress-tls -n $NS --ignore-not-found
+
 kubectl create secret tls ingress-tls \
 --cert=/tmp/tls.crt \
 --key=/tmp/tls.key \
--n $NS || true
+-n $NS
 
 
 echo "Creating broken nginx config..."
@@ -110,7 +112,9 @@ EOF
 
 echo "Waiting for deployment..."
 
-kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
+kubectl wait --for=condition=available deployment/ingress-controller \
+-n $NS --timeout=240s
+
 
 kubectl get deployment ingress-controller -n $NS \
 -o jsonpath='{.metadata.uid}' > /grader/original_uid
