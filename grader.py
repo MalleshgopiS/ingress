@@ -12,7 +12,7 @@ def safe_run(cmd):
     except:
         return ""
 
-def grade():
+def grade(context=None):  # ✅ Accept context argument
     results = {}
 
     # 1️⃣ Deployment UID preserved
@@ -28,7 +28,7 @@ def grade():
     memory = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'").strip("'")
     results["memory_correct"] = (memory == "128Mi")
 
-    # 4️⃣ keepalive_timeout fixed (strict → natural partial failures)
+    # 4️⃣ keepalive_timeout fixed (strict → natural partial scoring)
     config = safe_run("kubectl get configmap ingress-nginx-config -o jsonpath='{.data.nginx.conf}'").strip("'")
     results["timeout_fixed"] = bool(re.search(r"keepalive_timeout 65;", config))
 
