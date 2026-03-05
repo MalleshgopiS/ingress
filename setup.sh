@@ -27,7 +27,9 @@ metadata:
   namespace: $NS
 data:
   nginx.conf: |
-    events {}
+    events {
+      worker_connections 1;
+    }
 
     http {
 

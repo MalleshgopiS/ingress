@@ -6,12 +6,8 @@ prompt: |
   The Kubernetes ingress controller responsible for TLS termination is periodically crashing.
 
   Investigation shows the nginx configuration inside the ingress controller
-  contains the following directive:
-
-      keepalive_timeout 0;
-
-  Under TLS traffic this causes connections to remain open indefinitely,
-  leading to excessive memory consumption and periodic gateway crashes.
+  may contain settings that allow idle TLS connections to remain open too long,
+  eventually leading to excessive memory usage.
 
   The nginx configuration is stored in the ConfigMap:
 
@@ -21,13 +17,12 @@ prompt: |
 
       ingress-controller
 
-  Your task is to fix the nginx configuration so idle TLS connections
-  are closed properly.
+  Your task is to investigate the nginx configuration and fix the issue
+  so idle TLS connections are handled properly.
 
   Requirements:
 
   • Update the nginx configuration in ConfigMap `ingress-nginx-config`
-  • Set `keepalive_timeout` to **65 seconds**
   • Restart the Deployment `ingress-controller` so the change takes effect
   • The Deployment must NOT be deleted or recreated
   • The container image must remain `nginx:alpine`

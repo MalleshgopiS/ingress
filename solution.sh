@@ -3,10 +3,11 @@ set -e
 
 NS="default"
 
-echo "Fixing keepalive timeout..."
+echo "Fixing nginx configuration..."
 
 kubectl get configmap ingress-nginx-config -n $NS -o yaml \
 | sed -E 's/keepalive_timeout[[:space:]]+0;/keepalive_timeout 65;/' \
+| sed -E 's/worker_connections[[:space:]]+1;/worker_connections 1024;/' \
 | kubectl apply -f -
 
 echo "Restarting deployment..."
