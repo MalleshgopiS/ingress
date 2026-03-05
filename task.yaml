@@ -1,50 +1,27 @@
-id: ingress
+id: ingress-controller-tls-memory-leak
 
 title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 
 prompt: |
-  A Kubernetes ingress controller responsible for TLS termination is periodically crashing.
-
-  Investigation shows the nginx configuration used by the ingress controller
-  contains the directive:
+  The Kubernetes ingress controller responsible for TLS termination is periodically crashing.
+  
+  Investigation shows the nginx configuration inside the ingress controller
+  contains the following directive:
 
       keepalive_timeout 0;
 
-  With TLS traffic this keeps idle connections open indefinitely, causing
-  memory usage to grow until the gateway eventually crashes.
-
-  The nginx configuration is stored in the ConfigMap:
-
-      ingress-nginx-config
-
-  and is mounted into the Deployment:
-
-      ingress-controller
+  Under TLS traffic this causes connections to remain open indefinitely,
+  leading to excessive memory consumption and periodic gateway crashes.
 
   Your task is to fix the nginx configuration so idle TLS connections
   are closed properly.
 
   Requirements:
-
-  Update the nginx configuration inside the ConfigMap `ingress-nginx-config`
-  so the directive becomes:
-
-      keepalive_timeout 65;
-
-  Restart the Deployment `ingress-controller`
-  so the new configuration takes effect.
-
-  The Deployment must NOT be deleted or recreated.
-
-  The container image must remain:
-
-      nginx:alpine
-
-  The memory limit must remain:
-
-      128Mi
-
-  After the fix the ingress controller must still serve HTTPS traffic.
+  • Update the configuration so keepalive_timeout is set to 65 seconds
+  • Restart the ingress controller deployment so the change takes effect
+  • Do not modify the container image
+  • Do not modify resource limits
+  • Only fix the configuration issue
 
 difficulty: medium
 
@@ -58,7 +35,9 @@ tags:
   - memory
 
 setup: setup.sh
+
 solution: solution.sh
+
 grader: grader.py
 
 timeout_sec: 600
