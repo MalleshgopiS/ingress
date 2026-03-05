@@ -1,54 +1,34 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -e
 
-NS="default"
+NS=default
+
+mkdir -p /grader
 
 echo "Creating TLS certificate..."
-
-openssl req -x509 -nodes -days 365 \
--newkey rsa:2048 \
--keyout /tmp/tls.key \
--out /tmp/tls.crt \
--subj "/CN=ingress.local"
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key -out tls.crt \
+  -subj "/CN=ingress.local"
 
 kubectl create secret tls ingress-tls \
---cert=/tmp/tls.crt \
---key=/tmp/tls.key \
--n $NS || true
-
+  --key tls.key --cert tls.crt -n $NS
 
 echo "Creating broken nginx config..."
-
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ingress-nginx-config
-  namespace: $NS
-data:
-  nginx.conf: |
-    events {}
-
-    http {
-
-      keepalive_timeout 0;
-
-      server {
+kubectl create configmap ingress-nginx-config -n $NS \
+  --from-literal=nginx.conf='events { worker_connections 512; }
+http {
+    keepalive_timeout 0;
+    server {
         listen 443 ssl;
-
         ssl_certificate /etc/nginx/tls/tls.crt;
         ssl_certificate_key /etc/nginx/tls/tls.key;
-
         location / {
-          return 200 "Ingress Controller Running";
+            return 200 "Ingress Controller Running";
         }
-      }
     }
-EOF
-
+}'
 
 echo "Creating deployment..."
-
 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -68,8 +48,6 @@ spec:
       containers:
       - name: nginx
         image: nginx:alpine
-        ports:
-        - containerPort: 443
         resources:
           limits:
             memory: "128Mi"
@@ -88,32 +66,21 @@ spec:
           secretName: ingress-tls
 EOF
 
-
 echo "Creating service..."
-
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: ingress-controller
-  namespace: $NS
-spec:
-  selector:
-    app: ingress-controller
-  ports:
-  - port: 443
-    targetPort: 443
-EOF
-
+kubectl expose deployment ingress-controller \
+  --port=443 --target-port=443 --name=ingress-controller -n $NS
 
 echo "Waiting for deployment..."
+kubectl rollout status deployment/ingress-controller -n $NS
 
-kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
-
-
+# Save original UIDs for grader
 kubectl get deployment ingress-controller -n $NS \
--o jsonpath='{.metadata.uid}' > /grader/original_uid
+  -o jsonpath='{.metadata.uid}' > /grader/original_uid
+
+kubectl get pods -n $NS -l app=ingress-controller \
+  -o jsonpath='{.items[0].metadata.uid}' > /grader/original_pod_uid
 
 chmod 400 /grader/original_uid
+chmod 400 /grader/original_pod_uid
 
 echo "Setup completed successfully."
