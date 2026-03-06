@@ -40,4 +40,4 @@ solution: solution.sh
 
 grader: grader.py
 
-timeout_sec: 600(
+timeout_sec: 600
