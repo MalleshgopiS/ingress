@@ -1,56 +1,89 @@
-#!/usr/bin/env python3
 import subprocess
 import re
-from pathlib import Path
-from apex_arena.grading import Grade
+import time
+
+NS = "default"
+DEPLOY = "ingress-controller"
+
 
 def run(cmd):
-    return subprocess.check_output(cmd, shell=True, text=True).strip()
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.stdout.strip()
 
-def safe_run(cmd):
-    try:
-        return run(cmd)
-    except:
-        return ""
 
 def grade(context=None):
-    checks = {}
 
-    # 1️⃣ Deployment UID preserved
-    old_uid = Path("/grader/original_uid").read_text().strip()
-    new_uid = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.metadata.uid}'").strip("'")
-    checks["uid_preserved"] = (old_uid == new_uid)
+    results = {}
 
-    # 2️⃣ Image unchanged
-    image = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[0].image}'").strip("'")
-    checks["image_correct"] = (image == "nginx:alpine")
+    original_uid = run("cat /grader/original_uid")
 
-    # 3️⃣ Memory unchanged
-    memory = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'").strip("'")
-    checks["memory_correct"] = (memory == "128Mi")
-
-    # 4️⃣ Timeout fixed
-    config = safe_run("kubectl get configmap ingress-nginx-config -o jsonpath='{.data.nginx.conf}'").strip("'")
-    checks["timeout_fixed"] = bool(re.search(r"keepalive_timeout 65;", config))
-
-    # 5️⃣ Pod restarted
-    old_pod_uid = Path("/grader/original_pod_uid").read_text().strip()
-    new_pod_uid = safe_run("kubectl get pods -l app=ingress-controller -o jsonpath='{.items[0].metadata.uid}'").strip("'")
-    checks["pod_restarted"] = (old_pod_uid != new_pod_uid)
-
-    # 6️⃣ Deployment ready
-    ready = safe_run("kubectl get deploy ingress-controller -o jsonpath='{.status.readyReplicas}'").strip("'")
-    checks["deployment_ready"] = (ready == "1")
-
-    total = len(checks)
-    passed = sum(checks.values())
-    score = passed / total
-
-    feedback = "\n".join(
-        f"{k}: {'PASS' if v else 'FAIL'}" for k, v in checks.items()
+    current_uid = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.metadata.uid}'"
     )
 
-    return Grade(
-        score=score,
-        feedback=feedback
+    results["uid_preserved"] = original_uid == current_uid
+
+    image = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
+
+    results["image_correct"] = image == "nginx:alpine"
+
+    memory = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
+    )
+
+    results["memory_correct"] = memory == "128Mi"
+
+    config = run(
+        f"kubectl get configmap ingress-nginx-config -n {NS} "
+        "-o jsonpath='{.data.nginx\\.conf}'"
+    )
+
+    results["timeout_fixed"] = bool(
+        re.search(r"keepalive_timeout\s+65;", config)
+    )
+
+    ready = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.status.readyReplicas}'"
+    )
+
+    results["deployment_ready"] = ready == "1"
+
+    svc_ip = run(
+        f"kubectl get svc ingress-controller -n {NS} "
+        "-o jsonpath='{.spec.clusterIP}'"
+    )
+
+    https_ok = False
+
+    for _ in range(5):
+        response = run(f"curl -k -s https://{svc_ip}")
+        if "Ingress Controller Running" in response:
+            https_ok = True
+            break
+        time.sleep(2)
+
+    results["https_serving"] = https_ok
+
+    total_checks = len(results)
+    passed_checks = sum(results.values())
+
+    mean_score = passed_checks / total_checks
+
+    feedback_lines = []
+    for k, v in results.items():
+        status = "PASS" if v else "FAIL"
+        feedback_lines.append(f"{k}: {status}")
+
+    feedback = "\n".join(feedback_lines)
+
+    # ✅ Apex-compatible return (no custom class)
+    return {
+        "score": mean_score,
+        "feedback": feedback
+    }
