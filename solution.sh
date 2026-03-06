@@ -12,10 +12,9 @@ kubectl get configmap ingress-nginx-config -n $NS -o yaml \
 echo "Restarting deployment..."
 
 kubectl rollout restart deployment ingress-controller -n $NS
-
 kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
 
-echo "Waiting for pods to stabilize..."
+echo "Waiting for stabilization..."
 sleep 10
 
 echo "Fix completed."

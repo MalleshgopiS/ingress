@@ -2,6 +2,9 @@
 set -e
 
 NS="default"
+TMPDIR="/tmp/ingress-task"
+mkdir -p $TMPDIR
+cd $TMPDIR
 
 echo "Creating TLS certificate..."
 openssl req -x509 -nodes -days 365 \
@@ -13,7 +16,7 @@ openssl req -x509 -nodes -days 365 \
 kubectl create secret tls ingress-tls \
   --cert=tls.crt --key=tls.key -n $NS
 
-echo "Creating broken nginx config..."
+echo "Creating nginx config with incorrect timeout..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -94,7 +97,5 @@ spec:
       targetPort: 443
 EOF
 
-echo "Waiting for deployment rollout..."
 kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
-
-echo "Setup completed successfully."
+echo "Setup completed."

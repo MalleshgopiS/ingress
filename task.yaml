@@ -10,16 +10,15 @@ prompt: |
 
       keepalive_timeout 0;
 
-  Under TLS traffic this causes connections to remain open indefinitely,
-  leading to excessive memory consumption and periodic gateway crashes.
+  This configuration is incorrect for the production traffic pattern and
+  must be updated.
 
-  Your task is to fix the nginx configuration so idle TLS connections
-  are closed properly.
+  Your task is to fix the nginx configuration so idle connections are handled properly.
 
   Requirements:
   • Update the configuration so keepalive_timeout is set to 65 seconds
   • Restart the ingress controller deployment so the change takes effect
-  • The ingress service must remain functional after the fix
+  • Ensure the ingress service remains functional after the fix
   • Do not modify the container image
   • Do not modify resource limits
   • Only fix the configuration issue
@@ -32,7 +31,7 @@ tags:
   - ingress
   - nginx
   - tls
-  - memory
+  - configuration
 
 setup: setup.sh
 solution: solution.sh
