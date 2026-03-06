@@ -15,3 +15,12 @@ description: |
   - Only fix the configuration issue
 
 difficulty: medium
+
+tools:
+  - setup_problem
+  - grade_problem
+
+entrypoint:
+  setup: setup.sh
+  solution: solution.sh
+  grader: grader.py
