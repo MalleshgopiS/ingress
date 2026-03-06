@@ -18,9 +18,9 @@ prompt: |
   [TASK]
   After a recent configuration rollout, the ingress controller responsible for TLS termination is intermittently restarting after quiet periods.
   Users see brief HTTPS outages at the gateway even though the backend application remains healthy.
-  A previous responder already edited the obvious ingress ConfigMaps and restarted the controller, but the crashes continued.
+  A previous responder already edited the obvious ingress ConfigMaps, refreshed one visible runtime bundle, and restarted the controller, but the crashes continued.
 
-  Investigate the live ingress-controller configuration path, including any rendered assets or bootstrap bundles used by the running workload, and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
+  Investigate the live ingress-controller configuration path, including any rendered assets, source bundles, or selected profiles used by the running workload, and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
   - `/` returns the expected gateway page consistently
   - `/healthz` returns the health payload consistently
   - the ingress controller remains stable across repeated requests and an idle window
@@ -34,7 +34,7 @@ prompt: |
   - Do NOT use any interactive commands, for example `-i` or `-it`, in `docker exec`, or any other TTY commands
 
 instructions: |
-  Investigate the running ingress-controller path, especially the source that is actually rendered into the active nginx runtime assets.
+  Investigate the running ingress-controller path, especially the source that is actually used to refresh the active nginx runtime assets after the pod starts.
 
   Repair the incident so that:
   - HTTPS `/` consistently serves the expected gateway page
@@ -45,7 +45,7 @@ instructions: |
   - keep the existing `ingress-controller` Deployment object
   - keep the existing image names
   - keep the existing memory limits
-  - preserve the active bootstrap bundle and its integrity metadata instead of replacing it with a minimal stub
+  - preserve the active source bundle, any selected-profile structure, and integrity metadata instead of replacing them with a minimal stub
   - use Kubernetes configuration changes and rollout operations only
 
 category: Site Reliability Engineering
@@ -63,10 +63,12 @@ tags:
   - sre
   - incident-response
   - rendered-config
+  - source-of-truth
   - secret-bundle
+  - profile-selection
 
-estimated_duration: 30
-max_agent_steps: 80
+estimated_duration: 40
+max_agent_steps: 120
 timeout: 900
 timeout_sec: 900
 

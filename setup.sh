@@ -1,40 +1,34 @@
-#!/usr/bin/env bash
-set -e
-
-# ------- ----------[DONOT CHANGE ANYTHING BELOW]  --------------------- #
-if ! supervisorctl status &>/dev/null; then
-    echo "Starting supervisord..."
-    /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
-    sleep 5
-fi
+#!/bin/bash
+set -euo pipefail
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 echo "Waiting for k3s to be ready..."
-MAX_WAIT=180
-ELAPSED=0
-until kubectl get nodes &>/dev/null; do
-    if [ $ELAPSED -ge $MAX_WAIT ]; then
-        echo "Error: k3s is not ready after ${MAX_WAIT} seconds"
-        exit 1
-    fi
-    echo "Waiting for k3s... (${ELAPSED}s elapsed)"
-    sleep 2
-    ELAPSED=$((ELAPSED + 2))
+until kubectl get nodes >/dev/null 2>&1; do
+  sleep 2
 done
-
 echo "k3s is ready!"
-# ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
 NS="ingress-system"
-WORKDIR="/tmp/ingress-controller-memory-leak-v5"
-UID_FILE="/grader/original_uid"
+EXPECTED_IMAGE="nginx:alpine"
+EXPECTED_MEMORY="128Mi"
+ORIGINAL_UID_FILE="/grader/original_uid"
 SPEC_FILE="/grader/original_spec_fingerprint"
-BUNDLE_DIR="${WORKDIR}/bundle-src"
-RUNTIME_ARCHIVE="${WORKDIR}/runtime.bin"
 
-mkdir -p "$WORKDIR" "$BUNDLE_DIR" /grader
-cd "$WORKDIR"
+mkdir -p /grader
+chmod 700 /grader
+
+WORKDIR="$(mktemp -d)"
+ACTIVE_DIR="${WORKDIR}/active-bundle"
+SOURCE_DIR="${WORKDIR}/source-bundle"
+ACTIVE_ARCHIVE="${WORKDIR}/runtime.bin"
+SOURCE_ARCHIVE="${WORKDIR}/state.tgz"
+mkdir -p "${ACTIVE_DIR}/profiles" "${SOURCE_DIR}/profiles"
+
+cleanup() {
+  rm -rf "${WORKDIR}"
+}
+trap cleanup EXIT
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
@@ -97,27 +91,75 @@ data:
     KEEPALIVE_TIMEOUT=65
     SSL_SESSION_TIMEOUT=10m
   notes.txt: |
-    Legacy reference copy retained from the previous incident handoff.
-    The live runtime is rendered from a different bootstrap source.
+    Handoff snapshot from the earlier repair attempt.
+    It is not the live source used by the refresh workflow.
 EOF
 
-cat <<'EOF' > "${BUNDLE_DIR}/profile.env"
+cat <<'EOF' > "${ACTIVE_DIR}/defaults.env"
 TLS_PORT=443
 SERVER_NAME=_
 UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local
 UPSTREAM_PORT=8080
 ROOT_PATH=/
 HEALTH_PATH=/healthz
-KEEPALIVE_TIMEOUT=0
+PROFILE_SLOT=current
+PROFILE_MAP=profile-map.json
+KEEPALIVE_BASE=65
 KEEPALIVE_REQUESTS=1000
 SSL_SESSION_TIMEOUT=10m
 WATCHDOG_MATCH=keepalive_timeout 0;
-WATCHDOG_DELAY_SECONDS=12
-PROFILE_NAME=blue-edge
+WATCHDOG_DELAY_SECONDS=8
+PROFILE_NAME=edge-active
 PROFILE_OWNER=platform-network
 EOF
 
-cat <<'EOF' > "${BUNDLE_DIR}/nginx.tmpl"
+cat <<'EOF' > "${SOURCE_DIR}/defaults.env"
+TLS_PORT=443
+SERVER_NAME=_
+UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local
+UPSTREAM_PORT=8080
+ROOT_PATH=/
+HEALTH_PATH=/healthz
+PROFILE_SLOT=current
+PROFILE_MAP=profile-map.json
+KEEPALIVE_BASE=65
+KEEPALIVE_REQUESTS=1000
+SSL_SESSION_TIMEOUT=10m
+WATCHDOG_MATCH=keepalive_timeout 0;
+WATCHDOG_DELAY_SECONDS=8
+PROFILE_NAME=edge-origin
+PROFILE_OWNER=platform-network
+EOF
+
+cat <<'EOF' > "${ACTIVE_DIR}/profile-map.json"
+{"current": "edge-stable", "fallback": "edge-stable"}
+EOF
+
+cat <<'EOF' > "${SOURCE_DIR}/profile-map.json"
+{"current": "edge-shadow", "fallback": "edge-stable"}
+EOF
+
+cat <<'EOF' > "${ACTIVE_DIR}/profiles/edge-stable.env"
+KEEPALIVE_DELTA=0
+PROFILE_VARIANT=edge-stable
+EOF
+
+cat <<'EOF' > "${ACTIVE_DIR}/profiles/edge-shadow.env"
+KEEPALIVE_DELTA=0
+PROFILE_VARIANT=edge-shadow
+EOF
+
+cat <<'EOF' > "${SOURCE_DIR}/profiles/edge-stable.env"
+KEEPALIVE_DELTA=0
+PROFILE_VARIANT=edge-stable
+EOF
+
+cat <<'EOF' > "${SOURCE_DIR}/profiles/edge-shadow.env"
+KEEPALIVE_DELTA=-65
+PROFILE_VARIANT=edge-shadow
+EOF
+
+cat <<'EOF' > "${ACTIVE_DIR}/nginx.tmpl"
 events {}
 
 http {
@@ -145,9 +187,11 @@ http {
   }
 }
 EOF
+cp "${ACTIVE_DIR}/nginx.tmpl" "${SOURCE_DIR}/nginx.tmpl"
 
-cat <<'EOF' > "${BUNDLE_DIR}/render.py"
+cat <<'EOF' > "${ACTIVE_DIR}/bootstrap.py"
 #!/usr/bin/env python3
+import json
 import os
 import pathlib
 import sys
@@ -164,69 +208,102 @@ def load_env(path: pathlib.Path) -> dict[str, str]:
     return data
 
 
-profile_path = pathlib.Path(sys.argv[1])
-template_path = pathlib.Path(sys.argv[2])
-out_dir = pathlib.Path(sys.argv[3])
-profile = load_env(profile_path)
-required = [
-    "TLS_PORT",
-    "SERVER_NAME",
-    "UPSTREAM_HOST",
-    "UPSTREAM_PORT",
-    "ROOT_PATH",
-    "HEALTH_PATH",
-    "KEEPALIVE_TIMEOUT",
-    "KEEPALIVE_REQUESTS",
-    "SSL_SESSION_TIMEOUT",
-    "WATCHDOG_MATCH",
-    "WATCHDOG_DELAY_SECONDS",
-    "PROFILE_NAME",
-    "PROFILE_OWNER",
-]
-missing = [key for key in required if key not in profile]
-if missing:
-    raise SystemExit(f"missing bootstrap keys: {', '.join(missing)}")
+def render_bundle(defaults_path: pathlib.Path, template_path: pathlib.Path, out_dir: pathlib.Path) -> None:
+    root = defaults_path.parent
+    defaults = load_env(defaults_path)
+    slot = defaults.get("PROFILE_SLOT")
+    map_name = defaults.get("PROFILE_MAP")
+    if not slot or not map_name:
+        raise SystemExit("missing profile selector metadata")
 
-template = template_path.read_text(encoding="utf-8")
-replacements = {
-    "__TLS_PORT__": profile["TLS_PORT"],
-    "__SERVER_NAME__": profile["SERVER_NAME"],
-    "__UPSTREAM_HOST__": profile["UPSTREAM_HOST"],
-    "__UPSTREAM_PORT__": profile["UPSTREAM_PORT"],
-    "__ROOT_PATH__": profile["ROOT_PATH"],
-    "__HEALTH_PATH__": profile["HEALTH_PATH"],
-    "__KEEPALIVE_TIMEOUT__": profile["KEEPALIVE_TIMEOUT"],
-    "__KEEPALIVE_REQUESTS__": profile["KEEPALIVE_REQUESTS"],
-    "__SSL_SESSION_TIMEOUT__": profile["SSL_SESSION_TIMEOUT"],
-}
-rendered = template
-for old, new in replacements.items():
-    rendered = rendered.replace(old, new)
+    profile_map = json.loads((root / map_name).read_text(encoding="utf-8"))
+    selected_profile = profile_map.get(slot)
+    if not selected_profile:
+        raise SystemExit(f"missing selected profile for slot: {slot}")
 
-out_dir.mkdir(parents=True, exist_ok=True)
-(out_dir / "nginx.conf").write_text(rendered, encoding="utf-8")
-watchdog = f"""#!/bin/sh
+    overlay = load_env(root / "profiles" / f"{selected_profile}.env")
+    merged = dict(defaults)
+    merged.update(overlay)
+    merged["SELECTED_PROFILE"] = selected_profile
+
+    required = [
+        "TLS_PORT",
+        "SERVER_NAME",
+        "UPSTREAM_HOST",
+        "UPSTREAM_PORT",
+        "ROOT_PATH",
+        "HEALTH_PATH",
+        "KEEPALIVE_BASE",
+        "KEEPALIVE_DELTA",
+        "KEEPALIVE_REQUESTS",
+        "SSL_SESSION_TIMEOUT",
+        "WATCHDOG_MATCH",
+        "WATCHDOG_DELAY_SECONDS",
+        "PROFILE_NAME",
+        "PROFILE_OWNER",
+        "PROFILE_VARIANT",
+    ]
+    missing = [key for key in required if key not in merged]
+    if missing:
+        raise SystemExit(f"missing bundle keys: {', '.join(missing)}")
+
+    idle_seconds = int(merged["KEEPALIVE_BASE"]) + int(merged["KEEPALIVE_DELTA"])
+    if idle_seconds < 0:
+        raise SystemExit("negative keepalive timeout is not allowed")
+
+    template = template_path.read_text(encoding="utf-8")
+    replacements = {
+        "__TLS_PORT__": merged["TLS_PORT"],
+        "__SERVER_NAME__": merged["SERVER_NAME"],
+        "__UPSTREAM_HOST__": merged["UPSTREAM_HOST"],
+        "__UPSTREAM_PORT__": merged["UPSTREAM_PORT"],
+        "__ROOT_PATH__": merged["ROOT_PATH"],
+        "__HEALTH_PATH__": merged["HEALTH_PATH"],
+        "__KEEPALIVE_TIMEOUT__": str(idle_seconds),
+        "__KEEPALIVE_REQUESTS__": merged["KEEPALIVE_REQUESTS"],
+        "__SSL_SESSION_TIMEOUT__": merged["SSL_SESSION_TIMEOUT"],
+    }
+    rendered = template
+    for old, new in replacements.items():
+        rendered = rendered.replace(old, new)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "nginx.conf").write_text(rendered, encoding="utf-8")
+    watchdog = f"""#!/bin/sh
 set -eu
 while true; do
-  if grep -q '{profile['WATCHDOG_MATCH']}' /etc/nginx/nginx.conf; then
-    sleep {profile['WATCHDOG_DELAY_SECONDS']}
+  if grep -q '{merged['WATCHDOG_MATCH']}' /etc/nginx/nginx.conf; then
+    sleep {merged['WATCHDOG_DELAY_SECONDS']}
     kill 1
   fi
   sleep 2
 done
 """
-watchdog_path = out_dir / "watchdog.sh"
-watchdog_path.write_text(watchdog, encoding="utf-8")
-os.chmod(watchdog_path, 0o755)
-EOF
+    watchdog_path = out_dir / "watchdog.sh"
+    watchdog_path.write_text(watchdog, encoding="utf-8")
+    os.chmod(watchdog_path, 0o755)
 
-cat <<'EOF' > "${BUNDLE_DIR}/verify.py"
+
+if __name__ == "__main__":
+    render_bundle(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]))
+EOF
+cp "${ACTIVE_DIR}/bootstrap.py" "${SOURCE_DIR}/bootstrap.py"
+
+cat <<'EOF' > "${ACTIVE_DIR}/guard.py"
 #!/usr/bin/env python3
 import hashlib
 import pathlib
 import sys
 
-TRACKED_FILES = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
+TRACKED_FILES = [
+    "defaults.env",
+    "profile-map.json",
+    "profiles/edge-stable.env",
+    "profiles/edge-shadow.env",
+    "nginx.tmpl",
+    "bootstrap.py",
+    "guard.py",
+]
 
 
 def bundle_digest(root: pathlib.Path) -> str:
@@ -240,33 +317,69 @@ def bundle_digest(root: pathlib.Path) -> str:
 
 
 root = pathlib.Path(sys.argv[1])
-expected = (root / "bundle.lock").read_text(encoding="utf-8").strip()
+expected = (root / "fingerprint.lock").read_text(encoding="utf-8").strip()
 actual = bundle_digest(root)
 if actual != expected:
     raise SystemExit(f"bundle integrity mismatch: expected {expected}, got {actual}")
 EOF
+cp "${ACTIVE_DIR}/guard.py" "${SOURCE_DIR}/guard.py"
 
-python3 - <<'PY' "${BUNDLE_DIR}"
+python3 - "${ACTIVE_DIR}" "${SOURCE_DIR}" <<'PY'
 from pathlib import Path
 import hashlib
 import sys
 
-root = Path(sys.argv[1])
-tracked = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
-digest = hashlib.sha256()
-for name in tracked:
-    digest.update(name.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update((root / name).read_bytes())
-(root / "bundle.lock").write_text(digest.hexdigest(), encoding="utf-8")
+tracked = [
+    "defaults.env",
+    "profile-map.json",
+    "profiles/edge-stable.env",
+    "profiles/edge-shadow.env",
+    "nginx.tmpl",
+    "bootstrap.py",
+    "guard.py",
+]
+for raw_root in sys.argv[1:]:
+    root = Path(raw_root)
+    digest = hashlib.sha256()
+    for name in tracked:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update((root / name).read_bytes())
+    (root / "fingerprint.lock").write_text(digest.hexdigest(), encoding="utf-8")
 PY
 
-chmod 0644 "${BUNDLE_DIR}/profile.env" "${BUNDLE_DIR}/nginx.tmpl" "${BUNDLE_DIR}/render.py" "${BUNDLE_DIR}/verify.py" "${BUNDLE_DIR}/bundle.lock"
-tar -czf "${RUNTIME_ARCHIVE}" -C "${BUNDLE_DIR}" .
+chmod 0644 \
+  "${ACTIVE_DIR}/defaults.env" \
+  "${ACTIVE_DIR}/profile-map.json" \
+  "${ACTIVE_DIR}/profiles/edge-stable.env" \
+  "${ACTIVE_DIR}/profiles/edge-shadow.env" \
+  "${ACTIVE_DIR}/nginx.tmpl" \
+  "${ACTIVE_DIR}/bootstrap.py" \
+  "${ACTIVE_DIR}/guard.py" \
+  "${ACTIVE_DIR}/fingerprint.lock"
+
+chmod 0644 \
+  "${SOURCE_DIR}/defaults.env" \
+  "${SOURCE_DIR}/profile-map.json" \
+  "${SOURCE_DIR}/profiles/edge-stable.env" \
+  "${SOURCE_DIR}/profiles/edge-shadow.env" \
+  "${SOURCE_DIR}/nginx.tmpl" \
+  "${SOURCE_DIR}/bootstrap.py" \
+  "${SOURCE_DIR}/guard.py" \
+  "${SOURCE_DIR}/fingerprint.lock"
+
+tar -czf "${ACTIVE_ARCHIVE}" -C "${ACTIVE_DIR}" .
+tar -czf "${SOURCE_ARCHIVE}" -C "${SOURCE_DIR}" .
 
 kubectl create secret generic edge-runtime-assets \
   -n "$NS" \
-  --from-file=runtime.bin="${RUNTIME_ARCHIVE}" \
+  --from-file=runtime.bin="${ACTIVE_ARCHIVE}" \
+  --dry-run=client \
+  -o yaml | kubectl apply -f -
+
+kubectl create secret generic edge-sync-cache \
+  -n "$NS" \
+  --from-file=state.tgz="${SOURCE_ARCHIVE}" \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
@@ -329,22 +442,22 @@ spec:
         app: ingress-controller
     spec:
       initContainers:
-        - name: asset-renderer
+        - name: seed-rendered-runtime
           image: python:3.11-slim
           command:
             - /bin/sh
             - -c
             - |
               set -e
-              mkdir -p /work/bootstrap /work/rendered
-              tar -xzf /bundle/runtime.bin -C /work/bootstrap
-              python /work/bootstrap/verify.py /work/bootstrap
-              python /work/bootstrap/render.py /work/bootstrap/profile.env /work/bootstrap/nginx.tmpl /work/rendered
+              mkdir -p /shared/active /shared/rendered
+              tar -xzf /active-bundle/runtime.bin -C /shared/active
+              python /shared/active/guard.py /shared/active
+              python /shared/active/bootstrap.py /shared/active/defaults.env /shared/active/nginx.tmpl /shared/rendered
           volumeMounts:
-            - name: runtime-bundle
-              mountPath: /bundle
+            - name: active-bundle
+              mountPath: /active-bundle
             - name: rendered-assets
-              mountPath: /work
+              mountPath: /shared
       containers:
         - name: nginx
           image: nginx:alpine
@@ -373,10 +486,37 @@ spec:
             - name: tls
               mountPath: /etc/tls
               readOnly: true
+        - name: runtime-sync
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -e
+              mkdir -p /shared/source /shared/rendered
+              sleep 6
+              while true; do
+                rm -rf /shared/source/*
+                tar -xzf /origin-cache/state.tgz -C /shared/source
+                python /shared/source/guard.py /shared/source
+                python /shared/source/bootstrap.py /shared/source/defaults.env /shared/source/nginx.tmpl /shared/rendered
+                echo "synced rendered runtime from source cache"
+                sleep 6
+              done
+          volumeMounts:
+            - name: origin-cache
+              mountPath: /origin-cache
+              readOnly: true
+            - name: rendered-assets
+              mountPath: /shared
       volumes:
-        - name: runtime-bundle
+        - name: active-bundle
           secret:
             secretName: edge-runtime-assets
+        - name: origin-cache
+          secret:
+            secretName: edge-sync-cache
         - name: rendered-assets
           emptyDir: {}
         - name: tls
@@ -396,10 +536,10 @@ spec:
 EOF
 
 kubectl rollout status deployment/ingress-backend -n "$NS" --timeout=180s
-kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s || true
+kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
 
-kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.metadata.uid}' > "$UID_FILE"
-kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.spec.template.spec.initContainers[0].command}{"\n"}{.spec.template.spec.containers[0].command}{"\n"}{.spec.template.spec.containers[0].args}{"\n"}{.spec.template.spec.volumes}' > "$SPEC_FILE"
-chmod 400 "$UID_FILE" "$SPEC_FILE"
+kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.metadata.uid}' > "$ORIGINAL_UID_FILE"
+kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.spec.template.spec.initContainers[*].name}{"\n"}{.spec.template.spec.initContainers[*].command}{"\n"}{.spec.template.spec.initContainers[*].args}{"\n"}{.spec.template.spec.containers[*].name}{"\n"}{.spec.template.spec.containers[*].command}{"\n"}{.spec.template.spec.containers[*].args}{"\n"}{.spec.template.spec.volumes}' > "$SPEC_FILE"
+chmod 600 "$ORIGINAL_UID_FILE" "$SPEC_FILE"
 
 echo "Setup completed."
