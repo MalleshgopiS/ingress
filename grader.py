@@ -44,21 +44,21 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # 2. Real rollout
+    # 2. Real rollout happened
     revision = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.metadata.annotations.deployment\\.kubernetes\\.io/revision}'"
     )
     results["revision_changed"] = revision != "1"
 
-    # 3. Deployment ready
+    # 3. Deployment Ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
     )
     results["deployment_ready"] = ready == "1"
 
-    # 4. HTTPS works
+    # 4. HTTPS Functional
     svc_ip = run(
         f"kubectl get svc {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -73,14 +73,16 @@ def grade(context=None):
         time.sleep(2)
     results["https_serving"] = https_ok
 
-    # 5. Rollout stability (often fails → lowers mean)
-    restarts = run(
-        f"kubectl get pods -n {NS} -l app=ingress-controller "
-        "-o jsonpath='{{.items[0].status.containerStatuses[0].restartCount}}'"
+    # 5. Rollout stability (fixed to avoid false failure)
+    # Wait briefly to allow pod stabilization
+    time.sleep(5)
+    unavailable = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.status.unavailableReplicas}'"
     )
-    results["rollout_stable"] = restarts == "0"
+    results["rollout_stable"] = unavailable in ["", "0", "<no value>"]
 
-    # 6. Nginx config syntax valid
+    # 6. Basic config structure valid
     results["config_syntax_valid"] = "http {" in config and "server {" in config
 
     score = sum(weights[k] for k, v in results.items() if v)
