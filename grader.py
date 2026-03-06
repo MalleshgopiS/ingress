@@ -30,6 +30,13 @@ TRACKED_BUNDLE_FILES = [
 EXPECTED_BUNDLE_FILES = set(TRACKED_BUNDLE_FILES + ["fingerprint.lock"])
 
 
+class GradeResult:
+    def __init__(self, score, subscores, weights, feedback):
+        self.score = score
+        self.subscores = subscores
+        self.weights = weights
+        self.feedback = feedback
+
 def run(command: list[str]) -> str:
     """Run a command and return trimmed stdout, or an empty string on failure."""
     try:
@@ -312,12 +319,7 @@ def grade(context=None) -> dict:
     ok, reason = guardrails_ok()
     if not ok:
         subscores = {key: False for key in weights}
-        return {
-            "score": 0.0,
-            "subscores": subscores,
-            "weights": weights,
-            "feedback": reason,
-        }
+        return GradeResult(0.0, subscores, weights, reason)
 
     subscores = {
         "root_https_stable": stable_endpoint("/", "Ingress Controller Running"),
@@ -329,13 +331,14 @@ def grade(context=None) -> dict:
     }
     score = sum(weights[name] for name, passed in subscores.items() if passed)
     feedback = " | ".join([reason] + [f"{name}: {'PASS' if passed else 'FAIL'}" for name, passed in subscores.items()])
-    return {
-        "score": round(score, 4),
-        "subscores": subscores,
-        "weights": weights,
-        "feedback": feedback,
-    }
+    return GradeResult(round(score, 4), subscores, weights, feedback)
 
 
 if __name__ == "__main__":
-    print(json.dumps(grade()))
+    result = grade()
+    print(json.dumps({
+        "score": result.score,
+        "subscores": result.subscores,
+        "weights": result.weights,
+        "feedback": result.feedback,
+    }))
