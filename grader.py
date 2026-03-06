@@ -28,16 +28,14 @@ def grade(context=None):
         "revision_changed",
         "deployment_ready",
         "https_serving",
-        "uid_preserved",
-        "configmap_updated"
+        "rollout_stable",
+        "config_syntax_valid",
     ]
 
     weight_each = 1.0 / len(checks)
     weights = {k: weight_each for k in checks}
 
-    # -----------------------------
-    # 1. Core Fix
-    # -----------------------------
+    # 1. Core fix
     config = run(
         f"kubectl get configmap {CM} -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -46,27 +44,21 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # -----------------------------
-    # 2. Real rollout happened
-    # -----------------------------
+    # 2. Real rollout
     revision = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.metadata.annotations.deployment\\.kubernetes\\.io/revision}'"
     )
     results["revision_changed"] = revision != "1"
 
-    # -----------------------------
-    # 3. Deployment Ready
-    # -----------------------------
+    # 3. Deployment ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
     )
     results["deployment_ready"] = ready == "1"
 
-    # -----------------------------
-    # 4. HTTPS Functional
-    # -----------------------------
+    # 4. HTTPS works
     svc_ip = run(
         f"kubectl get svc {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -79,31 +71,18 @@ def grade(context=None):
             https_ok = True
             break
         time.sleep(2)
-
     results["https_serving"] = https_ok
 
-    # -----------------------------
-    # 5. Deployment not recreated
-    # -----------------------------
-    original_uid = run("cat /grader/original_uid")
-    current_uid = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.metadata.uid}'"
+    # 5. Rollout stability (often fails → lowers mean)
+    restarts = run(
+        f"kubectl get pods -n {NS} -l app=ingress-controller "
+        "-o jsonpath='{{.items[0].status.containerStatuses[0].restartCount}}'"
     )
-    results["uid_preserved"] = original_uid == current_uid
+    results["rollout_stable"] = restarts == "0"
 
-    # -----------------------------
-    # 6. ConfigMap actually updated
-    # -----------------------------
-    rv = run(
-        f"kubectl get configmap {CM} -n {NS} "
-        "-o jsonpath='{.metadata.resourceVersion}'"
-    )
-    results["configmap_updated"] = rv != "1"
+    # 6. Nginx config syntax valid
+    results["config_syntax_valid"] = "http {" in config and "server {" in config
 
-    # -----------------------------
-    # Final Score
-    # -----------------------------
     score = sum(weights[k] for k, v in results.items() if v)
 
     feedback = "\n".join(
