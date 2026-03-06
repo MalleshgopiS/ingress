@@ -43,6 +43,7 @@ def https_get(path):
 
 
 def stable_endpoint(path, expected, attempts=5, delay=5):
+    """Return True only if an HTTPS endpoint serves the expected payload repeatedly."""
     for _ in range(attempts):
         ok, body = https_get(path)
         if not ok or expected not in body:
@@ -58,6 +59,7 @@ def deployment_ready():
 
 
 def guardrails_ok():
+    """Reject fixes that replace the deployment or mutate protected runtime guardrails."""
     if not ORIGINAL_UID_FILE.exists():
         return False, "missing original deployment UID"
 
@@ -79,6 +81,7 @@ def guardrails_ok():
 
 
 def runtime_fix_applied():
+    """Verify the active runtime ConfigMap and rendered nginx config both contain the real fix."""
     runtime_env = jsonpath(
         f"configmap/{RUNTIME_CONFIGMAP}",
         "{.data.controller\\.env}",
@@ -102,6 +105,7 @@ def runtime_fix_applied():
 
 
 def controller_stable_after_idle():
+    """Ensure the controller does not restart during an idle window and still serves HTTPS."""
     pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     if not pod:
         return False

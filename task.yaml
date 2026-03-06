@@ -1,6 +1,13 @@
+name: ingress-controller-tls-memory-leak
+author: apex
+version: 1
 id: ingress-controller-tls-memory-leak
 
 title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
+
+description: >
+  Investigate and repair an ingress-controller TLS termination incident in Kubernetes
+  without recreating the deployment or changing runtime guardrails.
 
 prompt: |
   [Context]
@@ -26,6 +33,20 @@ prompt: |
   - Solve the incident through Kubernetes configuration and rollout changes only
   - Do NOT use any interactive commands, for example `-i` or `-it`, in `docker exec`, or any other TTY commands
 
+instructions: |
+  Investigate the running ingress-controller path, including any templated runtime configuration that is rendered into nginx.
+
+  Repair the incident so that:
+  - HTTPS `/` consistently serves the expected gateway page
+  - HTTPS `/healthz` consistently serves the health payload
+  - the ingress-controller remains stable during repeated requests and after an idle window
+
+  Constraints:
+  - keep the existing `ingress-controller` Deployment object
+  - keep the existing image names
+  - keep the existing memory limits
+  - use Kubernetes configuration changes and rollout operations only
+
 category: Site Reliability Engineering
 difficulty: hard
 
@@ -42,8 +63,14 @@ tags:
   - incident-response
   - templated-config
 
+estimated_duration: 20
+max_agent_steps: 50
+timeout: 900
+timeout_sec: 900
+
+setup_script: setup.sh
+solution_script: solution.sh
+grader_script: grader.py
 setup: setup.sh
 solution: solution.sh
 grader: grader.py
-
-timeout_sec: 900

@@ -1,6 +1,5 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
-ENV SKIP_BLEATER_BOOT=1
 ENV ALLOWED_NAMESPACES="ingress-system"
 
 USER root
@@ -16,9 +15,8 @@ RUN mkdir -p /mcp_server/tests
 
 COPY setup.sh /setup.sh
 COPY solution.sh /solution.sh
+COPY grader.py /grader/grader.py
 COPY grader.py /mcp_server/tests/grader.py
 
 RUN chmod +x /setup.sh /solution.sh
 RUN chmod 700 /grader
-
-CMD ["/bin/bash", "/setup.sh"]
