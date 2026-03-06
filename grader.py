@@ -1,16 +1,19 @@
+import base64
+import io
 import re
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 
 NS = "ingress-system"
 SERVICE = "ingress-controller"
 DEPLOYMENT = "ingress-controller"
-ACTIVE_PROFILE_CONFIGMAP = "gateway-bootstrap-profile"
-ACTIVE_PROFILE_KEY = "gateway.env"
+ACTIVE_SECRET = "edge-runtime-assets"
 EXPECTED_IMAGE = "nginx:alpine"
 EXPECTED_MEMORY = "128Mi"
 ORIGINAL_UID_FILE = Path("/grader/original_uid")
+ORIGINAL_SPEC_FILE = Path("/grader/original_spec_fingerprint")
 
 
 class GradeResult:
@@ -44,7 +47,6 @@ def https_get(path):
 
 
 def stable_endpoint(path, expected, attempts=5, delay=5):
-    """Return True only if an HTTPS endpoint serves the expected payload repeatedly."""
     for _ in range(attempts):
         ok, body = https_get(path)
         if not ok or expected not in body:
@@ -60,12 +62,16 @@ def deployment_ready():
 
 
 def guardrails_ok():
-    """Reject fixes that replace the deployment or mutate protected runtime guardrails."""
-    if not ORIGINAL_UID_FILE.exists():
-        return False, "missing original deployment UID"
+    if not ORIGINAL_UID_FILE.exists() or not ORIGINAL_SPEC_FILE.exists():
+        return False, "missing original deployment fingerprints"
 
     original_uid = ORIGINAL_UID_FILE.read_text(encoding="utf-8").strip()
+    original_spec = ORIGINAL_SPEC_FILE.read_text(encoding="utf-8").strip()
     current_uid = jsonpath(f"deployment/{DEPLOYMENT}", "{.metadata.uid}")
+    current_spec = jsonpath(
+        f"deployment/{DEPLOYMENT}",
+        "{.spec.template.spec.initContainers[0].command}{\"\\n\"}{.spec.template.spec.containers[0].command}{\"\\n\"}{.spec.template.spec.containers[0].args}{\"\\n\"}{.spec.template.spec.volumes}",
+    )
     image = jsonpath(f"deployment/{DEPLOYMENT}", "{.spec.template.spec.containers[0].image}")
     memory = jsonpath(
         f"deployment/{DEPLOYMENT}",
@@ -74,6 +80,8 @@ def guardrails_ok():
 
     if original_uid != current_uid:
         return False, "deployment UID changed"
+    if current_spec != original_spec:
+        return False, "deployment runtime spec changed"
     if image != EXPECTED_IMAGE:
         return False, f"image changed to {image!r}"
     if memory != EXPECTED_MEMORY:
@@ -81,16 +89,28 @@ def guardrails_ok():
     return True, "guardrails preserved"
 
 
-def active_profile_text():
-    return jsonpath(
-        f"configmap/{ACTIVE_PROFILE_CONFIGMAP}",
-        "{.data.gateway\\.env}",
-    )
+def decoded_bundle_members():
+    secret_payload = jsonpath(f"secret/{ACTIVE_SECRET}", "{.data.runtime\\.bin}")
+    if not secret_payload:
+        return {}
+    data = base64.b64decode(secret_payload)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        members = {}
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            members[Path(member.name).name] = extracted.read().decode("utf-8")
+    return members
 
 
-def bootstrap_bundle_preserved():
-    """Ensure the active bootstrap profile still contains the full runtime bundle."""
-    text = active_profile_text()
+def bundle_integrity_preserved():
+    members = decoded_bundle_members()
+    if set(members) != {"profile.env", "nginx.tmpl", "render.py"}:
+        return False
+    profile = members.get("profile.env", "")
     required_lines = [
         "TLS_PORT=443",
         "SERVER_NAME=_",
@@ -100,35 +120,41 @@ def bootstrap_bundle_preserved():
         "HEALTH_PATH=/healthz",
         "KEEPALIVE_REQUESTS=1000",
         "SSL_SESSION_TIMEOUT=10m",
+        "WATCHDOG_MATCH=keepalive_timeout 0;",
+        "WATCHDOG_DELAY_SECONDS=12",
         "PROFILE_NAME=blue-edge",
         "PROFILE_OWNER=platform-network",
     ]
-    return all(line in text for line in required_lines)
+    return all(line in profile for line in required_lines)
 
 
-def runtime_fix_applied():
-    """Verify the active bootstrap profile and rendered nginx config both contain the real fix."""
-    profile = active_profile_text()
-    revision = jsonpath(
-        f"deployment/{DEPLOYMENT}",
-        "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
-    )
+def active_bundle_fixed():
+    members = decoded_bundle_members()
+    profile = members.get("profile.env", "")
+    return "KEEPALIVE_TIMEOUT=65" in profile and "KEEPALIVE_TIMEOUT=0" not in profile
+
+
+def rendered_runtime_fixed():
     pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     if not pod:
         return False
     _, rendered_conf, _ = run(
         f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf"
     )
+    _, watchdog, _ = run(f"kubectl exec -n {NS} {pod} -- cat /watchdog.sh")
+    revision = jsonpath(
+        f"deployment/{DEPLOYMENT}",
+        "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
+    )
     return (
-        "GATEWAY_IDLE_SECONDS=65" in profile
-        and bool(re.search(r"keepalive_timeout\s+65;", rendered_conf))
+        bool(re.search(r"keepalive_timeout\s+65;", rendered_conf))
+        and "keepalive_timeout 0;" not in watchdog
         and revision not in ["", "1"]
         and deployment_ready()
     )
 
 
 def controller_stable_after_idle():
-    """Ensure the controller does not restart during an idle window and still serves HTTPS."""
     pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     if not pod:
         return False
@@ -158,20 +184,36 @@ def grade(context=None):
             "root_https_stable": False,
             "health_https_stable": False,
             "controller_stable_after_idle": False,
-            "runtime_fix_applied": False,
-            "bootstrap_bundle_preserved": False,
+            "rendered_runtime_fixed": False,
+            "active_bundle_fixed": False,
+            "bundle_integrity_preserved": False,
         }
-        weights = {name: 0.20 for name in zero_checks}
+        weights = {
+            "root_https_stable": 0.15,
+            "health_https_stable": 0.15,
+            "controller_stable_after_idle": 0.15,
+            "rendered_runtime_fixed": 0.10,
+            "active_bundle_fixed": 0.25,
+            "bundle_integrity_preserved": 0.20,
+        }
         return GradeResult(0.0, zero_checks, weights, guardrail_feedback)
 
     checks = {
         "root_https_stable": stable_endpoint("/", "Ingress Controller Running"),
         "health_https_stable": stable_endpoint("/healthz", '"status":"ok"'),
         "controller_stable_after_idle": controller_stable_after_idle(),
-        "runtime_fix_applied": runtime_fix_applied(),
-        "bootstrap_bundle_preserved": bootstrap_bundle_preserved(),
+        "rendered_runtime_fixed": rendered_runtime_fixed(),
+        "active_bundle_fixed": active_bundle_fixed(),
+        "bundle_integrity_preserved": bundle_integrity_preserved(),
     }
-    weights = {name: 0.20 for name in checks}
+    weights = {
+        "root_https_stable": 0.15,
+        "health_https_stable": 0.15,
+        "controller_stable_after_idle": 0.15,
+        "rendered_runtime_fixed": 0.10,
+        "active_bundle_fixed": 0.25,
+        "bundle_integrity_preserved": 0.20,
+    }
     score = sum(weights[name] for name, passed in checks.items() if passed)
     feedback = guardrail_feedback + " | " + " | ".join(
         f"{name}: {'PASS' if passed else 'FAIL'}" for name, passed in checks.items()

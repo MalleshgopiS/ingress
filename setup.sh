@@ -27,10 +27,13 @@ echo "k3s is ready!"
 # ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
 NS="ingress-system"
-WORKDIR="/tmp/ingress-controller-memory-leak-v4"
+WORKDIR="/tmp/ingress-controller-memory-leak-v5"
 UID_FILE="/grader/original_uid"
+SPEC_FILE="/grader/original_spec_fingerprint"
+BUNDLE_DIR="${WORKDIR}/bundle-src"
+RUNTIME_ARCHIVE="${WORKDIR}/runtime.bin"
 
-mkdir -p "$WORKDIR" /grader
+mkdir -p "$WORKDIR" "$BUNDLE_DIR" /grader
 cd "$WORKDIR"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
@@ -49,7 +52,7 @@ kubectl create secret tls ingress-controller-tls \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
-echo "Creating backend and configuration bundles..."
+echo "Creating decoy configmaps..."
 cat <<'EOF' | kubectl apply -n "$NS" -f -
 apiVersion: v1
 kind: ConfigMap
@@ -91,96 +94,140 @@ metadata:
   name: ingress-controller-runtime
 data:
   controller.env: |
-    KEEPALIVE_TIMEOUT=0
+    KEEPALIVE_TIMEOUT=65
     SSL_SESSION_TIMEOUT=10m
   notes.txt: |
-    Legacy bundle kept for rollback reference.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gateway-template-bundle
-data:
-  nginx.tmpl: |
-    events {}
-
-    http {
-      keepalive_timeout __KEEPALIVE_TIMEOUT__;
-      keepalive_requests __KEEPALIVE_REQUESTS__;
-      ssl_session_timeout __SSL_SESSION_TIMEOUT__;
-
-      upstream gateway_backend {
-        server __UPSTREAM_HOST__:__UPSTREAM_PORT__;
-      }
-
-      server {
-        listen __TLS_PORT__ ssl;
-        server_name __SERVER_NAME__;
-        ssl_certificate /etc/tls/tls.crt;
-        ssl_certificate_key /etc/tls/tls.key;
-
-        location = __ROOT_PATH__ {
-          proxy_pass http://gateway_backend/;
-        }
-
-        location = __HEALTH_PATH__ {
-          proxy_pass http://gateway_backend/healthz;
-        }
-      }
-    }
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gateway-bootstrap-profile
-data:
-  gateway.env: |
-    TLS_PORT=443
-    SERVER_NAME=_
-    UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local
-    UPSTREAM_PORT=8080
-    ROOT_PATH=/
-    HEALTH_PATH=/healthz
-    GATEWAY_IDLE_SECONDS=0
-    KEEPALIVE_REQUESTS=1000
-    SSL_SESSION_TIMEOUT=10m
-    PROFILE_NAME=blue-edge
-    PROFILE_OWNER=platform-network
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: gateway-renderer
-data:
-  render.sh: |
-    #!/bin/sh
-    set -eu
-    . /profile/gateway.env
-
-    : "${TLS_PORT:?missing TLS_PORT}"
-    : "${SERVER_NAME:?missing SERVER_NAME}"
-    : "${UPSTREAM_HOST:?missing UPSTREAM_HOST}"
-    : "${UPSTREAM_PORT:?missing UPSTREAM_PORT}"
-    : "${ROOT_PATH:?missing ROOT_PATH}"
-    : "${HEALTH_PATH:?missing HEALTH_PATH}"
-    : "${GATEWAY_IDLE_SECONDS:?missing GATEWAY_IDLE_SECONDS}"
-    : "${KEEPALIVE_REQUESTS:?missing KEEPALIVE_REQUESTS}"
-    : "${SSL_SESSION_TIMEOUT:?missing SSL_SESSION_TIMEOUT}"
-    : "${PROFILE_NAME:?missing PROFILE_NAME}"
-    : "${PROFILE_OWNER:?missing PROFILE_OWNER}"
-
-    sed \
-      -e "s|__TLS_PORT__|${TLS_PORT}|g" \
-      -e "s|__SERVER_NAME__|${SERVER_NAME}|g" \
-      -e "s|__UPSTREAM_HOST__|${UPSTREAM_HOST}|g" \
-      -e "s|__UPSTREAM_PORT__|${UPSTREAM_PORT}|g" \
-      -e "s|__ROOT_PATH__|${ROOT_PATH}|g" \
-      -e "s|__HEALTH_PATH__|${HEALTH_PATH}|g" \
-      -e "s|__KEEPALIVE_TIMEOUT__|${GATEWAY_IDLE_SECONDS}|g" \
-      -e "s|__KEEPALIVE_REQUESTS__|${KEEPALIVE_REQUESTS}|g" \
-      -e "s|__SSL_SESSION_TIMEOUT__|${SSL_SESSION_TIMEOUT}|g" \
-      /templates/nginx.tmpl > /rendered/nginx.conf
+    Legacy reference copy retained from the previous incident handoff.
+    The live runtime is rendered from a different bootstrap source.
 EOF
+
+cat <<'EOF' > "${BUNDLE_DIR}/profile.env"
+TLS_PORT=443
+SERVER_NAME=_
+UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local
+UPSTREAM_PORT=8080
+ROOT_PATH=/
+HEALTH_PATH=/healthz
+KEEPALIVE_TIMEOUT=0
+KEEPALIVE_REQUESTS=1000
+SSL_SESSION_TIMEOUT=10m
+WATCHDOG_MATCH=keepalive_timeout 0;
+WATCHDOG_DELAY_SECONDS=12
+PROFILE_NAME=blue-edge
+PROFILE_OWNER=platform-network
+EOF
+
+cat <<'EOF' > "${BUNDLE_DIR}/nginx.tmpl"
+events {}
+
+http {
+  keepalive_timeout __KEEPALIVE_TIMEOUT__;
+  keepalive_requests __KEEPALIVE_REQUESTS__;
+  ssl_session_timeout __SSL_SESSION_TIMEOUT__;
+
+  upstream gateway_backend {
+    server __UPSTREAM_HOST__:__UPSTREAM_PORT__;
+  }
+
+  server {
+    listen __TLS_PORT__ ssl;
+    server_name __SERVER_NAME__;
+    ssl_certificate /etc/tls/tls.crt;
+    ssl_certificate_key /etc/tls/tls.key;
+
+    location = __ROOT_PATH__ {
+      proxy_pass http://gateway_backend/;
+    }
+
+    location = __HEALTH_PATH__ {
+      proxy_pass http://gateway_backend/healthz;
+    }
+  }
+}
+EOF
+
+cat <<'EOF' > "${BUNDLE_DIR}/render.py"
+#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+
+def load_env(path: pathlib.Path) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        data[key] = value
+    return data
+
+
+profile_path = pathlib.Path(sys.argv[1])
+template_path = pathlib.Path(sys.argv[2])
+out_dir = pathlib.Path(sys.argv[3])
+profile = load_env(profile_path)
+required = [
+    "TLS_PORT",
+    "SERVER_NAME",
+    "UPSTREAM_HOST",
+    "UPSTREAM_PORT",
+    "ROOT_PATH",
+    "HEALTH_PATH",
+    "KEEPALIVE_TIMEOUT",
+    "KEEPALIVE_REQUESTS",
+    "SSL_SESSION_TIMEOUT",
+    "WATCHDOG_MATCH",
+    "WATCHDOG_DELAY_SECONDS",
+    "PROFILE_NAME",
+    "PROFILE_OWNER",
+]
+missing = [key for key in required if key not in profile]
+if missing:
+    raise SystemExit(f"missing bootstrap keys: {', '.join(missing)}")
+
+template = template_path.read_text(encoding="utf-8")
+replacements = {
+    "__TLS_PORT__": profile["TLS_PORT"],
+    "__SERVER_NAME__": profile["SERVER_NAME"],
+    "__UPSTREAM_HOST__": profile["UPSTREAM_HOST"],
+    "__UPSTREAM_PORT__": profile["UPSTREAM_PORT"],
+    "__ROOT_PATH__": profile["ROOT_PATH"],
+    "__HEALTH_PATH__": profile["HEALTH_PATH"],
+    "__KEEPALIVE_TIMEOUT__": profile["KEEPALIVE_TIMEOUT"],
+    "__KEEPALIVE_REQUESTS__": profile["KEEPALIVE_REQUESTS"],
+    "__SSL_SESSION_TIMEOUT__": profile["SSL_SESSION_TIMEOUT"],
+}
+rendered = template
+for old, new in replacements.items():
+    rendered = rendered.replace(old, new)
+
+out_dir.mkdir(parents=True, exist_ok=True)
+(out_dir / "nginx.conf").write_text(rendered, encoding="utf-8")
+watchdog = f"""#!/bin/sh
+set -eu
+while true; do
+  if grep -q '{profile['WATCHDOG_MATCH']}' /etc/nginx/nginx.conf; then
+    sleep {profile['WATCHDOG_DELAY_SECONDS']}
+    kill 1
+  fi
+  sleep 2
+done
+"""
+watchdog_path = out_dir / "watchdog.sh"
+watchdog_path.write_text(watchdog, encoding="utf-8")
+os.chmod(watchdog_path, 0o755)
+EOF
+
+chmod 0644 "${BUNDLE_DIR}/profile.env" "${BUNDLE_DIR}/nginx.tmpl" "${BUNDLE_DIR}/render.py"
+tar -czf "${RUNTIME_ARCHIVE}" -C "${BUNDLE_DIR}" .
+
+kubectl create secret generic edge-runtime-assets \
+  -n "$NS" \
+  --from-file=runtime.bin="${RUNTIME_ARCHIVE}" \
+  --dry-run=client \
+  -o yaml | kubectl apply -f -
 
 echo "Creating workloads..."
 cat <<'EOF' | kubectl apply -n "$NS" -f -
@@ -241,20 +288,21 @@ spec:
         app: ingress-controller
     spec:
       initContainers:
-        - name: render-config
-          image: nginx:alpine
+        - name: asset-renderer
+          image: python:3.11-slim
           command:
             - /bin/sh
-            - /renderer/render.sh
+            - -c
+            - |
+              set -e
+              mkdir -p /work/bootstrap /work/rendered
+              tar -xzf /bundle/runtime.bin -C /work/bootstrap
+              python /work/bootstrap/render.py /work/bootstrap/profile.env /work/bootstrap/nginx.tmpl /work/rendered
           volumeMounts:
-            - name: template-bundle
-              mountPath: /templates
-            - name: bootstrap-profile
-              mountPath: /profile
-            - name: renderer
-              mountPath: /renderer
-            - name: rendered-config
-              mountPath: /rendered
+            - name: runtime-bundle
+              mountPath: /bundle
+            - name: rendered-assets
+              mountPath: /work
       containers:
         - name: nginx
           image: nginx:alpine
@@ -264,40 +312,30 @@ spec:
           args:
             - |
               set -e
-              cat >/watchdog.sh <<'EOS'
-              while true; do
-                if grep -q 'keepalive_timeout 0;' /etc/nginx/nginx.conf; then
-                  sleep 12
-                  kill 1
-                fi
-                sleep 2
-              done
-              EOS
               /bin/sh /watchdog.sh &
-              exec nginx -g 'daemon off;'
+              exec nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
           ports:
             - containerPort: 443
           resources:
             limits:
               memory: "128Mi"
           volumeMounts:
-            - name: rendered-config
+            - name: rendered-assets
               mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
+              subPath: rendered/nginx.conf
+              readOnly: true
+            - name: rendered-assets
+              mountPath: /watchdog.sh
+              subPath: rendered/watchdog.sh
+              readOnly: true
             - name: tls
               mountPath: /etc/tls
+              readOnly: true
       volumes:
-        - name: template-bundle
-          configMap:
-            name: gateway-template-bundle
-        - name: bootstrap-profile
-          configMap:
-            name: gateway-bootstrap-profile
-        - name: renderer
-          configMap:
-            name: gateway-renderer
-            defaultMode: 0555
-        - name: rendered-config
+        - name: runtime-bundle
+          secret:
+            secretName: edge-runtime-assets
+        - name: rendered-assets
           emptyDir: {}
         - name: tls
           secret:
@@ -319,6 +357,7 @@ kubectl rollout status deployment/ingress-backend -n "$NS" --timeout=180s
 kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s || true
 
 kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.metadata.uid}' > "$UID_FILE"
-chmod 400 "$UID_FILE"
+kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.spec.template.spec.initContainers[0].command}{"\n"}{.spec.template.spec.containers[0].command}{"\n"}{.spec.template.spec.containers[0].args}{"\n"}{.spec.template.spec.volumes}' > "$SPEC_FILE"
+chmod 400 "$UID_FILE" "$SPEC_FILE"
 
 echo "Setup completed."
