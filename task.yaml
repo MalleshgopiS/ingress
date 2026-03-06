@@ -1,80 +1,19 @@
-name: ingress-controller-tls-memory-leak
-author: apex
-version: 1
-id: ingress-controller-tls-memory-leak
-
-title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
-
-description: >
-  Investigate and repair an ingress-controller TLS termination incident in Kubernetes
-  without recreating the deployment or changing runtime guardrails.
-
-prompt: |
-  [Context]
-  You are a DevOps engineer working on Bleater, a distributed microservices-based social media platform.
-  The affected ingress stack for this incident is in the `ingress-system` namespace. You can check all available namespaces at `/home/ubuntu/.allowed_namespaces`.
-  The public TLS entrypoint is handled by the `ingress-controller` deployment and service.
-
-  [TASK]
-  After a recent configuration rollout, the ingress controller responsible for TLS termination is intermittently restarting after quiet periods.
-  Users see brief HTTPS outages at the gateway even though the backend application remains healthy.
-  A previous responder already edited the obvious ingress ConfigMaps, refreshed one visible runtime bundle, and restarted the controller, but the crashes continued.
-
-  Investigate the live ingress-controller configuration path, including any rendered assets, source bundles, or selected profiles used by the running workload, and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
-  - `/` returns the expected gateway page consistently
-  - `/healthz` returns the health payload consistently
-  - the ingress controller remains stable across repeated requests and an idle window
-
-  Constraints:
-  - Do not delete or recreate the Deployment object
-  - Do not change image names
-  - Do not change resource limits
-  - Keep the existing ingress-controller deployment and service topology
-  - Solve the incident through Kubernetes configuration and rollout changes only
-  - Do NOT use any interactive commands, for example `-i` or `-it`, in `docker exec`, or any other TTY commands
-
-instructions: |
-  Investigate the running ingress-controller path, especially the source that is actually used to refresh the active nginx runtime assets after the pod starts.
-
-  Repair the incident so that:
-  - HTTPS `/` consistently serves the expected gateway page
-  - HTTPS `/healthz` consistently serves the health payload
-  - the ingress-controller remains stable during repeated requests and after an idle window
-
-  Constraints:
-  - keep the existing `ingress-controller` Deployment object
-  - keep the existing image names
-  - keep the existing memory limits
-  - preserve the active source bundle, any selected-profile structure, and integrity metadata instead of replacing them with a minimal stub
-  - use Kubernetes configuration changes and rollout operations only
-
-category: Site Reliability Engineering
-difficulty: hard
-
-metadata:
-  category: Site Reliability Engineering
-  difficulty: hard
-
-tags:
-  - kubernetes
-  - ingress
-  - nginx
-  - tls
-  - sre
-  - incident-response
-  - rendered-config
-  - source-of-truth
-  - secret-bundle
-  - profile-selection
-
-estimated_duration: 40
-max_agent_steps: 120
-timeout: 900
 timeout_sec: 900
 
-setup_script: setup.sh
-solution_script: solution.sh
-grader_script: grader.py
-setup: setup.sh
-solution: solution.sh
-grader: grader.py
+prompt: |
+  The ingress gateway for Bleater is unstable in production.
+
+  HTTPS requests intermittently fail after short idle periods.
+  Backend services are healthy, but the TLS entrypoint is unreliable.
+
+  Investigate and restore the ingress layer so the platform works normally again.
+
+  The system is considered restored when:
+  - HTTPS traffic to the ingress-controller works reliably
+  - The gateway remains stable under repeated traffic
+  - No infrastructure topology changes are introduced
+
+constraints:
+  - Do not change container images
+  - Do not change resource limits
+  - Use Kubernetes configuration changes only

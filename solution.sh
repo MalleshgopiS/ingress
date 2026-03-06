@@ -1,51 +1,25 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-NS="ingress-system"
-WORKDIR="$(mktemp -d)"
-ARCHIVE_PATH="${WORKDIR}/state.tgz"
-PATCH_FILE="${WORKDIR}/patch.json"
-EXTRACT_DIR="${WORKDIR}/bundle"
-mkdir -p "${EXTRACT_DIR}"
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-kubectl get secret edge-sync-cache -n "${NS}" -o jsonpath='{.data.state\.tgz}' | base64 -d > "${ARCHIVE_PATH}"
-tar -xzf "${ARCHIVE_PATH}" -C "${EXTRACT_DIR}"
+NS="aurora-ingress"
+CFG="/tmp/nginx.conf"
 
-python3 - "${EXTRACT_DIR}" <<'PY'
-from pathlib import Path
-import hashlib
-import sys
+kubectl get configmap ingress-controller-config -n "$NS" \
+  -o jsonpath='{.data.nginx\.conf}' > "$CFG"
 
-root = Path(sys.argv[1])
-profile_path = root / "profiles" / "edge-shadow.env"
-text = profile_path.read_text(encoding="utf-8")
-old = "KEEPALIVE_DELTA=-65"
-new = "KEEPALIVE_DELTA=0"
-if old not in text:
-    raise SystemExit("expected KEEPALIVE_DELTA=-65 in profiles/edge-shadow.env")
-profile_path.write_text(text.replace(old, new), encoding="utf-8")
+sed -i 's/keepalive_timeout 0;/keepalive_timeout 65;/' "$CFG"
 
-tracked = [
-    "defaults.env",
-    "profile-map.json",
-    "profiles/edge-stable.env",
-    "profiles/edge-shadow.env",
-    "nginx.tmpl",
-    "bootstrap.py",
-    "guard.py",
-]
-digest = hashlib.sha256()
-for name in tracked:
-    digest.update(name.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update((root / name).read_bytes())
-(root / "fingerprint.lock").write_text(digest.hexdigest(), encoding="utf-8")
-PY
+kubectl create configmap ingress-controller-config \
+  -n "$NS" \
+  --from-file=nginx.conf="$CFG" \
+  --dry-run=client -o yaml | kubectl apply -f -
 
-tar -czf "${ARCHIVE_PATH}" -C "${EXTRACT_DIR}" .
-BASE64_PAYLOAD="$(base64 -w0 "${ARCHIVE_PATH}")"
-printf '[{"op":"replace","path":"/data/state.tgz","value":"%s"}]' "${BASE64_PAYLOAD}" > "${PATCH_FILE}"
+kubectl rollout restart deployment/ingress-controller -n "$NS"
+kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
 
-kubectl patch secret edge-sync-cache -n "${NS}" --type='json' -p "$(cat "${PATCH_FILE}")"
-kubectl rollout restart deployment/ingress-controller -n "${NS}"
-kubectl rollout status deployment/ingress-controller -n "${NS}" --timeout=180s
+echo "Waiting for pods to stabilize..."
+sleep 10
+
+echo "Ingress controller repaired."
