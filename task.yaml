@@ -45,7 +45,7 @@ instructions: |
   - keep the existing `ingress-controller` Deployment object
   - keep the existing image names
   - keep the existing memory limits
-  - preserve the active bootstrap bundle instead of replacing it with a minimal stub
+  - preserve the active bootstrap bundle and its integrity metadata instead of replacing it with a minimal stub
   - use Kubernetes configuration changes and rollout operations only
 
 category: Site Reliability Engineering

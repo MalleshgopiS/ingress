@@ -11,17 +11,27 @@ kubectl get secret edge-runtime-assets -n "${NS}" -o jsonpath='{.data.runtime\.b
 mkdir -p "${BUNDLE_DIR}"
 tar -xzf "${RUNTIME_BIN}" -C "${BUNDLE_DIR}"
 
-python3 - <<'PY' "${BUNDLE_DIR}/profile.env"
+python3 - <<'PY' "${BUNDLE_DIR}"
 from pathlib import Path
+import hashlib
 import sys
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
+root = Path(sys.argv[1])
+profile_path = root / "profile.env"
+text = profile_path.read_text(encoding="utf-8")
 old = "KEEPALIVE_TIMEOUT=0"
 new = "KEEPALIVE_TIMEOUT=65"
 if old not in text:
     raise SystemExit("expected KEEPALIVE_TIMEOUT=0 in profile.env")
-path.write_text(text.replace(old, new, 1), encoding="utf-8")
+profile_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+tracked = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
+digest = hashlib.sha256()
+for name in tracked:
+    digest.update(name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update((root / name).read_bytes())
+(root / "bundle.lock").write_text(digest.hexdigest(), encoding="utf-8")
 PY
 
 tar -czf "${RUNTIME_BIN}" -C "${BUNDLE_DIR}" .

@@ -220,7 +220,48 @@ watchdog_path.write_text(watchdog, encoding="utf-8")
 os.chmod(watchdog_path, 0o755)
 EOF
 
-chmod 0644 "${BUNDLE_DIR}/profile.env" "${BUNDLE_DIR}/nginx.tmpl" "${BUNDLE_DIR}/render.py"
+cat <<'EOF' > "${BUNDLE_DIR}/verify.py"
+#!/usr/bin/env python3
+import hashlib
+import pathlib
+import sys
+
+TRACKED_FILES = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
+
+
+def bundle_digest(root: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    for name in TRACKED_FILES:
+        path = root / name
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+root = pathlib.Path(sys.argv[1])
+expected = (root / "bundle.lock").read_text(encoding="utf-8").strip()
+actual = bundle_digest(root)
+if actual != expected:
+    raise SystemExit(f"bundle integrity mismatch: expected {expected}, got {actual}")
+EOF
+
+python3 - <<'PY' "${BUNDLE_DIR}"
+from pathlib import Path
+import hashlib
+import sys
+
+root = Path(sys.argv[1])
+tracked = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
+digest = hashlib.sha256()
+for name in tracked:
+    digest.update(name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update((root / name).read_bytes())
+(root / "bundle.lock").write_text(digest.hexdigest(), encoding="utf-8")
+PY
+
+chmod 0644 "${BUNDLE_DIR}/profile.env" "${BUNDLE_DIR}/nginx.tmpl" "${BUNDLE_DIR}/render.py" "${BUNDLE_DIR}/verify.py" "${BUNDLE_DIR}/bundle.lock"
 tar -czf "${RUNTIME_ARCHIVE}" -C "${BUNDLE_DIR}" .
 
 kubectl create secret generic edge-runtime-assets \
@@ -297,6 +338,7 @@ spec:
               set -e
               mkdir -p /work/bootstrap /work/rendered
               tar -xzf /bundle/runtime.bin -C /work/bootstrap
+              python /work/bootstrap/verify.py /work/bootstrap
               python /work/bootstrap/render.py /work/bootstrap/profile.env /work/bootstrap/nginx.tmpl /work/rendered
           volumeMounts:
             - name: runtime-bundle

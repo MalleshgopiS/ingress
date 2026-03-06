@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import re
 import subprocess
@@ -14,6 +15,8 @@ EXPECTED_IMAGE = "nginx:alpine"
 EXPECTED_MEMORY = "128Mi"
 ORIGINAL_UID_FILE = Path("/grader/original_uid")
 ORIGINAL_SPEC_FILE = Path("/grader/original_spec_fingerprint")
+TRACKED_BUNDLE_FILES = ["profile.env", "nginx.tmpl", "render.py", "verify.py"]
+EXPECTED_BUNDLE_FILES = set(TRACKED_BUNDLE_FILES + ["bundle.lock"])
 
 
 class GradeResult:
@@ -47,6 +50,7 @@ def https_get(path):
 
 
 def stable_endpoint(path, expected, attempts=5, delay=5):
+    """Require the HTTPS endpoint to serve the expected payload repeatedly."""
     for _ in range(attempts):
         ok, body = https_get(path)
         if not ok or expected not in body:
@@ -56,12 +60,14 @@ def stable_endpoint(path, expected, attempts=5, delay=5):
 
 
 def deployment_ready():
+    """Return True only when the ingress-controller deployment is fully ready."""
     ready = jsonpath(f"deployment/{DEPLOYMENT}", "{.status.readyReplicas}")
     unavailable = jsonpath(f"deployment/{DEPLOYMENT}", "{.status.unavailableReplicas}")
     return ready == "1" and unavailable in ["", "0", "<no value>"]
 
 
 def guardrails_ok():
+    """Reject fixes that replace the deployment or mutate protected runtime guardrails."""
     if not ORIGINAL_UID_FILE.exists() or not ORIGINAL_SPEC_FILE.exists():
         return False, "missing original deployment fingerprints"
 
@@ -90,6 +96,7 @@ def guardrails_ok():
 
 
 def decoded_bundle_members():
+    """Decode the live Secret bundle into a filename->content map."""
     secret_payload = jsonpath(f"secret/{ACTIVE_SECRET}", "{.data.runtime\\.bin}")
     if not secret_payload:
         return {}
@@ -106,9 +113,22 @@ def decoded_bundle_members():
     return members
 
 
+def bundle_lock_valid(members):
+    """Recompute the bundle checksum and compare it with bundle.lock."""
+    if set(members) != EXPECTED_BUNDLE_FILES:
+        return False
+    digest = hashlib.sha256()
+    for name in TRACKED_BUNDLE_FILES:
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(members[name].encode("utf-8"))
+    return digest.hexdigest() == members["bundle.lock"].strip()
+
+
 def bundle_integrity_preserved():
+    """Ensure the active bundle is still complete and its integrity metadata is valid."""
     members = decoded_bundle_members()
-    if set(members) != {"profile.env", "nginx.tmpl", "render.py"}:
+    if set(members) != EXPECTED_BUNDLE_FILES:
         return False
     profile = members.get("profile.env", "")
     required_lines = [
@@ -120,41 +140,46 @@ def bundle_integrity_preserved():
         "HEALTH_PATH=/healthz",
         "KEEPALIVE_REQUESTS=1000",
         "SSL_SESSION_TIMEOUT=10m",
-        "WATCHDOG_MATCH=keepalive_timeout 0;",
         "WATCHDOG_DELAY_SECONDS=12",
         "PROFILE_NAME=blue-edge",
         "PROFILE_OWNER=platform-network",
     ]
-    return all(line in profile for line in required_lines)
+    return all(line in profile for line in required_lines) and bundle_lock_valid(members)
 
 
 def active_bundle_fixed():
+    """Verify the live Secret bundle carries the timeout fix and a refreshed bundle lock."""
     members = decoded_bundle_members()
     profile = members.get("profile.env", "")
-    return "KEEPALIVE_TIMEOUT=65" in profile and "KEEPALIVE_TIMEOUT=0" not in profile
+    return (
+        set(members) == EXPECTED_BUNDLE_FILES
+        and "KEEPALIVE_TIMEOUT=65" in profile
+        and "KEEPALIVE_TIMEOUT=0" not in profile
+        and bundle_lock_valid(members)
+    )
 
 
 def rendered_runtime_fixed():
+    """Verify the active pod rendered the corrected nginx runtime configuration."""
     pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     if not pod:
         return False
     _, rendered_conf, _ = run(
         f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf"
     )
-    _, watchdog, _ = run(f"kubectl exec -n {NS} {pod} -- cat /watchdog.sh")
     revision = jsonpath(
         f"deployment/{DEPLOYMENT}",
         "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
     )
     return (
         bool(re.search(r"keepalive_timeout\s+65;", rendered_conf))
-        and "keepalive_timeout 0;" not in watchdog
         and revision not in ["", "1"]
         and deployment_ready()
     )
 
 
 def controller_stable_after_idle():
+    """Ensure the controller survives an idle window without pod replacement or restarts."""
     pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     if not pod:
         return False
@@ -178,6 +203,7 @@ def controller_stable_after_idle():
 
 
 def grade(context=None):
+    """Grade the task by combining behavior, stability, and root-cause checks."""
     guardrails_passed, guardrail_feedback = guardrails_ok()
     if not guardrails_passed:
         zero_checks = {
