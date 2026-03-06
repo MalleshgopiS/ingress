@@ -1,35 +1,35 @@
-id: ingress-gateway-static-ui-regression
+id: ingress-controller-tls-memory-leak
 
-title: Edge Gateway Static UI Regression With Broken TLS Routing
+title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 
 prompt: |
   [Context]
   You are a DevOps engineer working on Bleater, a distributed microservices-based social media platform.
-  The affected resources for this incident are in the `aurora-ingress` namespace. You can check all available namespaces at `/home/ubuntu/.allowed_namespaces`.
-  The environment is running on Kubernetes (k3s), and the public entrypoint for this incident is the `edge-gateway` service.
+  The affected ingress stack for this incident is in the `aurora-ingress` namespace. You can check all available namespaces at `/home/ubuntu/.allowed_namespaces`.
+  The public TLS entrypoint is handled by the `ingress-controller` deployment and service.
 
   [TASK]
-  A recent gateway refactor split the dashboard shell, the static asset bundle, and the API health endpoint behind a shared TLS edge proxy.
-  Since that change, users report that the dashboard is unavailable over HTTPS, static assets are missing, and the API health endpoint through the gateway is failing.
-  The backend pods are present, but the edge proxy routing and its client connection handling are both misconfigured.
+  The Kubernetes ingress controller responsible for TLS termination is periodically restarting under idle-heavy production traffic.
+  Users report intermittent HTTPS failures at the gateway, especially after short periods of inactivity.
+  The regression was introduced in the ingress controller configuration rollout, and the backend service itself is healthy.
 
-  Restore the edge gateway so all of the following work through the `edge-gateway` service over HTTPS:
-  - `/` returns the Bleater dashboard HTML
-  - `/assets/app.js` returns the dashboard JavaScript bundle
-  - `/api/health` returns the API health payload
+  Diagnose the issue and repair the ingress controller so that all of the following are true over HTTPS through the `ingress-controller` service:
+  - `/` returns the expected gateway page
+  - `/healthz` returns the health payload
+  - the ingress controller stays stable during repeated and idle TLS traffic
 
   Constraints:
   - Do not change container images
   - Do not change resource limits
-  - Keep the existing gateway and backend topology
-  - Solve the incident through Kubernetes configuration and rollout changes only
+  - Keep the existing ingress-controller deployment and service topology
+  - Fix the incident through Kubernetes configuration and rollout changes only
   - Do NOT use any interactive commands, for example `-i` or `-it`, in `docker exec`, or any other TTY commands
 
+category: Site Reliability Engineering
 difficulty: hard
-category: Platform Engineering
 
 metadata:
-  category: Platform Engineering
+  category: Site Reliability Engineering
   difficulty: hard
 
 tags:
@@ -37,8 +37,8 @@ tags:
   - ingress
   - nginx
   - tls
-  - platform-engineering
-  - routing
+  - sre
+  - incident-response
 
 setup: setup.sh
 solution: solution.sh

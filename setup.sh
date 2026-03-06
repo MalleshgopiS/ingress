@@ -30,77 +30,49 @@ echo "k3s is ready!"
 # ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
 NS="aurora-ingress"
-WORKDIR="/tmp/aurora-ingress-task"
+WORKDIR="/tmp/ingress-controller-memory-leak"
 
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
-echo "Creating TLS material..."
+echo "Creating TLS certificate..."
 openssl req -x509 -nodes -days 365 \
   -newkey rsa:2048 \
   -keyout tls.key \
   -out tls.crt \
-  -subj "/CN=edge-gateway.${NS}.svc.cluster.local"
+  -subj "/CN=ingress-controller.${NS}.svc.cluster.local"
 
-kubectl create secret tls edge-gateway-tls \
+kubectl create secret tls ingress-controller-tls \
   --cert=tls.crt \
   --key=tls.key \
   -n "$NS" \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
-echo "Creating backend content..."
+echo "Creating backend configuration..."
 cat <<'EOF' | kubectl apply -n "$NS" -f -
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: bleater-ui-content
-data:
-  index.html: |
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>Bleater Dashboard</title>
-      </head>
-      <body>
-        <h1>Bleater Dashboard</h1>
-        <p>Static dashboard shell is healthy.</p>
-        <script src="/assets/app.js"></script>
-      </body>
-    </html>
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: bleater-assets-content
-data:
-  app.js: |
-    window.appLoaded = true;
-    console.log("Bleater Dashboard assets loaded");
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: bleater-api-config
+  name: ingress-backend-config
 data:
   nginx.conf: |
     events {}
 
     http {
       server {
-        listen 9090;
-        default_type application/json;
+        listen 8080;
 
-        location = /health {
-          add_header Content-Type application/json always;
-          return 200 '{"status":"ok","service":"bleater-api"}';
+        location = / {
+          default_type text/html;
+          return 200 '<!doctype html><html><body><h1>Ingress Controller Running</h1></body></html>';
         }
 
-        location / {
-          return 404;
+        location = /healthz {
+          default_type application/json;
+          return 200 '{"status":"ok","service":"ingress-gateway"}';
         }
       }
     }
@@ -108,7 +80,7 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: edge-gateway-config
+  name: ingress-controller-config
 data:
   nginx.conf: |
     events {}
@@ -116,21 +88,21 @@ data:
     http {
       keepalive_timeout 0;
 
+      upstream gateway_backend {
+        server ingress-backend.aurora-ingress.svc.cluster.local:8080;
+      }
+
       server {
         listen 443 ssl;
         ssl_certificate /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
         location = / {
-          proxy_pass http://bleater-ui.aurora-ingress.svc.cluster.local:80;
+          proxy_pass http://gateway_backend/;
         }
 
-        location /assets/ {
-          proxy_pass http://bleater-assets.aurora-ingress.svc.cluster.local:80;
-        }
-
-        location = /api/health {
-          proxy_pass http://bleater-api.aurora-ingress.svc.cluster.local:8080/health;
+        location = /healthz {
+          proxy_pass http://gateway_backend/healthz;
         }
       }
     }
@@ -141,178 +113,111 @@ cat <<'EOF' | kubectl apply -n "$NS" -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bleater-ui
+  name: ingress-backend
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: bleater-ui
+      app: ingress-backend
   template:
     metadata:
       labels:
-        app: bleater-ui
+        app: ingress-backend
     spec:
       containers:
         - name: nginx
           image: nginx:alpine
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           resources:
             limits:
               memory: "96Mi"
           volumeMounts:
-            - name: ui-content
-              mountPath: /usr/share/nginx/html
-      volumes:
-        - name: ui-content
-          configMap:
-            name: bleater-ui-content
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bleater-ui
-spec:
-  selector:
-    app: bleater-ui
-  ports:
-    - port: 8080
-      targetPort: 80
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: bleater-assets
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: bleater-assets
-  template:
-    metadata:
-      labels:
-        app: bleater-assets
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:alpine
-          ports:
-            - containerPort: 80
-          resources:
-            limits:
-              memory: "96Mi"
-          volumeMounts:
-            - name: assets-content
-              mountPath: /usr/share/nginx/html/assets
-      volumes:
-        - name: assets-content
-          configMap:
-            name: bleater-assets-content
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: bleater-assets
-spec:
-  selector:
-    app: bleater-assets
-  ports:
-    - port: 8081
-      targetPort: 80
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: bleater-api
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: bleater-api
-  template:
-    metadata:
-      labels:
-        app: bleater-api
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:alpine
-          ports:
-            - containerPort: 9090
-          resources:
-            limits:
-              memory: "96Mi"
-          volumeMounts:
-            - name: api-config
+            - name: backend-config
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
       volumes:
-        - name: api-config
+        - name: backend-config
           configMap:
-            name: bleater-api-config
+            name: ingress-backend-config
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: bleater-api
+  name: ingress-backend
 spec:
   selector:
-    app: bleater-api
+    app: ingress-backend
   ports:
-    - port: 9090
-      targetPort: 9090
+    - port: 8080
+      targetPort: 8080
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: edge-gateway
+  name: ingress-controller
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: edge-gateway
+      app: ingress-controller
   template:
     metadata:
       labels:
-        app: edge-gateway
+        app: ingress-controller
     spec:
       containers:
         - name: nginx
           image: nginx:alpine
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              cp /config/nginx.conf /etc/nginx/nginx.conf
+              cat >/watchdog.sh <<'EOS'
+              while true; do
+                if grep -q 'keepalive_timeout 0;' /etc/nginx/nginx.conf; then
+                  echo "Unsafe keepalive timeout detected; simulating crash loop"
+                  sleep 10
+                  kill 1
+                fi
+                sleep 3
+              done
+              EOS
+              /bin/sh /watchdog.sh &
+              exec nginx -g 'daemon off;'
           ports:
             - containerPort: 443
           resources:
             limits:
               memory: "128Mi"
           volumeMounts:
-            - name: gateway-config
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
+            - name: runtime-config
+              mountPath: /config
             - name: tls
               mountPath: /etc/tls
       volumes:
-        - name: gateway-config
+        - name: runtime-config
           configMap:
-            name: edge-gateway-config
+            name: ingress-controller-config
         - name: tls
           secret:
-            secretName: edge-gateway-tls
+            secretName: ingress-controller-tls
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: edge-gateway
+  name: ingress-controller
 spec:
   selector:
-    app: edge-gateway
+    app: ingress-controller
   ports:
     - port: 443
       targetPort: 443
 EOF
 
-kubectl rollout status deployment/bleater-ui -n "$NS" --timeout=180s
-kubectl rollout status deployment/bleater-assets -n "$NS" --timeout=180s
-kubectl rollout status deployment/bleater-api -n "$NS" --timeout=180s
-kubectl rollout status deployment/edge-gateway -n "$NS" --timeout=180s
+kubectl rollout status deployment/ingress-backend -n "$NS" --timeout=180s
+kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
 
 echo "Setup completed."
