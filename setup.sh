@@ -35,13 +35,13 @@ kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 echo "Creating TLS certificate..."
 openssl req -x509 -nodes -days 365 \
   -newkey rsa:2048 \
-  -keyout tls.key \
-  -out tls.crt \
+  -keyout "${WORKDIR}/tls.key" \
+  -out "${WORKDIR}/tls.crt" \
   -subj "/CN=ingress-controller.${NS}.svc.cluster.local"
 
 kubectl create secret tls ingress-controller-tls \
-  --cert=tls.crt \
-  --key=tls.key \
+  --cert="${WORKDIR}/tls.crt" \
+  --key="${WORKDIR}/tls.key" \
   -n "$NS" \
   --dry-run=client \
   -o yaml | kubectl apply -f -
