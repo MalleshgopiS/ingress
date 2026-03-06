@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-NS="default"
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-echo "Fixing keepalive timeout..."
+NS="aurora-ingress"
+CFG="/tmp/edge-gateway.conf"
 
-kubectl get configmap ingress-nginx-config -n $NS -o yaml \
-| sed -E 's/keepalive_timeout[[:space:]]+0;/keepalive_timeout 65;/' \
-| kubectl apply -f -
+kubectl get configmap edge-gateway-config -n "$NS" -o jsonpath='{.data.nginx\.conf}' > "$CFG"
 
-echo "Restarting deployment..."
+sed -i \
+  -e 's/keepalive_timeout 0;/keepalive_timeout 65;/' \
+  -e 's/bleater-ui\.aurora-ingress\.svc\.cluster\.local:80/bleater-ui.aurora-ingress.svc.cluster.local:8080/' \
+  -e 's/bleater-assets\.aurora-ingress\.svc\.cluster\.local:80/bleater-assets.aurora-ingress.svc.cluster.local:8081/' \
+  -e 's/bleater-api\.aurora-ingress\.svc\.cluster\.local:8080\/health/bleater-api.aurora-ingress.svc.cluster.local:9090\/health/' \
+  "$CFG"
 
-kubectl rollout restart deployment ingress-controller -n $NS
-kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
+kubectl create configmap edge-gateway-config \
+  -n "$NS" \
+  --from-file=nginx.conf="$CFG" \
+  --dry-run=client \
+  -o yaml | kubectl apply -f -
 
-echo "Waiting for stabilization..."
-sleep 10
+kubectl rollout restart deployment/edge-gateway -n "$NS"
+kubectl rollout status deployment/edge-gateway -n "$NS" --timeout=180s
 
-echo "Fix completed."
+echo "Edge gateway repaired."
