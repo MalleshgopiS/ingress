@@ -1,28 +1,25 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
+set -e
 
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-NS="ingress-system"
-CFG="/tmp/nginx.conf"
+NS=default
+DEPLOY=ingress-controller
 
 echo "Fetching nginx config..."
-kubectl get configmap ingress-nginx-config -n "$NS" \
-  -o jsonpath='{.data.nginx\.conf}' > "$CFG"
+kubectl get configmap ingress-nginx-config -n $NS -o jsonpath='{.data.nginx\.conf}' > nginx.conf
 
 echo "Fixing keepalive timeout..."
-sed -E -i 's/keepalive_timeout[[:space:]]+0s?[[:space:]]*;/keepalive_timeout 65s;/g' "$CFG"
+sed -i 's/keepalive_timeout[[:space:]]\+0s\?;/keepalive_timeout 65s;/g' nginx.conf
 
 echo "Updating configmap..."
 kubectl create configmap ingress-nginx-config \
-  -n "$NS" \
-  --from-file=nginx.conf="$CFG" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --from-file=nginx.conf \
+  -n $NS -o yaml --dry-run=client | kubectl apply -f -
 
 echo "Restarting deployment..."
-kubectl rollout restart deployment/ingress-controller -n "$NS"
-kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
+kubectl rollout restart deployment $DEPLOY -n $NS
+kubectl rollout status deployment $DEPLOY -n $NS
 
 echo "Waiting for stabilization..."
-sleep 12
+sleep 10
 
 echo "Ingress controller repaired."

@@ -1,48 +1,31 @@
-name: ingress
-description: |
-  The Bleater platform edge gateway has become unreliable after a recent
-  infrastructure update.
-
-  Users report that HTTPS requests intermittently fail after short idle
-  periods. Backend services appear healthy, but the TLS entrypoint is
-  unstable and sometimes drops connections.
-
-  Your task is to investigate and restore the ingress gateway so the
-  platform becomes stable again.
-
-  You must diagnose the issue using standard Kubernetes and system
-  inspection tools, then apply an appropriate configuration fix.
-
-success_criteria: |
-  The system is considered restored when:
-
-  • HTTPS traffic to the ingress gateway works reliably
-  • The gateway remains stable under repeated traffic
-  • The deployment is healthy and fully rolled out
-  • No infrastructure topology changes are introduced
-
-constraints: |
-  • Do NOT change container images
-  • Do NOT modify resource limits
-  • Do NOT add or remove services
-  • Apply configuration-level fixes only
-
-environment:
-  allowed_namespaces:
-    - ingress-system
-
-hints: |
-  • The issue is likely within gateway configuration rather than backend services
-  • Compare runtime behavior with standard nginx ingress defaults
-  • Ensure configuration changes are actually applied to running pods
-  • Restarting workloads may be required after configuration changes
-
-author: human
+id: ingress-tls-memory-leak
+title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 difficulty: medium
-category: devops
-tags:
-  - kubernetes
-  - ingress
-  - nginx
-  - debugging
-  - sre
+category: kubernetes
+
+description: |
+  The platform edge gateway has become unreliable.
+
+  Users report that HTTPS endpoints sometimes work,
+  but fail after short idle periods. Traffic briefly
+  recovers after restarts, then degrades again.
+
+  Operations suspects a configuration-level issue
+  in the ingress layer rather than infrastructure failure.
+
+  Investigate the running system and restore the gateway
+  to stable operation.
+
+  The system is considered restored when HTTPS traffic
+  flows reliably through the ingress gateway and the
+  platform remains stable under repeated requests.
+
+constraints:
+  - Do not modify container images
+  - Do not change resource limits
+  - Do not add or remove services
+  - Apply configuration-level fixes only
+
+allowed_namespaces:
+  - default
+  - ingress-system

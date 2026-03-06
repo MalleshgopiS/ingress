@@ -2,7 +2,7 @@ import subprocess
 import re
 import time
 
-NS = "ingress-system"
+NS = "default"
 DEPLOY = "ingress-controller"
 
 
@@ -19,10 +19,10 @@ class GradeResult:
         self.feedback = feedback
 
 
-def grade(context=None):   # ✅ FIXED SIGNATURE
+def grade(context=None):
     results = {}
 
-    # 🎯 Calibrated weights → mean ≈ 0.50
+    # 🎯 Calibrated weights (sum = 1.0, mean ≈ 0.5)
     weights = {
         "timeout_fixed": 0.20,
         "config_live": 0.20,
@@ -31,10 +31,10 @@ def grade(context=None):   # ✅ FIXED SIGNATURE
         "https_ok": 0.15,
         "health_ok": 0.10,
         "stable": 0.05,
-        "image_unchanged": 0.05
+        "image_unchanged": 0.05,
     }
 
-    # 1. ConfigMap fix
+    # 1️⃣ ConfigMap contains fix
     cfg = run(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -43,77 +43,79 @@ def grade(context=None):   # ✅ FIXED SIGNATURE
         re.search(r"keepalive_timeout\s+65(s)?;", cfg)
     )
 
-    # 2. Fix active in pod
+    # 2️⃣ Fix active in running pod
     pod = run(
         f"kubectl get pods -n {NS} -l app=ingress-controller "
         "-o jsonpath='{.items[0].metadata.name}'"
     )
-    active = run(
+    live = run(
         f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf"
     )
-    results["config_live"] = bool(
-        re.search(r"keepalive_timeout\s+65(s)?;", active)
-    )
+    results["config_live"] = "keepalive_timeout 65" in live
 
-    # 3. Rollout completed
-    observed = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
+    # 3️⃣ Rollout completed
+    obs = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.observedGeneration}'"
     )
-    meta = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
+    gen = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.metadata.generation}'"
     )
-    results["rollout_done"] = observed == meta
+    results["rollout_done"] = obs == gen
 
-    # 4. Deployment ready
+    # 4️⃣ Deployment healthy
     ready = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
+        f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
     )
     results["deployment_ready"] = ready == "1"
 
-    # 5. HTTPS works
-    svc_ip = run(
+    # 5️⃣ HTTPS functional
+    ip = run(
         f"kubectl get svc {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
     )
+
     https_ok = False
     for _ in range(5):
-        resp = run(f"curl -k -s https://{svc_ip}")
-        if "Ingress Controller Running" in resp:
+        r = run(f"curl -k -s https://{ip}")
+        if "Ingress Controller Running" in r:
             https_ok = True
             break
         time.sleep(2)
     results["https_ok"] = https_ok
 
-    # 6. Health endpoint
+    # 6️⃣ Health endpoint
     health_ok = False
     for _ in range(5):
-        resp = run(f"curl -k -s https://{svc_ip}/healthz")
-        if "ok" in resp.lower():
+        r = run(f"curl -k -s https://{ip}/healthz")
+        if "ok" in r.lower():
             health_ok = True
             break
         time.sleep(2)
     results["health_ok"] = health_ok
 
-    # 7. Stability check
-    def get_restart_count():
-        return run(
-            f"kubectl get pod {pod} -n {NS} "
-            "-o jsonpath='{.status.containerStatuses[0].restartCount}'"
-        )
+    # 7️⃣ Stability under load
+    restarts_before = run(
+        f"kubectl get pod {pod} -n {NS} "
+        "-o jsonpath='{.status.containerStatuses[0].restartCount}'"
+    )
 
-    before = get_restart_count()
     for _ in range(10):
-        run(f"curl -k -s https://{svc_ip} > /dev/null")
+        run(f"curl -k -s https://{ip} > /dev/null")
         time.sleep(1)
-    after = get_restart_count()
-    results["stable"] = before == after
 
-    # 8. Image unchanged
+    restarts_after = run(
+        f"kubectl get pod {pod} -n {NS} "
+        "-o jsonpath='{.status.containerStatuses[0].restartCount}'"
+    )
+
+    results["stable"] = restarts_before == restarts_after
+
+    # 8️⃣ Image unchanged
     image = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
+        f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
     results["image_unchanged"] = "nginx" in image
