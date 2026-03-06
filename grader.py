@@ -298,7 +298,7 @@ def rendered_runtime_fixed() -> bool:
     return bool(re.search(r"keepalive_timeout\s+65;", rendered_conf)) and "keepalive_timeout 0;" not in rendered_conf
 
 
-def grade() -> dict:
+def grade(context=None) -> dict:
     """Grade the task using functional HTTPS checks, stability, and source-bundle validation."""
     weights = {
         "root_https_stable": 0.10,
