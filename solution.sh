@@ -1,22 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
 NS="ingress-system"
-ENVFILE="/tmp/controller.env"
+WORKDIR="$(mktemp -d)"
+PROFILE_FILE="${WORKDIR}/gateway.env"
+PATCHED_FILE="${WORKDIR}/gateway-profile-patch.yaml"
 
-kubectl get configmap ingress-controller-runtime -n "$NS" -o jsonpath='{.data.controller\.env}' > "$ENVFILE"
+kubectl get configmap gateway-bootstrap-profile -n "${NS}" -o jsonpath='{.data.gateway\.env}' > "${PROFILE_FILE}"
 
-sed -i 's/^KEEPALIVE_TIMEOUT=0$/KEEPALIVE_TIMEOUT=65/' "$ENVFILE"
+python3 - <<'PY' "${PROFILE_FILE}"
+from pathlib import Path
+import sys
 
-kubectl create configmap ingress-controller-runtime \
-  -n "$NS" \
-  --from-file=controller.env="$ENVFILE" \
-  --dry-run=client \
-  -o yaml | kubectl apply -f -
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "GATEWAY_IDLE_SECONDS=0"
+new = "GATEWAY_IDLE_SECONDS=65"
+if old not in text:
+    raise SystemExit("expected GATEWAY_IDLE_SECONDS=0 in gateway.env")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
 
-kubectl rollout restart deployment/ingress-controller -n "$NS"
-kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
+{
+  printf 'apiVersion: v1\n'
+  printf 'kind: ConfigMap\n'
+  printf 'metadata:\n'
+  printf '  name: gateway-bootstrap-profile\n'
+  printf '  namespace: %s\n' "${NS}"
+  printf 'data:\n'
+  printf '  gateway.env: |-\n'
+  sed 's/^/    /' "${PROFILE_FILE}"
+} > "${PATCHED_FILE}"
 
-echo "Ingress controller repaired."
+kubectl apply -f "${PATCHED_FILE}"
+kubectl rollout restart deployment/ingress-controller -n "${NS}"
+kubectl rollout status deployment/ingress-controller -n "${NS}" --timeout=180s

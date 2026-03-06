@@ -2,17 +2,14 @@
 set -e
 
 # ------- ----------[DONOT CHANGE ANYTHING BELOW]  --------------------- #
-# Start supervisord if not already running (manages k3s, dockerd, dnsmasq)
 if ! supervisorctl status &>/dev/null; then
     echo "Starting supervisord..."
     /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
     sleep 5
 fi
 
-# Set kubeconfig for k3s
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-# Wait for k3s to be ready (k3s can take 30-60 seconds to start)
 echo "Waiting for k3s to be ready..."
 MAX_WAIT=180
 ELAPSED=0
@@ -30,7 +27,7 @@ echo "k3s is ready!"
 # ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
 NS="ingress-system"
-WORKDIR="/tmp/ingress-controller-memory-leak-v3"
+WORKDIR="/tmp/ingress-controller-memory-leak-v4"
 UID_FILE="/grader/original_uid"
 
 mkdir -p "$WORKDIR" /grader
@@ -52,7 +49,7 @@ kubectl create secret tls ingress-controller-tls \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
-echo "Creating backend and ingress configuration..."
+echo "Creating backend and configuration bundles..."
 cat <<'EOF' | kubectl apply -n "$NS" -f -
 apiVersion: v1
 kind: ConfigMap
@@ -85,39 +82,8 @@ metadata:
 data:
   ssl-session-timeout: "10m"
   notes.txt: |
-    The previous responder updated ssl-session-timeout already.
+    The previous responder updated this ingress ConfigMap already.
     Gateway instability persisted after that change.
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ingress-controller-template
-data:
-  nginx.tmpl: |
-    events {}
-
-    http {
-      keepalive_timeout __KEEPALIVE_TIMEOUT__;
-      ssl_session_timeout __SSL_SESSION_TIMEOUT__;
-
-      upstream gateway_backend {
-        server ingress-backend.ingress-system.svc.cluster.local:8080;
-      }
-
-      server {
-        listen 443 ssl;
-        ssl_certificate /etc/tls/tls.crt;
-        ssl_certificate_key /etc/tls/tls.key;
-
-        location = / {
-          proxy_pass http://gateway_backend/;
-        }
-
-        location = /healthz {
-          proxy_pass http://gateway_backend/healthz;
-        }
-      }
-    }
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -127,6 +93,93 @@ data:
   controller.env: |
     KEEPALIVE_TIMEOUT=0
     SSL_SESSION_TIMEOUT=10m
+  notes.txt: |
+    Legacy bundle kept for rollback reference.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-template-bundle
+data:
+  nginx.tmpl: |
+    events {}
+
+    http {
+      keepalive_timeout __KEEPALIVE_TIMEOUT__;
+      keepalive_requests __KEEPALIVE_REQUESTS__;
+      ssl_session_timeout __SSL_SESSION_TIMEOUT__;
+
+      upstream gateway_backend {
+        server __UPSTREAM_HOST__:__UPSTREAM_PORT__;
+      }
+
+      server {
+        listen __TLS_PORT__ ssl;
+        server_name __SERVER_NAME__;
+        ssl_certificate /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+
+        location = __ROOT_PATH__ {
+          proxy_pass http://gateway_backend/;
+        }
+
+        location = __HEALTH_PATH__ {
+          proxy_pass http://gateway_backend/healthz;
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-bootstrap-profile
+data:
+  gateway.env: |
+    TLS_PORT=443
+    SERVER_NAME=_
+    UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local
+    UPSTREAM_PORT=8080
+    ROOT_PATH=/
+    HEALTH_PATH=/healthz
+    GATEWAY_IDLE_SECONDS=0
+    KEEPALIVE_REQUESTS=1000
+    SSL_SESSION_TIMEOUT=10m
+    PROFILE_NAME=blue-edge
+    PROFILE_OWNER=platform-network
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-renderer
+data:
+  render.sh: |
+    #!/bin/sh
+    set -eu
+    . /profile/gateway.env
+
+    : "${TLS_PORT:?missing TLS_PORT}"
+    : "${SERVER_NAME:?missing SERVER_NAME}"
+    : "${UPSTREAM_HOST:?missing UPSTREAM_HOST}"
+    : "${UPSTREAM_PORT:?missing UPSTREAM_PORT}"
+    : "${ROOT_PATH:?missing ROOT_PATH}"
+    : "${HEALTH_PATH:?missing HEALTH_PATH}"
+    : "${GATEWAY_IDLE_SECONDS:?missing GATEWAY_IDLE_SECONDS}"
+    : "${KEEPALIVE_REQUESTS:?missing KEEPALIVE_REQUESTS}"
+    : "${SSL_SESSION_TIMEOUT:?missing SSL_SESSION_TIMEOUT}"
+    : "${PROFILE_NAME:?missing PROFILE_NAME}"
+    : "${PROFILE_OWNER:?missing PROFILE_OWNER}"
+
+    sed \
+      -e "s|__TLS_PORT__|${TLS_PORT}|g" \
+      -e "s|__SERVER_NAME__|${SERVER_NAME}|g" \
+      -e "s|__UPSTREAM_HOST__|${UPSTREAM_HOST}|g" \
+      -e "s|__UPSTREAM_PORT__|${UPSTREAM_PORT}|g" \
+      -e "s|__ROOT_PATH__|${ROOT_PATH}|g" \
+      -e "s|__HEALTH_PATH__|${HEALTH_PATH}|g" \
+      -e "s|__KEEPALIVE_TIMEOUT__|${GATEWAY_IDLE_SECONDS}|g" \
+      -e "s|__KEEPALIVE_REQUESTS__|${KEEPALIVE_REQUESTS}|g" \
+      -e "s|__SSL_SESSION_TIMEOUT__|${SSL_SESSION_TIMEOUT}|g" \
+      /templates/nginx.tmpl > /rendered/nginx.conf
 EOF
 
 echo "Creating workloads..."
@@ -187,6 +240,21 @@ spec:
       labels:
         app: ingress-controller
     spec:
+      initContainers:
+        - name: render-config
+          image: nginx:alpine
+          command:
+            - /bin/sh
+            - /renderer/render.sh
+          volumeMounts:
+            - name: template-bundle
+              mountPath: /templates
+            - name: bootstrap-profile
+              mountPath: /profile
+            - name: renderer
+              mountPath: /renderer
+            - name: rendered-config
+              mountPath: /rendered
       containers:
         - name: nginx
           image: nginx:alpine
@@ -196,11 +264,6 @@ spec:
           args:
             - |
               set -e
-              . /runtime/controller.env
-              sed \
-                -e "s/__KEEPALIVE_TIMEOUT__/${KEEPALIVE_TIMEOUT}/" \
-                -e "s/__SSL_SESSION_TIMEOUT__/${SSL_SESSION_TIMEOUT}/" \
-                /templates/nginx.tmpl > /etc/nginx/nginx.conf
               cat >/watchdog.sh <<'EOS'
               while true; do
                 if grep -q 'keepalive_timeout 0;' /etc/nginx/nginx.conf; then
@@ -218,19 +281,24 @@ spec:
             limits:
               memory: "128Mi"
           volumeMounts:
-            - name: template-config
-              mountPath: /templates
-            - name: runtime-config
-              mountPath: /runtime
+            - name: rendered-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
             - name: tls
               mountPath: /etc/tls
       volumes:
-        - name: template-config
+        - name: template-bundle
           configMap:
-            name: ingress-controller-template
-        - name: runtime-config
+            name: gateway-template-bundle
+        - name: bootstrap-profile
           configMap:
-            name: ingress-controller-runtime
+            name: gateway-bootstrap-profile
+        - name: renderer
+          configMap:
+            name: gateway-renderer
+            defaultMode: 0555
+        - name: rendered-config
+          emptyDir: {}
         - name: tls
           secret:
             secretName: ingress-controller-tls

@@ -6,7 +6,8 @@ from pathlib import Path
 NS = "ingress-system"
 SERVICE = "ingress-controller"
 DEPLOYMENT = "ingress-controller"
-RUNTIME_CONFIGMAP = "ingress-controller-runtime"
+ACTIVE_PROFILE_CONFIGMAP = "gateway-bootstrap-profile"
+ACTIVE_PROFILE_KEY = "gateway.env"
 EXPECTED_IMAGE = "nginx:alpine"
 EXPECTED_MEMORY = "128Mi"
 ORIGINAL_UID_FILE = Path("/grader/original_uid")
@@ -80,12 +81,34 @@ def guardrails_ok():
     return True, "guardrails preserved"
 
 
-def runtime_fix_applied():
-    """Verify the active runtime ConfigMap and rendered nginx config both contain the real fix."""
-    runtime_env = jsonpath(
-        f"configmap/{RUNTIME_CONFIGMAP}",
-        "{.data.controller\\.env}",
+def active_profile_text():
+    return jsonpath(
+        f"configmap/{ACTIVE_PROFILE_CONFIGMAP}",
+        "{.data.gateway\\.env}",
     )
+
+
+def bootstrap_bundle_preserved():
+    """Ensure the active bootstrap profile still contains the full runtime bundle."""
+    text = active_profile_text()
+    required_lines = [
+        "TLS_PORT=443",
+        "SERVER_NAME=_",
+        "UPSTREAM_HOST=ingress-backend.ingress-system.svc.cluster.local",
+        "UPSTREAM_PORT=8080",
+        "ROOT_PATH=/",
+        "HEALTH_PATH=/healthz",
+        "KEEPALIVE_REQUESTS=1000",
+        "SSL_SESSION_TIMEOUT=10m",
+        "PROFILE_NAME=blue-edge",
+        "PROFILE_OWNER=platform-network",
+    ]
+    return all(line in text for line in required_lines)
+
+
+def runtime_fix_applied():
+    """Verify the active bootstrap profile and rendered nginx config both contain the real fix."""
+    profile = active_profile_text()
     revision = jsonpath(
         f"deployment/{DEPLOYMENT}",
         "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
@@ -97,7 +120,7 @@ def runtime_fix_applied():
         f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf"
     )
     return (
-        "KEEPALIVE_TIMEOUT=65" in runtime_env
+        "GATEWAY_IDLE_SECONDS=65" in profile
         and bool(re.search(r"keepalive_timeout\s+65;", rendered_conf))
         and revision not in ["", "1"]
         and deployment_ready()
@@ -136,8 +159,9 @@ def grade(context=None):
             "health_https_stable": False,
             "controller_stable_after_idle": False,
             "runtime_fix_applied": False,
+            "bootstrap_bundle_preserved": False,
         }
-        weights = {name: 0.25 for name in zero_checks}
+        weights = {name: 0.20 for name in zero_checks}
         return GradeResult(0.0, zero_checks, weights, guardrail_feedback)
 
     checks = {
@@ -145,8 +169,9 @@ def grade(context=None):
         "health_https_stable": stable_endpoint("/healthz", '"status":"ok"'),
         "controller_stable_after_idle": controller_stable_after_idle(),
         "runtime_fix_applied": runtime_fix_applied(),
+        "bootstrap_bundle_preserved": bootstrap_bundle_preserved(),
     }
-    weights = {name: 0.25 for name in checks}
+    weights = {name: 0.20 for name in checks}
     score = sum(weights[name] for name, passed in checks.items() if passed)
     feedback = guardrail_feedback + " | " + " | ".join(
         f"{name}: {'PASS' if passed else 'FAIL'}" for name, passed in checks.items()
