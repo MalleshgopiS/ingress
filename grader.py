@@ -1,4 +1,5 @@
 import subprocess
+import re
 import time
 
 NS = "default"
@@ -20,40 +21,44 @@ class GradeResult:
 
 def grade(context=None):
     results = {}
+    weights = {}
 
-    original_uid = run("cat /grader/original_uid")
-    current_uid = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.metadata.uid}'"
+    # -------------------------------
+    # Weights (tuned for Apex target)
+    # -------------------------------
+    weights["timeout_fixed"] = 0.35
+    weights["deployment_restarted"] = 0.20
+    weights["https_serving"] = 0.15
+    weights["uid_preserved"] = 0.10
+    weights["image_correct"] = 0.10
+    weights["memory_correct"] = 0.10
+
+    # -------------------------------
+    # 1. Config Fix
+    # -------------------------------
+    config = run(
+        f"kubectl get configmap ingress-nginx-config -n {NS} "
+        "-o jsonpath='{.data.nginx\\.conf}'"
     )
-    results["uid_preserved"] = original_uid == current_uid
 
-    image = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].image}'"
+    results["timeout_fixed"] = bool(
+        re.search(r"keepalive_timeout\s+65;", config)
     )
-    results["image_unchanged"] = image == "nginx:alpine"
 
-    memory_limit = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
-    )
-    results["memory_fixed"] = memory_limit == "256Mi"
-
+    # -------------------------------
+    # 2. Deployment Restarted
+    # -------------------------------
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
     )
-    results["deployment_ready"] = ready == "1"
+    results["deployment_restarted"] = ready == "1"
 
-    restarts = run(
-        f"kubectl get pods -n {NS} -l app=ingress "
-        "-o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'"
-    )
-    results["no_crashloop"] = restarts == "0"
-
+    # -------------------------------
+    # 3. HTTPS Functional
+    # -------------------------------
     svc_ip = run(
-        f"kubectl get svc ingress-controller -n {NS} "
+        f"kubectl get svc {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
     )
 
@@ -65,22 +70,52 @@ def grade(context=None):
             break
         time.sleep(2)
 
-    results["https_working"] = https_ok
+    results["https_serving"] = https_ok
 
-    weights = {
-        "memory_fixed": 0.30,
-        "deployment_ready": 0.20,
-        "https_working": 0.20,
-        "uid_preserved": 0.10,
-        "image_unchanged": 0.10,
-        "no_crashloop": 0.10,
-    }
-
-    weighted_score = sum(weights[k] for k, v in results.items() if v)
-    final_score = 0.3 + (weighted_score * 0.4)
-
-    feedback = "\n".join(
-        f"{k}: {'PASS' if v else 'FAIL'}" for k, v in results.items()
+    # -------------------------------
+    # 4. Deployment Not Recreated
+    # -------------------------------
+    original_uid = run("cat /grader/original_uid")
+    current_uid = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.metadata.uid}'"
     )
+    results["uid_preserved"] = original_uid == current_uid
 
-    return GradeResult(final_score, results, weights, feedback)
+    # -------------------------------
+    # 5. Image Not Modified
+    # -------------------------------
+    image = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].image}'"
+    )
+    results["image_correct"] = image == "nginx:alpine"
+
+    # -------------------------------
+    # 6. Resource Limits Preserved
+    # -------------------------------
+    memory = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
+    )
+    results["memory_correct"] = memory == "128Mi"
+
+    # -------------------------------
+    # Final Score
+    # -------------------------------
+    score = 0
+    for k, passed in results.items():
+        if passed:
+            score += weights[k]
+
+    # -------------------------------
+    # Feedback
+    # -------------------------------
+    feedback_lines = []
+    for k, v in results.items():
+        status = "PASS" if v else "FAIL"
+        feedback_lines.append(f"{k}: {status} (weight {weights[k]})")
+
+    feedback = "\n".join(feedback_lines)
+
+    return GradeResult(score, results, weights, feedback)

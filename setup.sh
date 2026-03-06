@@ -1,17 +1,25 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-NS=default
+NS="default"
 
-echo "Creating TLS secret..."
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout tls.key -out tls.crt -subj "/CN=example.com"
+echo "Creating TLS certificate..."
+
+openssl req -x509 -nodes -days 365 \
+-newkey rsa:2048 \
+-keyout /tmp/tls.key \
+-out /tmp/tls.crt \
+-subj "/CN=ingress.local"
 
 kubectl create secret tls ingress-tls \
-  --cert=tls.crt --key=tls.key -n $NS
+--cert=/tmp/tls.crt \
+--key=/tmp/tls.key \
+-n $NS || true
 
-echo "Creating leaking nginx config..."
-cat <<EOF | kubectl apply -f -
+
+echo "Creating broken nginx config..."
+
+kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -22,13 +30,14 @@ data:
     events {}
 
     http {
-      ssl_session_cache shared:SSL:1m;
-      ssl_session_timeout 1d;
+
+      keepalive_timeout 0;
 
       server {
         listen 443 ssl;
-        ssl_certificate /etc/tls/tls.crt;
-        ssl_certificate_key /etc/tls/tls.key;
+
+        ssl_certificate /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
 
         location / {
           return 200 "Ingress Controller Running";
@@ -37,8 +46,10 @@ data:
     }
 EOF
 
-echo "Creating deployment with bad memory limits..."
-cat <<EOF | kubectl apply -f -
+
+echo "Creating deployment..."
+
+kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,26 +59,26 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ingress
+      app: ingress-controller
   template:
     metadata:
       labels:
-        app: ingress
+        app: ingress-controller
     spec:
       containers:
       - name: nginx
         image: nginx:alpine
+        ports:
+        - containerPort: 443
         resources:
           limits:
-            memory: "64Mi"
-          requests:
-            memory: "32Mi"
+            memory: "128Mi"
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
         - name: tls
-          mountPath: /etc/tls
+          mountPath: /etc/nginx/tls
       volumes:
       - name: config
         configMap:
@@ -77,15 +88,32 @@ spec:
           secretName: ingress-tls
 EOF
 
+
 echo "Creating service..."
-kubectl expose deployment ingress-controller \
-  --port=443 --target-port=443 --name=ingress-controller -n $NS
 
-echo "Waiting for rollout..."
-kubectl rollout status deployment/ingress-controller -n $NS
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-controller
+  namespace: $NS
+spec:
+  selector:
+    app: ingress-controller
+  ports:
+  - port: 443
+    targetPort: 443
+EOF
 
-echo "Saving original UID..."
+
+echo "Waiting for deployment..."
+
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=240s
+
+
 kubectl get deployment ingress-controller -n $NS \
-  -o jsonpath='{.metadata.uid}' > /grader/original_uid
+-o jsonpath='{.metadata.uid}' > /grader/original_uid
 
-echo "Setup complete."
+chmod 400 /grader/original_uid
+
+echo "Setup completed successfully."

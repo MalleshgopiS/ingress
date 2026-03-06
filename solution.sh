@@ -1,19 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-NS=default
+NS="default"
 
-echo "Fixing memory limits..."
+echo "Fixing keepalive timeout..."
 
-kubectl patch deployment ingress-controller -n $NS \
-  --type='json' \
-  -p='[
-    {"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"256Mi"},
-    {"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"128Mi"}
-  ]'
+kubectl get configmap ingress-nginx-config -n $NS -o yaml \
+| sed -E 's/keepalive_timeout[[:space:]]+0;/keepalive_timeout 65;/' \
+| kubectl apply -f -
 
 echo "Restarting deployment..."
-kubectl rollout restart deployment/ingress-controller -n $NS
-kubectl rollout status deployment/ingress-controller -n $NS
+
+kubectl rollout restart deployment ingress-controller -n $NS
+
+kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
 
 echo "Fix completed."
