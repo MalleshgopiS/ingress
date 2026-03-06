@@ -30,7 +30,7 @@ echo "k3s is ready!"
 # ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
 NS="ingress-system"
-WORKDIR="/tmp/ingress-controller-memory-leak"
+WORKDIR="/tmp/ingress-controller-memory-leak-v3"
 UID_FILE="/grader/original_uid"
 
 mkdir -p "$WORKDIR" /grader
@@ -83,12 +83,22 @@ kind: ConfigMap
 metadata:
   name: ingress-nginx-config
 data:
-  ssl-session-timeout: "0"
-  nginx.conf: |
+  ssl-session-timeout: "10m"
+  notes.txt: |
+    The previous responder updated ssl-session-timeout already.
+    Gateway instability persisted after that change.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-controller-template
+data:
+  nginx.tmpl: |
     events {}
 
     http {
-      keepalive_timeout 0;
+      keepalive_timeout __KEEPALIVE_TIMEOUT__;
+      ssl_session_timeout __SSL_SESSION_TIMEOUT__;
 
       upstream gateway_backend {
         server ingress-backend.ingress-system.svc.cluster.local:8080;
@@ -108,6 +118,15 @@ data:
         }
       }
     }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-controller-runtime
+data:
+  controller.env: |
+    KEEPALIVE_TIMEOUT=0
+    SSL_SESSION_TIMEOUT=10m
 EOF
 
 echo "Creating workloads..."
@@ -176,14 +195,19 @@ spec:
             - -c
           args:
             - |
-              cp /config/nginx.conf /etc/nginx/nginx.conf
+              set -e
+              . /runtime/controller.env
+              sed \
+                -e "s/__KEEPALIVE_TIMEOUT__/${KEEPALIVE_TIMEOUT}/" \
+                -e "s/__SSL_SESSION_TIMEOUT__/${SSL_SESSION_TIMEOUT}/" \
+                /templates/nginx.tmpl > /etc/nginx/nginx.conf
               cat >/watchdog.sh <<'EOS'
               while true; do
                 if grep -q 'keepalive_timeout 0;' /etc/nginx/nginx.conf; then
-                  sleep 18
+                  sleep 12
                   kill 1
                 fi
-                sleep 3
+                sleep 2
               done
               EOS
               /bin/sh /watchdog.sh &
@@ -194,14 +218,19 @@ spec:
             limits:
               memory: "128Mi"
           volumeMounts:
+            - name: template-config
+              mountPath: /templates
             - name: runtime-config
-              mountPath: /config
+              mountPath: /runtime
             - name: tls
               mountPath: /etc/tls
       volumes:
+        - name: template-config
+          configMap:
+            name: ingress-controller-template
         - name: runtime-config
           configMap:
-            name: ingress-nginx-config
+            name: ingress-controller-runtime
         - name: tls
           secret:
             secretName: ingress-controller-tls

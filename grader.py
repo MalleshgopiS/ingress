@@ -6,7 +6,7 @@ from pathlib import Path
 NS = "ingress-system"
 SERVICE = "ingress-controller"
 DEPLOYMENT = "ingress-controller"
-CONFIGMAP = "ingress-nginx-config"
+RUNTIME_CONFIGMAP = "ingress-controller-runtime"
 EXPECTED_IMAGE = "nginx:alpine"
 EXPECTED_MEMORY = "128Mi"
 ORIGINAL_UID_FILE = Path("/grader/original_uid")
@@ -42,7 +42,7 @@ def https_get(path):
     return code == 0, stdout
 
 
-def stable_endpoint(path, expected, attempts=5, delay=6):
+def stable_endpoint(path, expected, attempts=5, delay=5):
     for _ in range(attempts):
         ok, body = https_get(path)
         if not ok or expected not in body:
@@ -78,14 +78,24 @@ def guardrails_ok():
     return True, "guardrails preserved"
 
 
-def supported_fix_applied():
-    config = jsonpath(f"configmap/{CONFIGMAP}", "{.data.nginx\\.conf}")
+def runtime_fix_applied():
+    runtime_env = jsonpath(
+        f"configmap/{RUNTIME_CONFIGMAP}",
+        "{.data.controller\\.env}",
+    )
     revision = jsonpath(
         f"deployment/{DEPLOYMENT}",
         "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
     )
+    pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
+    if not pod:
+        return False
+    _, rendered_conf, _ = run(
+        f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf"
+    )
     return (
-        bool(re.search(r"keepalive_timeout\s+65;", config))
+        "KEEPALIVE_TIMEOUT=65" in runtime_env
+        and bool(re.search(r"keepalive_timeout\s+65;", rendered_conf))
         and revision not in ["", "1"]
         and deployment_ready()
     )
@@ -97,7 +107,7 @@ def controller_stable_after_idle():
         return False
 
     before = jsonpath(f"pod/{pod}", "{.status.containerStatuses[0].restartCount}")
-    time.sleep(25)
+    time.sleep(18)
     after_pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
     after = jsonpath(f"pod/{after_pod}", "{.status.containerStatuses[0].restartCount}") if after_pod else ""
 
@@ -121,7 +131,7 @@ def grade(context=None):
             "root_https_stable": False,
             "health_https_stable": False,
             "controller_stable_after_idle": False,
-            "supported_fix_applied": False,
+            "runtime_fix_applied": False,
         }
         weights = {name: 0.25 for name in zero_checks}
         return GradeResult(0.0, zero_checks, weights, guardrail_feedback)
@@ -130,7 +140,7 @@ def grade(context=None):
         "root_https_stable": stable_endpoint("/", "Ingress Controller Running"),
         "health_https_stable": stable_endpoint("/healthz", '"status":"ok"'),
         "controller_stable_after_idle": controller_stable_after_idle(),
-        "supported_fix_applied": supported_fix_applied(),
+        "runtime_fix_applied": runtime_fix_applied(),
     }
     weights = {name: 0.25 for name in checks}
     score = sum(weights[name] for name, passed in checks.items() if passed)

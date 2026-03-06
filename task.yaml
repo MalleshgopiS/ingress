@@ -11,8 +11,9 @@ prompt: |
   [TASK]
   After a recent configuration rollout, the ingress controller responsible for TLS termination is intermittently restarting after quiet periods.
   Users see brief HTTPS outages at the gateway even though the backend application remains healthy.
+  A previous responder already edited one of the ingress ConfigMaps, but the crashes continued.
 
-  Investigate the live ingress-controller configuration and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
+  Investigate the live ingress-controller configuration path and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
   - `/` returns the expected gateway page consistently
   - `/healthz` returns the health payload consistently
   - the ingress controller remains stable across repeated requests and an idle window
@@ -39,6 +40,7 @@ tags:
   - tls
   - sre
   - incident-response
+  - templated-config
 
 setup: setup.sh
 solution: solution.sh
