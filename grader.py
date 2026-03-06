@@ -30,12 +30,14 @@ def grade(context=None):
         "https_serving",
         "rollout_stable",
         "config_syntax_valid",
+        "service_endpoints_ready",
+        "pods_fully_ready",
     ]
 
     weight_each = 1.0 / len(checks)
     weights = {k: weight_each for k in checks}
 
-    # 1. Core fix
+    # 1. Core config fix
     config = run(
         f"kubectl get configmap {CM} -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -44,21 +46,21 @@ def grade(context=None):
         re.search(r"keepalive_timeout\s+65;", config)
     )
 
-    # 2. Real rollout happened
+    # 2. Rollout happened
     revision = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.metadata.annotations.deployment\\.kubernetes\\.io/revision}'"
     )
     results["revision_changed"] = revision != "1"
 
-    # 3. Deployment Ready
+    # 3. Deployment ready
     ready = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
         "-o jsonpath='{.status.readyReplicas}'"
     )
     results["deployment_ready"] = ready == "1"
 
-    # 4. HTTPS Functional
+    # 4. HTTPS functional
     svc_ip = run(
         f"kubectl get svc {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.clusterIP}'"
@@ -73,8 +75,7 @@ def grade(context=None):
         time.sleep(2)
     results["https_serving"] = https_ok
 
-    # 5. Rollout stability (fixed to avoid false failure)
-    # Wait briefly to allow pod stabilization
+    # 5. Rollout stability (solution passes)
     time.sleep(5)
     unavailable = run(
         f"kubectl get deployment {DEPLOY} -n {NS} "
@@ -82,8 +83,22 @@ def grade(context=None):
     )
     results["rollout_stable"] = unavailable in ["", "0", "<no value>"]
 
-    # 6. Basic config structure valid
+    # 6. Config syntax still valid
     results["config_syntax_valid"] = "http {" in config and "server {" in config
+
+    # 7. Service endpoints populated (often flaky for models)
+    endpoints = run(
+        f"kubectl get endpoints {DEPLOY} -n {NS} "
+        "-o jsonpath='{.subsets[*].addresses[*].ip}'"
+    )
+    results["service_endpoints_ready"] = len(endpoints.strip()) > 0
+
+    # 8. Pods fully ready (strong readiness check)
+    ready_containers = run(
+        f"kubectl get pods -n {NS} -l app=ingress-controller "
+        "-o jsonpath='{.items[0].status.containerStatuses[0].ready}'"
+    )
+    results["pods_fully_ready"] = ready_containers == "true"
 
     score = sum(weights[k] for k, v in results.items() if v)
 

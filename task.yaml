@@ -19,12 +19,12 @@ prompt: |
   Requirements:
   • Update the configuration so keepalive_timeout is set to 65 seconds
   • Restart the ingress controller deployment so the change takes effect
+  • The ingress service must remain functional after the fix
   • Do not modify the container image
   • Do not modify resource limits
   • Only fix the configuration issue
 
 difficulty: medium
-
 category: kubernetes
 
 tags:
@@ -35,9 +35,7 @@ tags:
   - memory
 
 setup: setup.sh
-
 solution: solution.sh
-
 grader: grader.py
 
 timeout_sec: 600

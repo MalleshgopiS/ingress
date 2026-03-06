@@ -15,4 +15,7 @@ kubectl rollout restart deployment ingress-controller -n $NS
 
 kubectl rollout status deployment ingress-controller -n $NS --timeout=180s
 
+echo "Waiting for pods to stabilize..."
+sleep 10
+
 echo "Fix completed."
