@@ -1,12 +1,15 @@
+import re
 import subprocess
 import time
+from pathlib import Path
 
-NS = "aurora-ingress"
+NS = "ingress-system"
 SERVICE = "ingress-controller"
 DEPLOYMENT = "ingress-controller"
-CONFIGMAP = "ingress-controller-config"
+CONFIGMAP = "ingress-nginx-config"
 EXPECTED_IMAGE = "nginx:alpine"
 EXPECTED_MEMORY = "128Mi"
+ORIGINAL_UID_FILE = Path("/grader/original_uid")
 
 
 class GradeResult:
@@ -39,7 +42,7 @@ def https_get(path):
     return code == 0, stdout
 
 
-def repeated_success(path, expected, attempts=4, delay=4):
+def stable_endpoint(path, expected, attempts=5, delay=6):
     for _ in range(attempts):
         ok, body = https_get(path)
         if not ok or expected not in body:
@@ -48,81 +51,90 @@ def repeated_success(path, expected, attempts=4, delay=4):
     return True
 
 
-def current_pod_name():
-    return jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
-
-
-def pod_restart_count(pod_name):
-    if not pod_name:
-        return ""
-    return jsonpath(f"pod/{pod_name}", "{.status.containerStatuses[0].restartCount}")
-
-
 def deployment_ready():
     ready = jsonpath(f"deployment/{DEPLOYMENT}", "{.status.readyReplicas}")
     unavailable = jsonpath(f"deployment/{DEPLOYMENT}", "{.status.unavailableReplicas}")
     return ready == "1" and unavailable in ["", "0", "<no value>"]
 
 
-def supported_fix_applied():
-    config = jsonpath(f"configmap/{CONFIGMAP}", "{.data.nginx\\.conf}")
+def guardrails_ok():
+    if not ORIGINAL_UID_FILE.exists():
+        return False, "missing original deployment UID"
+
+    original_uid = ORIGINAL_UID_FILE.read_text(encoding="utf-8").strip()
+    current_uid = jsonpath(f"deployment/{DEPLOYMENT}", "{.metadata.uid}")
     image = jsonpath(f"deployment/{DEPLOYMENT}", "{.spec.template.spec.containers[0].image}")
     memory = jsonpath(
         f"deployment/{DEPLOYMENT}",
         "{.spec.template.spec.containers[0].resources.limits.memory}",
     )
+
+    if original_uid != current_uid:
+        return False, "deployment UID changed"
+    if image != EXPECTED_IMAGE:
+        return False, f"image changed to {image!r}"
+    if memory != EXPECTED_MEMORY:
+        return False, f"memory limit changed to {memory!r}"
+    return True, "guardrails preserved"
+
+
+def supported_fix_applied():
+    config = jsonpath(f"configmap/{CONFIGMAP}", "{.data.nginx\\.conf}")
     revision = jsonpath(
         f"deployment/{DEPLOYMENT}",
         "{.metadata.annotations.deployment\\.kubernetes\\.io/revision}",
     )
     return (
-        "keepalive_timeout 65;" in config
-        and image == EXPECTED_IMAGE
-        and memory == EXPECTED_MEMORY
+        bool(re.search(r"keepalive_timeout\s+65;", config))
         and revision not in ["", "1"]
         and deployment_ready()
     )
 
 
-def stable_after_idle_window():
-    pod = current_pod_name()
-    before = pod_restart_count(pod)
-    if not pod or before == "":
+def controller_stable_after_idle():
+    pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
+    if not pod:
         return False
-    time.sleep(14)
-    after_pod = current_pod_name()
-    after = pod_restart_count(after_pod)
-    if pod != after_pod or before != after:
+
+    before = jsonpath(f"pod/{pod}", "{.status.containerStatuses[0].restartCount}")
+    time.sleep(25)
+    after_pod = jsonpath("pods -l app=ingress-controller", "{.items[0].metadata.name}")
+    after = jsonpath(f"pod/{after_pod}", "{.status.containerStatuses[0].restartCount}") if after_pod else ""
+
+    if pod != after_pod or before == "" or after == "" or before != after:
         return False
-    ok_root, body_root = https_get("/")
-    ok_health, body_health = https_get("/healthz")
+
+    ok_root, root_body = https_get("/")
+    ok_health, health_body = https_get("/healthz")
     return (
         ok_root
-        and "Ingress Controller Running" in body_root
+        and "Ingress Controller Running" in root_body
         and ok_health
-        and '"status":"ok"' in body_health
+        and '"status":"ok"' in health_body
     )
 
 
 def grade(context=None):
-    checks = [
-        "root_https_stable",
-        "health_https_stable",
-        "controller_stable_after_idle",
-        "supported_fix_applied",
-    ]
-    weights = {name: 1.0 / len(checks) for name in checks}
+    guardrails_passed, guardrail_feedback = guardrails_ok()
+    if not guardrails_passed:
+        zero_checks = {
+            "root_https_stable": False,
+            "health_https_stable": False,
+            "controller_stable_after_idle": False,
+            "supported_fix_applied": False,
+        }
+        weights = {name: 0.25 for name in zero_checks}
+        return GradeResult(0.0, zero_checks, weights, guardrail_feedback)
 
-    results = {
-        "root_https_stable": repeated_success("/", "Ingress Controller Running"),
-        "health_https_stable": repeated_success("/healthz", '"status":"ok"'),
-        "controller_stable_after_idle": stable_after_idle_window(),
+    checks = {
+        "root_https_stable": stable_endpoint("/", "Ingress Controller Running"),
+        "health_https_stable": stable_endpoint("/healthz", '"status":"ok"'),
+        "controller_stable_after_idle": controller_stable_after_idle(),
         "supported_fix_applied": supported_fix_applied(),
     }
-
-    score = sum(weights[name] for name, passed in results.items() if passed)
-    feedback = "\n".join(
-        f"{name}: {'PASS' if passed else 'FAIL'} (w={weights[name]:.2f})"
-        for name, passed in results.items()
+    weights = {name: 0.25 for name in checks}
+    score = sum(weights[name] for name, passed in checks.items() if passed)
+    feedback = guardrail_feedback + " | " + " | ".join(
+        f"{name}: {'PASS' if passed else 'FAIL'}" for name, passed in checks.items()
     )
-    return GradeResult(score, results, weights, feedback)
+    return GradeResult(score, checks, weights, feedback)

@@ -5,24 +5,24 @@ title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway C
 prompt: |
   [Context]
   You are a DevOps engineer working on Bleater, a distributed microservices-based social media platform.
-  The affected ingress stack for this incident is in the `aurora-ingress` namespace. You can check all available namespaces at `/home/ubuntu/.allowed_namespaces`.
+  The affected ingress stack for this incident is in the `ingress-system` namespace. You can check all available namespaces at `/home/ubuntu/.allowed_namespaces`.
   The public TLS entrypoint is handled by the `ingress-controller` deployment and service.
 
   [TASK]
-  The Kubernetes ingress controller responsible for TLS termination is periodically restarting under idle-heavy production traffic.
-  Users report intermittent HTTPS failures at the gateway, especially after short periods of inactivity.
-  The regression was introduced in the ingress controller configuration rollout, and the backend service itself is healthy.
+  After a recent configuration rollout, the ingress controller responsible for TLS termination is intermittently restarting after quiet periods.
+  Users see brief HTTPS outages at the gateway even though the backend application remains healthy.
 
-  Diagnose the issue and repair the ingress controller so that all of the following are true over HTTPS through the `ingress-controller` service:
-  - `/` returns the expected gateway page
-  - `/healthz` returns the health payload
-  - the ingress controller stays stable during repeated and idle TLS traffic
+  Investigate the live ingress-controller configuration and repair the incident so that all of the following are true over HTTPS through the `ingress-controller` service:
+  - `/` returns the expected gateway page consistently
+  - `/healthz` returns the health payload consistently
+  - the ingress controller remains stable across repeated requests and an idle window
 
   Constraints:
-  - Do not change container images
+  - Do not delete or recreate the Deployment object
+  - Do not change image names
   - Do not change resource limits
   - Keep the existing ingress-controller deployment and service topology
-  - Fix the incident through Kubernetes configuration and rollout changes only
+  - Solve the incident through Kubernetes configuration and rollout changes only
   - Do NOT use any interactive commands, for example `-i` or `-it`, in `docker exec`, or any other TTY commands
 
 category: Site Reliability Engineering

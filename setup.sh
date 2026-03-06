@@ -29,10 +29,11 @@ done
 echo "k3s is ready!"
 # ---------------- [DONOT CHANGE ANYTHING ABOVE] ------------------------- #
 
-NS="aurora-ingress"
+NS="ingress-system"
 WORKDIR="/tmp/ingress-controller-memory-leak"
+UID_FILE="/grader/original_uid"
 
-mkdir -p "$WORKDIR"
+mkdir -p "$WORKDIR" /grader
 cd "$WORKDIR"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
@@ -51,7 +52,7 @@ kubectl create secret tls ingress-controller-tls \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 
-echo "Creating backend configuration..."
+echo "Creating backend and ingress configuration..."
 cat <<'EOF' | kubectl apply -n "$NS" -f -
 apiVersion: v1
 kind: ConfigMap
@@ -80,8 +81,9 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ingress-controller-config
+  name: ingress-nginx-config
 data:
+  ssl-session-timeout: "0"
   nginx.conf: |
     events {}
 
@@ -89,7 +91,7 @@ data:
       keepalive_timeout 0;
 
       upstream gateway_backend {
-        server ingress-backend.aurora-ingress.svc.cluster.local:8080;
+        server ingress-backend.ingress-system.svc.cluster.local:8080;
       }
 
       server {
@@ -178,8 +180,7 @@ spec:
               cat >/watchdog.sh <<'EOS'
               while true; do
                 if grep -q 'keepalive_timeout 0;' /etc/nginx/nginx.conf; then
-                  echo "Unsafe keepalive timeout detected; simulating crash loop"
-                  sleep 10
+                  sleep 18
                   kill 1
                 fi
                 sleep 3
@@ -200,7 +201,7 @@ spec:
       volumes:
         - name: runtime-config
           configMap:
-            name: ingress-controller-config
+            name: ingress-nginx-config
         - name: tls
           secret:
             secretName: ingress-controller-tls
@@ -218,6 +219,9 @@ spec:
 EOF
 
 kubectl rollout status deployment/ingress-backend -n "$NS" --timeout=180s
-kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s
+kubectl rollout status deployment/ingress-controller -n "$NS" --timeout=180s || true
+
+kubectl get deployment ingress-controller -n "$NS" -o jsonpath='{.metadata.uid}' > "$UID_FILE"
+chmod 400 "$UID_FILE"
 
 echo "Setup completed."

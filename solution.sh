@@ -3,16 +3,17 @@ set -euo pipefail
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-NS="aurora-ingress"
-CFG="/tmp/ingress-controller.conf"
+NS="ingress-system"
+CFG="/tmp/ingress-nginx.conf"
 
-kubectl get configmap ingress-controller-config -n "$NS" -o jsonpath='{.data.nginx\.conf}' > "$CFG"
+kubectl get configmap ingress-nginx-config -n "$NS" -o jsonpath='{.data.nginx\.conf}' > "$CFG"
 
 sed -i 's/keepalive_timeout 0;/keepalive_timeout 65;/' "$CFG"
 
-kubectl create configmap ingress-controller-config \
+kubectl create configmap ingress-nginx-config \
   -n "$NS" \
   --from-file=nginx.conf="$CFG" \
+  --from-literal=ssl-session-timeout=0 \
   --dry-run=client \
   -o yaml | kubectl apply -f -
 

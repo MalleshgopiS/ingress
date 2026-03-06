@@ -1,7 +1,7 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
 ENV SKIP_BLEATER_BOOT=1
-ENV ALLOWED_NAMESPACES="aurora-ingress"
+ENV ALLOWED_NAMESPACES="ingress-system"
 
 USER root
 
