@@ -3,33 +3,42 @@ set -e
 
 NS=default
 
-mkdir -p /grader
-
-echo "Creating TLS certificate..."
+echo "Creating TLS secret..."
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout tls.key -out tls.crt \
-  -subj "/CN=ingress.local"
+  -keyout tls.key -out tls.crt -subj "/CN=example.com"
 
 kubectl create secret tls ingress-tls \
-  --key tls.key --cert tls.crt -n $NS
+  --cert=tls.crt --key=tls.key -n $NS
 
-echo "Creating broken nginx config..."
-kubectl create configmap ingress-nginx-config -n $NS \
-  --from-literal=nginx.conf='events { worker_connections 512; }
-http {
-    keepalive_timeout 0;
-    server {
+echo "Creating leaking nginx config..."
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-config
+  namespace: $NS
+data:
+  nginx.conf: |
+    events {}
+
+    http {
+      ssl_session_cache shared:SSL:1m;
+      ssl_session_timeout 1d;
+
+      server {
         listen 443 ssl;
-        ssl_certificate /etc/nginx/tls/tls.crt;
-        ssl_certificate_key /etc/nginx/tls/tls.key;
-        location / {
-            return 200 "Ingress Controller Running";
-        }
-    }
-}'
+        ssl_certificate /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
 
-echo "Creating deployment..."
-kubectl apply -f - <<EOF
+        location / {
+          return 200 "Ingress Controller Running";
+        }
+      }
+    }
+EOF
+
+echo "Creating deployment with bad memory limits..."
+cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,24 +48,26 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ingress-controller
+      app: ingress
   template:
     metadata:
       labels:
-        app: ingress-controller
+        app: ingress
     spec:
       containers:
       - name: nginx
         image: nginx:alpine
         resources:
           limits:
-            memory: "128Mi"
+            memory: "64Mi"
+          requests:
+            memory: "32Mi"
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
           subPath: nginx.conf
         - name: tls
-          mountPath: /etc/nginx/tls
+          mountPath: /etc/tls
       volumes:
       - name: config
         configMap:
@@ -70,17 +81,11 @@ echo "Creating service..."
 kubectl expose deployment ingress-controller \
   --port=443 --target-port=443 --name=ingress-controller -n $NS
 
-echo "Waiting for deployment..."
+echo "Waiting for rollout..."
 kubectl rollout status deployment/ingress-controller -n $NS
 
-# Save original UIDs for grader
+echo "Saving original UID..."
 kubectl get deployment ingress-controller -n $NS \
   -o jsonpath='{.metadata.uid}' > /grader/original_uid
 
-kubectl get pods -n $NS -l app=ingress-controller \
-  -o jsonpath='{.items[0].metadata.uid}' > /grader/original_pod_uid
-
-chmod 400 /grader/original_uid
-chmod 400 /grader/original_pod_uid
-
-echo "Setup completed successfully."
+echo "Setup complete."

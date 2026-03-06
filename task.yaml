@@ -1,24 +1,24 @@
-name: ingress
+name: ingress-memory-leak
 description: |
-  The ingress controller is experiencing instability due to an incorrect nginx configuration.
+  The Kubernetes ingress controller is experiencing periodic gateway crashes.
 
-  The keepalive_timeout is set to 0, which causes excessive connection churn.
+  Investigation shows:
+  - TLS termination is enabled
+  - The ingress controller pods are being OOMKilled
+  - Memory usage keeps increasing due to a configuration issue
 
   Your task:
-  - Update keepalive_timeout to 65 seconds
-  - Restart the ingress-controller deployment
+  - Fix the memory leak by applying appropriate configuration changes
+  - Ensure the ingress controller becomes stable
+  - Restart the deployment safely
 
   Constraints:
   - Do NOT delete or recreate the deployment
   - Do NOT change the container image
-  - Do NOT modify resource limits
-  - Only fix the configuration issue
+  - Do NOT disable TLS
+  - Only apply configuration and resource fixes
 
 difficulty: medium
-
-tools:
-  - setup_problem
-  - grade_problem
 
 entrypoint:
   setup: setup.sh
