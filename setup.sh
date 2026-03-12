@@ -103,6 +103,11 @@ http {
 # ------------------------------------------------------------------
 # 4. Deploy ingress controller
 # ------------------------------------------------------------------
+# Import pre-cached nginx image into k3s containerd (offline-safe)
+echo "Importing nginx image into containerd..."
+ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /nginx.tar 2>/dev/null || \
+  ctr -n k8s.io images import /nginx.tar 2>/dev/null || true
+
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -120,7 +125,8 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: nginx:1.25-alpine
+        image: nginx:alpine
+        imagePullPolicy: Never
         ports:
         - containerPort: 443
         volumeMounts:

@@ -11,6 +11,13 @@ RUN apt-get update && \
     python3 && \
     rm -rf /var/lib/apt/lists/*
 
+# Download crane for image pre-caching
+RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz" \
+    | tar xz -C /usr/local/bin crane && chmod +x /usr/local/bin/crane
+
+# Pre-cache nginx image so k3s can use it without internet access
+RUN crane pull --platform linux/amd64 nginx:alpine /nginx.tar
+
 RUN mkdir -p /grader
 RUN mkdir -p /mcp_server/tests
 
