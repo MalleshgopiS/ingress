@@ -1,24 +1,22 @@
 id: ingress-tls-memory-leak
 title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
-difficulty: medium
+difficulty: hard
 category: kubernetes
 
 description: |
   The platform edge gateway has become unreliable.
 
-  Users report that HTTPS endpoints sometimes work,
-  but fail after short idle periods. Traffic briefly
-  recovers after restarts, then degrades again.
+  Users are reporting intermittent HTTPS failures that appear
+  to worsen over time. After gateway restarts traffic recovers
+  briefly, then degrades again. The team has ruled out
+  infrastructure failure and suspects the ingress configuration.
 
-  Operations suspects a configuration-level issue
-  in the ingress layer rather than infrastructure failure.
+  Workloads are deployed in the ingress-system namespace.
 
-  Investigate the running system and restore the gateway
-  to stable operation.
-
-  The system is considered restored when HTTPS traffic
-  flows reliably through the ingress gateway and the
-  platform remains stable under repeated requests.
+  Investigate the running ingress controller and its configuration.
+  The system is considered restored when HTTPS traffic flows reliably
+  through the gateway and the controller remains stable under
+  sustained load without requiring restarts.
 
 constraints:
   - Do not modify container images
@@ -27,5 +25,4 @@ constraints:
   - Apply configuration-level fixes only
 
 allowed_namespaces:
-  - default
   - ingress-system
