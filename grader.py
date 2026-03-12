@@ -47,10 +47,8 @@ NS_ROLE_NAME = "ops-monitoring-reader"
 NS_BINDING   = "ops-monitoring-binding"
 PDB_NAME     = "ingress-pdb"
 
-TELEMETRY_CR_NAME  = "telemetry-pipeline-manager"
-TELEMETRY_CRB_NAME = "telemetry-pipeline-binding"
-KS_CRON_ROLE       = "ops-cronjob-manager"
-KS_CRON_BINDING    = "ops-cronjob-manager-binding"
+KS_CRON_ROLE    = "ops-cronjob-manager"
+KS_CRON_BINDING = "ops-cronjob-manager-binding"
 
 
 # ── shell helper ──────────────────────────────────────────────────────────────
@@ -160,11 +158,12 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
 
 # ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
-# 6 items discoverable via:
+# 5 items discoverable via:
 #   kubectl get roles,rolebindings,pdb -n ingress-system
-#   kubectl get clusterrole,clusterrolebinding telemetry-pipeline-manager telemetry-pipeline-binding
 #   kubectl get roles,rolebindings -n kube-system
-# Partial score = (# removed) / 6.
+# Note: telemetry-pipeline-manager ClusterRole/Binding are cluster-scoped and
+# cannot be deleted by the agent (ubuntu user lacks cluster-scope delete perms).
+# Partial score = (# removed) / 5.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
@@ -188,15 +187,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     # ingress-system: PodDisruptionBudget (prevents pod disruption cleanup)
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
-
-    # cluster-wide: telemetry-pipeline-manager ClusterRole + ClusterRoleBinding
-    # (grants kube-system default SA broad patch/delete on configmaps, secrets, pods)
-    code_cr, out_cr, _ = run(f"kubectl get clusterrole {TELEMETRY_CR_NAME} 2>/dev/null")
-    code_crb, out_crb, _ = run(f"kubectl get clusterrolebinding {TELEMETRY_CRB_NAME} 2>/dev/null")
-    results[f"clusterrole:{TELEMETRY_CR_NAME}"] = (
-        (code_cr != 0 or not out_cr.strip()) and
-        (code_crb != 0 or not out_crb.strip())
-    )
 
     # kube-system: ops-cronjob-manager Role + RoleBinding
     # (lets ubuntu-user SA manage CronJobs in kube-system)
