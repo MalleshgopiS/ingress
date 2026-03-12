@@ -6,7 +6,7 @@ NS = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC = "ingress-controller-svc"
 ROGUE_CJ_NAME = "platform-config-reconciler"
-ROGUE_CJ_NS = "kube-system"
+ROGUE_CJ_NS = "default"
 
 
 def run(cmd):

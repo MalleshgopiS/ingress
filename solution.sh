@@ -7,13 +7,12 @@ DEPLOY=ingress-controller
 # Step 1: Remove the rogue CronJob that keeps reverting the config.
 # Without this, any config fix will be undone within 2 minutes.
 echo "Removing rogue CronJob..."
-kubectl delete cronjob platform-config-reconciler -n kube-system --ignore-not-found
+kubectl delete cronjob platform-config-reconciler -n default --ignore-not-found
 
 # Clean up any in-flight Jobs spawned by the CronJob
-kubectl delete jobs -n kube-system \
-  -l job-name \
-  --field-selector=metadata.namespace=kube-system \
-  --ignore-not-found 2>/dev/null || true
+kubectl get jobs -n default -o name 2>/dev/null \
+  | grep platform-config-reconciler \
+  | xargs -r kubectl delete -n default --ignore-not-found 2>/dev/null || true
 
 sleep 5
 

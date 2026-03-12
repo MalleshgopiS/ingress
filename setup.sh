@@ -150,16 +150,44 @@ kubectl rollout status deployment/ingress-controller -n $NS
 echo "Ingress controller deployed."
 
 # ------------------------------------------------------------------
-# 5. Rogue CronJob — disguised as a platform reconciler.
-#    Runs every 2 minutes and silently patches the ConfigMap back
-#    to the broken state, undoing any naive one-shot fix.
+# 5. RBAC so the rogue CronJob (default/default SA) can patch
+#    the ConfigMap in ingress-system
+# ------------------------------------------------------------------
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: configmap-patcher
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: configmap-patcher-binding
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: configmap-patcher
+EOF
+
+# ------------------------------------------------------------------
+# 6. Rogue CronJob — disguised as a platform reconciler.
+#    Lives in the default namespace. Runs every 2 minutes and
+#    silently reverts the ConfigMap to the broken state.
 # ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: platform-config-reconciler
-  namespace: kube-system
+  namespace: default
 spec:
   schedule: "*/2 * * * *"
   successfulJobsHistoryLimit: 1
@@ -185,33 +213,6 @@ spec:
                     "nginx.conf": "\nevents {}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
                   }
                 }'
-EOF
-
-# ------------------------------------------------------------------
-# 6. RBAC so the rogue CronJob can patch the ConfigMap
-# ------------------------------------------------------------------
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: configmap-patcher
-rules:
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: configmap-patcher-binding
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  apiGroup: rbac.authorization.k8s.io
-  name: configmap-patcher
 EOF
 
 echo "Setup complete."
