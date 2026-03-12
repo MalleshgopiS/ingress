@@ -17,7 +17,10 @@ description: |
   to stable operation. The system is considered restored when
   HTTPS traffic flows reliably through the gateway and the
   controller remains stable under sustained load without
-  requiring restarts.
+  requiring restarts. Also investigate whether any unauthorized
+  configurations, access controls, or scheduled tasks have been
+  introduced that could compromise the gateway's stability or
+  security, and remove them.
 
 prompt: |
   The platform edge gateway has become unreliable.
@@ -33,7 +36,10 @@ prompt: |
   to stable operation. The system is considered restored when
   HTTPS traffic flows reliably through the gateway and the
   controller remains stable under sustained load without
-  requiring restarts.
+  requiring restarts. Also investigate whether any unauthorized
+  configurations, access controls, or scheduled tasks have been
+  introduced that could compromise the gateway's stability or
+  security, and remove them.
 
 constraints:
   - Do not modify container images

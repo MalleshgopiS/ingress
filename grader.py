@@ -7,7 +7,9 @@ Changes addressing Nebula reviewer-bot feedback
 1. GRADER SCORE >90: resource_limits_unchanged closes the missing constraint gap.
    nginx validators anchor to the EXACT broken values injected by the task — no
    arbitrary thresholds.  ssl_session_timeout now verified in live pod too (was
-   missing, fixing a coverage inconsistency flagged by the reviewer).
+   missing).  Objective 2 now checks all 6 unauthorized RBAC items that setup.sh
+   creates (was missing telemetry-pipeline-manager ClusterRole/Binding and
+   ops-cronjob-manager Role/Binding in kube-system).
 
 2. SUBSCORE VARIANCE — two independent timing-based mechanisms:
    a) gateway_operational.config_intact_post_load (NEW): the 20-request load test
@@ -44,6 +46,11 @@ SCALER_ROLE  = "resource-manager"
 NS_ROLE_NAME = "ops-monitoring-reader"
 NS_BINDING   = "ops-monitoring-binding"
 PDB_NAME     = "ingress-pdb"
+
+TELEMETRY_CR_NAME  = "telemetry-pipeline-manager"
+TELEMETRY_CRB_NAME = "telemetry-pipeline-binding"
+KS_CRON_ROLE       = "ops-cronjob-manager"
+KS_CRON_BINDING    = "ops-cronjob-manager-binding"
 
 
 # ── shell helper ──────────────────────────────────────────────────────────────
@@ -153,18 +160,24 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
 
 # ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
-# 4 items discoverable via: kubectl get roles,rolebindings,pdb -n ingress-system
-# Partial score = (# removed) / 4.
+# 6 items discoverable via:
+#   kubectl get roles,rolebindings,pdb -n ingress-system
+#   kubectl get clusterrole,clusterrolebinding telemetry-pipeline-manager telemetry-pipeline-binding
+#   kubectl get roles,rolebindings -n kube-system
+# Partial score = (# removed) / 6.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
 
+    # ingress-system: config-sync-handler (lets CronJob patch ConfigMap)
     code, out, _ = run(f"kubectl get role {PATCHER_ROLE} -n {NS} 2>/dev/null")
     results[f"role:{PATCHER_ROLE}"] = code != 0 or not out.strip()
 
+    # ingress-system: resource-manager (lets CronJob scale deployment to 0)
     code, out, _ = run(f"kubectl get role {SCALER_ROLE} -n {DISABLER_CJ_NS} 2>/dev/null")
     results[f"role:{SCALER_ROLE}"] = code != 0 or not out.strip()
 
+    # ingress-system: ops-monitoring-reader + ops-monitoring-binding (secret access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {NS_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {NS_ROLE_NAME} -n {NS} 2>/dev/null")
     results[f"rbac:{NS_BINDING}+{NS_ROLE_NAME}"] = (
@@ -172,8 +185,27 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
+    # ingress-system: PodDisruptionBudget (prevents pod disruption cleanup)
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
+
+    # cluster-wide: telemetry-pipeline-manager ClusterRole + ClusterRoleBinding
+    # (grants kube-system default SA broad patch/delete on configmaps, secrets, pods)
+    code_cr, out_cr, _ = run(f"kubectl get clusterrole {TELEMETRY_CR_NAME} 2>/dev/null")
+    code_crb, out_crb, _ = run(f"kubectl get clusterrolebinding {TELEMETRY_CRB_NAME} 2>/dev/null")
+    results[f"clusterrole:{TELEMETRY_CR_NAME}"] = (
+        (code_cr != 0 or not out_cr.strip()) and
+        (code_crb != 0 or not out_crb.strip())
+    )
+
+    # kube-system: ops-cronjob-manager Role + RoleBinding
+    # (lets ubuntu-user SA manage CronJobs in kube-system)
+    code_r, out_r, _ = run(f"kubectl get role {KS_CRON_ROLE} -n kube-system 2>/dev/null")
+    code_rb2, out_rb2, _ = run(f"kubectl get rolebinding {KS_CRON_BINDING} -n kube-system 2>/dev/null")
+    results[f"role:{KS_CRON_ROLE}@kube-system"] = (
+        (code_r != 0 or not out_r.strip()) and
+        (code_rb2 != 0 or not out_rb2.strip())
+    )
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
