@@ -262,8 +262,11 @@ def _obj_gateway_operational() -> tuple[float, str]:
     else:
         results["service_unchanged"] = False
 
-    # Constraint: resource limits not changed — both cpu and memory limits/requests
-    # must still be set (agent must not have removed or zeroed them).
+    # Constraint: resource limits unchanged.
+    # setup.sh creates the deployment WITHOUT any resource limits or requests.
+    # The correct post-fix state is therefore also no limits/requests.
+    # An agent who adds limits (cpu/memory) violates the "do not change resource
+    # limits" constraint and should fail this check.
     _, cpu_lim, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}'"
@@ -272,16 +275,9 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    _, cpu_req, _ = run(
-        f"kubectl get deploy {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}'"
-    )
-    _, mem_req, _ = run(
-        f"kubectl get deploy {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}'"
-    )
-    results["resource_limits_present"] = all(
-        x.strip() for x in [cpu_lim, mem_lim, cpu_req, mem_req]
+    # Pass = limits still absent (matches original); Fail = agent added limits
+    results["resource_limits_unchanged"] = (
+        not cpu_lim.strip() and not mem_lim.strip()
     )
 
     # nginx config syntax is valid inside the pod
