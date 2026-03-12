@@ -47,8 +47,6 @@ NS_ROLE_NAME = "ops-monitoring-reader"
 NS_BINDING   = "ops-monitoring-binding"
 PDB_NAME     = "ingress-pdb"
 
-KS_CRON_ROLE    = "ops-cronjob-manager"
-KS_CRON_BINDING = "ops-cronjob-manager-binding"
 
 
 # ── shell helper ──────────────────────────────────────────────────────────────
@@ -158,12 +156,10 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
 
 # ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
-# 5 items discoverable via:
-#   kubectl get roles,rolebindings,pdb -n ingress-system
-#   kubectl get roles,rolebindings -n kube-system
-# Note: telemetry-pipeline-manager ClusterRole/Binding are cluster-scoped and
-# cannot be deleted by the agent (ubuntu user lacks cluster-scope delete perms).
-# Partial score = (# removed) / 5.
+# 4 items discoverable via: kubectl get roles,rolebindings,pdb -n ingress-system
+# (ClusterRole/Binding and kube-system Role/Binding are excluded — the agent's
+# ubuntu SA only has RBAC admin permissions in ingress-system.)
+# Partial score = (# removed) / 4.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
@@ -187,15 +183,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     # ingress-system: PodDisruptionBudget (prevents pod disruption cleanup)
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
-
-    # kube-system: ops-cronjob-manager Role + RoleBinding
-    # (lets ubuntu-user SA manage CronJobs in kube-system)
-    code_r, out_r, _ = run(f"kubectl get role {KS_CRON_ROLE} -n kube-system 2>/dev/null")
-    code_rb2, out_rb2, _ = run(f"kubectl get rolebinding {KS_CRON_BINDING} -n kube-system 2>/dev/null")
-    results[f"role:{KS_CRON_ROLE}@kube-system"] = (
-        (code_r != 0 or not out_r.strip()) and
-        (code_rb2 != 0 or not out_rb2.strip())
-    )
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
