@@ -252,24 +252,26 @@ EOF
 
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: ops-monitoring-reader
+  namespace: ingress-system
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["get", "list", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: ops-monitoring-binding
+  namespace: ingress-system
 subjects:
 - kind: ServiceAccount
   name: default
   namespace: default
 roleRef:
-  kind: ClusterRole
+  kind: Role
   apiGroup: rbac.authorization.k8s.io
   name: ops-monitoring-reader
 EOF

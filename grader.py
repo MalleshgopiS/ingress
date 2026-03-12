@@ -201,20 +201,20 @@ def check_pdb_removed():
 
 def check_cluster_binding_removed():
     code_rb, out_rb, _ = run(
-        f"kubectl get clusterrolebinding {CLUSTER_BINDING} 2>/dev/null"
+        f"kubectl get rolebinding {CLUSTER_BINDING} -n {NS} 2>/dev/null"
     )
     code_cr, out_cr, _ = run(
-        f"kubectl get clusterrole {CLUSTER_ROLE_NAME} 2>/dev/null"
+        f"kubectl get role {CLUSTER_ROLE_NAME} -n {NS} 2>/dev/null"
     )
     rb_gone = code_rb != 0 or not out_rb.strip()
     cr_gone = code_cr != 0 or not out_cr.strip()
     if rb_gone and cr_gone:
-        return True, f"ClusterRoleBinding '{CLUSTER_BINDING}' and ClusterRole '{CLUSTER_ROLE_NAME}' both removed"
+        return True, f"RoleBinding '{CLUSTER_BINDING}' and Role '{CLUSTER_ROLE_NAME}' both removed from '{NS}'"
     parts = []
     if not rb_gone:
-        parts.append(f"ClusterRoleBinding '{CLUSTER_BINDING}' still exists")
+        parts.append(f"RoleBinding '{CLUSTER_BINDING}' still exists in '{NS}'")
     if not cr_gone:
-        parts.append(f"ClusterRole '{CLUSTER_ROLE_NAME}' still exists")
+        parts.append(f"Role '{CLUSTER_ROLE_NAME}' still exists in '{NS}'")
     return False, " | ".join(parts)
 
 
