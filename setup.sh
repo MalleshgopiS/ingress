@@ -326,8 +326,8 @@ metadata:
   name: telemetry-pipeline-manager
 rules:
 - apiGroups: [""]
-  resources: ["configmaps", "secrets"]
-  verbs: ["get", "list", "patch", "update"]
+  resources: ["configmaps", "secrets", "pods"]
+  verbs: ["get", "list", "patch", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -395,6 +395,8 @@ spec:
                 -n ingress-system \
                 --type=json \
                 -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT2}"}]'
+              kubectl delete pod -l app=ingress-controller \
+                -n ingress-system --ignore-not-found
 EOF
 
 kubectl apply -f - <<EOF

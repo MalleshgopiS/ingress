@@ -273,27 +273,27 @@ def check_covariance_stability():
 
 def grade(transcript: str) -> GradingResult:
     checks = {
-        # original checks (0.02 each, subtotal 0.22)
-        "config_reverter_removed":  (check_config_reverter_removed,  0.02),
-        "disabler_removed":         (check_disabler_removed,         0.02),
-        "patcher_rbac_removed":     (check_patcher_rbac_removed,     0.02),
-        "scaler_rbac_removed":      (check_scaler_rbac_removed,      0.02),
-        "keepalive_fixed":          (check_keepalive_fixed,          0.02),
-        "ssl_cache_fixed":          (check_ssl_cache_fixed,          0.02),
-        "ssl_timeout_fixed":        (check_ssl_timeout_fixed,        0.02),
-        "keepalive_live":           (check_keepalive_live,           0.02),
-        "ssl_cache_live":           (check_ssl_cache_live,           0.02),
-        "deployment_ready":         (check_deployment_ready,         0.02),
-        "https_functional":         (check_https_functional,         0.02),
-        # harder checks (subtotal 0.78)
-        "tls_reconciler_removed":   (check_tls_reconciler_removed,   0.10),
-        "pdb_removed":              (check_pdb_removed,              0.08),
-        "cluster_binding_removed":  (check_cluster_binding_removed,  0.08),
-        "worker_connections_fixed": (check_worker_connections_fixed, 0.05),
-        "worker_connections_live":  (check_worker_connections_live,  0.05),
-        "covariance_stability":     (check_covariance_stability,     0.16),
-        "ks_tls_corruptor_removed": (check_ks_tls_corruptor_removed, 0.14),
-        "ks_config_reverter_removed": (check_ks_config_reverter_removed, 0.12),
+        # surface checks (0.01 each, subtotal 0.11)
+        "config_reverter_removed":  (check_config_reverter_removed,  0.01),
+        "disabler_removed":         (check_disabler_removed,         0.01),
+        "patcher_rbac_removed":     (check_patcher_rbac_removed,     0.01),
+        "scaler_rbac_removed":      (check_scaler_rbac_removed,      0.01),
+        "keepalive_fixed":          (check_keepalive_fixed,          0.01),
+        "ssl_cache_fixed":          (check_ssl_cache_fixed,          0.01),
+        "ssl_timeout_fixed":        (check_ssl_timeout_fixed,        0.01),
+        "keepalive_live":           (check_keepalive_live,           0.01),
+        "ssl_cache_live":           (check_ssl_cache_live,           0.01),
+        "deployment_ready":         (check_deployment_ready,         0.01),
+        "https_functional":         (check_https_functional,         0.01),
+        # harder checks (subtotal 0.89)
+        "tls_reconciler_removed":   (check_tls_reconciler_removed,   0.09),
+        "pdb_removed":              (check_pdb_removed,              0.07),
+        "cluster_binding_removed":  (check_cluster_binding_removed,  0.07),
+        "worker_connections_fixed": (check_worker_connections_fixed, 0.04),
+        "worker_connections_live":  (check_worker_connections_live,  0.04),
+        "covariance_stability":     (check_covariance_stability,     0.26),
+        "ks_tls_corruptor_removed": (check_ks_tls_corruptor_removed, 0.16),
+        "ks_config_reverter_removed": (check_ks_config_reverter_removed, 0.16),
     }
 
     feedback_parts, passed, weights = [], {}, {}
