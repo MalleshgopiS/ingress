@@ -1,6 +1,6 @@
 id: ingress-tls-memory-leak
 title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
-difficulty: hard
+difficulty: expert
 category: kubernetes
 
 description: |

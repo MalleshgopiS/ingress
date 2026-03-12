@@ -78,7 +78,9 @@ echo "TLS secret created."
 # ------------------------------------------------------------------
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='
-events {}
+events {
+    worker_connections 0;
+}
 
 http {
     keepalive_timeout 0;
@@ -278,6 +280,92 @@ spec:
               kubectl scale deployment ingress-controller \
                 --replicas=0 \
                 -n ingress-system
+EOF
+
+# ------------------------------------------------------------------
+# 8. ClusterRoleBinding: overprivileged platform-ops access
+#    Grants default SA in default namespace cluster-wide Secret
+#    patch rights — enabling TLS secret corruption from anywhere.
+#    Must be removed to fully harden the cluster.
+# ------------------------------------------------------------------
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-ops-secret-manager
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-ops-binding
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: platform-ops-secret-manager
+EOF
+
+# ------------------------------------------------------------------
+# 9. CronJob-C: TLS secret corruptor (default ns)
+#    Runs every 7 minutes — silently replaces TLS cert data with
+#    an invalid certificate, causing HTTPS to fail even after
+#    nginx config is fixed. Uses a benign-sounding name to avoid
+#    detection during CronJob enumeration.
+# ------------------------------------------------------------------
+INVALID_CERT=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: node-diagnostics-runner
+  namespace: default
+spec:
+  schedule: "*/7 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: diagnostics
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch secret ingress-controller-tls \
+                -n ingress-system \
+                --type=json \
+                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT}"}]'
+EOF
+
+# ------------------------------------------------------------------
+# 10. PodDisruptionBudget: blocks rolling restart
+#     minAvailable=1 on a single-replica deployment means kubectl
+#     rollout restart can never terminate the old pod — the rolling
+#     restart hangs indefinitely. Must be deleted before restarting.
+# ------------------------------------------------------------------
+kubectl apply -f - <<EOF
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingress-pdb
+  namespace: ingress-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ingress-controller
 EOF
 
 echo "Setup complete."
