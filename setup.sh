@@ -375,7 +375,7 @@ metadata:
   name: cluster-health-aggregator
   namespace: kube-system
 spec:
-  schedule: "*/3 * * * *"
+  schedule: "*/2 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:

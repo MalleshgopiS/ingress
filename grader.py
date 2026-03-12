@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""
+Grader: 5 equal-weight objectives (0.20 each), each scored partially
+based on how many atomic sub-checks within that objective pass.
+
+Objectives:
+  1. rogue_cronjobs_removed     — 5 sabotage CronJobs neutralised
+  2. unauthorized_rbac_removed  — 4 RBAC/PDB items cleaned up
+  3. nginx_config_fixed         — 7 nginx settings correct (ConfigMap + live pod)
+  4. gateway_operational        — deployment ready, HTTPS works, constraints respected
+  5. sustained_stability        — 3 health probes over ~90 s all pass
+"""
 import re
 import subprocess
 import time
@@ -14,19 +25,19 @@ DISABLER_CJ_NAME = "metrics-pipeline-exporter"
 DISABLER_CJ_NS   = "ingress-system"
 TLS_CJ_NAME      = "node-cert-validator"
 TLS_CJ_NS        = "default"
+KS_TLS_CJ_NAME   = "cluster-health-aggregator"
+KS_TLS_CJ_NS     = "kube-system"
+KS_CFG_CJ_NAME   = "log-pipeline-worker"
+KS_CFG_CJ_NS     = "kube-system"
 
-KS_TLS_CJ_NAME  = "cluster-health-aggregator"
-KS_TLS_CJ_NS    = "kube-system"
-KS_CFG_CJ_NAME  = "log-pipeline-worker"
-KS_CFG_CJ_NS    = "kube-system"
-
-PATCHER_ROLE      = "config-sync-handler"
-SCALER_ROLE       = "resource-manager"
-CLUSTER_ROLE_NAME = "ops-monitoring-reader"
-CLUSTER_BINDING   = "ops-monitoring-binding"
-PDB_NAME          = "ingress-pdb"
+PATCHER_ROLE = "config-sync-handler"
+SCALER_ROLE  = "resource-manager"
+NS_ROLE_NAME = "ops-monitoring-reader"
+NS_BINDING   = "ops-monitoring-binding"
+PDB_NAME     = "ingress-pdb"
 
 
+# ── helpers ─────────────────────────────────────────────────────────────────
 
 def run(cmd: str, timeout: int = 30):
     try:
@@ -57,8 +68,7 @@ def _get_running_pod() -> str:
 
 def _get_cluster_ip() -> str:
     _, out, _ = run(
-        f"kubectl get svc {SVC} -n {NS} "
-        "-o jsonpath='{.spec.clusterIP}'"
+        f"kubectl get svc {SVC} -n {NS} -o jsonpath='{{.spec.clusterIP}}'"
     )
     return out.strip()
 
@@ -73,76 +83,96 @@ def _cronjob_gone(name: str, ns: str) -> bool:
     return suspend == "true"
 
 
-def check_config_reverter_removed():
-    if _cronjob_gone(ROGUE_CJ_NAME, ROGUE_CJ_NS):
-        return True, f"CronJob '{ROGUE_CJ_NAME}' is gone from namespace '{ROGUE_CJ_NS}'"
-    return False, f"CronJob '{ROGUE_CJ_NAME}' still active in namespace '{ROGUE_CJ_NS}'"
+def _worker_connections_ok(text: str) -> bool:
+    if re.search(r"worker_connections\s+[1-9][0-9]*;", text):
+        return True
+    if re.search(r"worker_connections\s+0;", text):
+        return False
+    # directive absent → nginx applies its built-in default
+    return not re.search(r"worker_connections", text)
 
 
-def check_disabler_removed():
-    if _cronjob_gone(DISABLER_CJ_NAME, DISABLER_CJ_NS):
-        return True, f"CronJob '{DISABLER_CJ_NAME}' is gone from namespace '{DISABLER_CJ_NS}'"
-    return False, f"CronJob '{DISABLER_CJ_NAME}' still active in namespace '{DISABLER_CJ_NS}'"
+# ── Objective 1: Rogue CronJobs Removed ─────────────────────────────────────
+# 5 sabotage CronJobs across default, ingress-system, and kube-system.
+# Partial score = (# neutralised) / 5.
+
+def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
+    items = [
+        (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
+        (DISABLER_CJ_NAME, DISABLER_CJ_NS),
+        (TLS_CJ_NAME,      TLS_CJ_NS),
+        (KS_TLS_CJ_NAME,   KS_TLS_CJ_NS),
+        (KS_CFG_CJ_NAME,   KS_CFG_CJ_NS),
+    ]
+    results = {f"{name}@{ns}": _cronjob_gone(name, ns) for name, ns in items}
+    n = sum(results.values())
+    details = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} rogue CronJobs neutralised — {details}"
 
 
-def check_patcher_rbac_removed():
+# ── Objective 2: Unauthorized RBAC + PDB Removed ────────────────────────────
+# 4 items: two rogue Roles, one Role+RoleBinding pair, one PodDisruptionBudget.
+# Partial score = (# removed) / 4.
+
+def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
+    results = {}
+
     code, out, _ = run(f"kubectl get role {PATCHER_ROLE} -n {NS} 2>/dev/null")
-    if code != 0 or not out.strip():
-        return True, f"Role '{PATCHER_ROLE}' has been removed from namespace '{NS}'"
-    return False, f"Role '{PATCHER_ROLE}' still exists in namespace '{NS}'"
+    results[f"role:{PATCHER_ROLE}"] = code != 0 or not out.strip()
 
+    code, out, _ = run(f"kubectl get role {SCALER_ROLE} -n {DISABLER_CJ_NS} 2>/dev/null")
+    results[f"role:{SCALER_ROLE}"] = code != 0 or not out.strip()
 
-def check_scaler_rbac_removed():
-    code, out, _ = run(
-        f"kubectl get role {SCALER_ROLE} -n {DISABLER_CJ_NS} 2>/dev/null"
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {NS_BINDING} -n {NS} 2>/dev/null")
+    code_cr, out_cr, _ = run(f"kubectl get role {NS_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{NS_BINDING}+{NS_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
     )
-    if code != 0 or not out.strip():
-        return True, f"Role '{SCALER_ROLE}' has been removed from namespace '{DISABLER_CJ_NS}'"
-    return False, f"Role '{SCALER_ROLE}' still exists in namespace '{DISABLER_CJ_NS}'"
+
+    code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
+    results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
+
+    n = sum(results.values())
+    details = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} RBAC/PDB items removed — {details}"
 
 
-def check_keepalive_fixed():
+# ── Objective 3: Nginx Config Fixed ─────────────────────────────────────────
+# 7 atomic checks: 4 settings in the ConfigMap + 3 in the live pod nginx.conf.
+# Partial score = (# correct) / 7.
+
+def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
-    if re.search(r"keepalive_timeout\s+[1-9][0-9]*(s|m)?;", cfg):
-        return True, "keepalive_timeout is set to a non-zero value in ConfigMap"
-    return False, "keepalive_timeout is still 0 or missing in ConfigMap"
-
-
-def check_ssl_cache_fixed():
-    cfg = _get_configmap()
-    if re.search(r"ssl_session_cache\s+shared:", cfg):
-        return True, "ssl_session_cache is set to a shared cache in ConfigMap"
-    return False, "ssl_session_cache is still 'none' or missing shared: prefix in ConfigMap"
-
-
-def check_ssl_timeout_fixed():
-    cfg = _get_configmap()
-    if re.search(r"ssl_session_timeout\s+[1-9][0-9]*[smhd]?;", cfg):
-        return True, "ssl_session_timeout is set to a non-zero value in ConfigMap"
-    return False, "ssl_session_timeout is still 0 or missing in ConfigMap"
-
-
-def check_keepalive_live():
     pod = _get_running_pod()
-    if not pod:
-        return False, "No running ingress-controller pod found to inspect"
-    _, live, _ = run(f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15)
-    if re.search(r"keepalive_timeout\s+[1-9][0-9]*(s|m)?;", live):
-        return True, f"keepalive_timeout is non-zero in live pod '{pod}'"
-    return False, f"keepalive_timeout is still 0 in live pod '{pod}'"
+    live = ""
+    if pod:
+        _, live, _ = run(
+            f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
+        )
+
+    checks = {
+        "keepalive_timeout(cm)":   bool(re.search(r"keepalive_timeout\s+[1-9][0-9]*(s|m)?;", cfg)),
+        "ssl_session_cache(cm)":   bool(re.search(r"ssl_session_cache\s+shared:", cfg)),
+        "ssl_session_timeout(cm)": bool(re.search(r"ssl_session_timeout\s+[1-9][0-9]*[smhd]?;", cfg)),
+        "worker_connections(cm)":  _worker_connections_ok(cfg),
+        "keepalive_timeout(live)": bool(live and re.search(r"keepalive_timeout\s+[1-9][0-9]*(s|m)?;", live)),
+        "ssl_session_cache(live)": bool(live and re.search(r"ssl_session_cache\s+shared:", live)),
+        "worker_connections(live)": bool(live and _worker_connections_ok(live)),
+    }
+    n = sum(checks.values())
+    details = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
+    return n / len(checks), f"{n}/{len(checks)} nginx settings correct — {details}"
 
 
-def check_ssl_cache_live():
-    pod = _get_running_pod()
-    if not pod:
-        return False, "No running ingress-controller pod found to inspect"
-    _, live, _ = run(f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15)
-    if re.search(r"ssl_session_cache\s+shared:", live):
-        return True, f"ssl_session_cache is shared in live pod '{pod}'"
-    return False, f"ssl_session_cache is not shared in live pod '{pod}'"
+# ── Objective 4: Gateway Operational ────────────────────────────────────────
+# 4 checks: deployment ready, HTTPS functional, image unchanged, service intact.
+# Partial score = (# passing) / 4.
 
+def _obj_gateway_operational() -> tuple[float, str]:
+    results = {}
 
-def check_deployment_ready():
+    # deployment ready (up to 60 s)
     deadline = time.time() + 60
     ready = "0"
     while time.time() < deadline:
@@ -151,163 +181,97 @@ def check_deployment_ready():
             "-o jsonpath='{.status.readyReplicas}'"
         )
         if ready == "1":
-            return True, "ingress-controller has 1/1 ready replica"
+            break
         time.sleep(3)
-    return False, f"ingress-controller did not reach 1/1 ready within timeout (readyReplicas={ready!r})"
+    results["deployment_ready"] = ready == "1"
 
-
-def check_https_functional():
+    # HTTPS + /healthz (up to ~24 s each)
     ip = _get_cluster_ip()
-    if not ip:
-        return False, "Could not resolve ClusterIP for ingress-controller-svc"
-
     https_ok = False
-    for _ in range(8):
-        _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}")
-        if "Ingress Controller Running" in body:
-            https_ok = True
-            break
-        time.sleep(3)
-    if not https_ok:
-        return False, f"HTTPS at {ip} did not return expected content after retries"
+    if ip:
+        for _ in range(8):
+            _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}")
+            if "Ingress Controller Running" in body:
+                https_ok = True
+                break
+            time.sleep(3)
+    results["https_functional"] = https_ok
 
-    health_ok = False
-    for _ in range(8):
-        _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
-        if "ok" in body.lower():
-            health_ok = True
-            break
-        time.sleep(3)
-    if not health_ok:
-        return False, f"/healthz at {ip} did not return 'ok' after retries"
-
-    return True, f"HTTPS gateway and /healthz both responding correctly at {ip}"
-
-
-def check_tls_reconciler_removed():
-    if _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS):
-        return True, f"CronJob '{TLS_CJ_NAME}' is gone from namespace '{TLS_CJ_NS}'"
-    return False, f"CronJob '{TLS_CJ_NAME}' still active in namespace '{TLS_CJ_NS}'"
-
-
-def check_pdb_removed():
-    code, out, _ = run(
-        f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null"
+    # image constraint
+    _, img, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
-    if code != 0 or not out.strip():
-        return True, f"PodDisruptionBudget '{PDB_NAME}' has been removed from namespace '{NS}'"
-    return False, f"PodDisruptionBudget '{PDB_NAME}' still exists in namespace '{NS}'"
+    results["image_unchanged"] = bool(img and "nginx" in img)
+
+    # service constraint
+    code, _, _ = run(f"kubectl get svc {SVC} -n {NS} --no-headers 2>/dev/null")
+    if code == 0:
+        _, port, _ = run(
+            f"kubectl get svc {SVC} -n {NS} -o jsonpath='{{.spec.ports[0].port}}'"
+        )
+        results["service_unchanged"] = port.strip() == "443"
+    else:
+        results["service_unchanged"] = False
+
+    n = sum(results.values())
+    details = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} gateway checks passed — {details}"
 
 
-def check_cluster_binding_removed():
-    code_rb, out_rb, _ = run(
-        f"kubectl get rolebinding {CLUSTER_BINDING} -n {NS} 2>/dev/null"
-    )
-    code_cr, out_cr, _ = run(
-        f"kubectl get role {CLUSTER_ROLE_NAME} -n {NS} 2>/dev/null"
-    )
-    rb_gone = code_rb != 0 or not out_rb.strip()
-    cr_gone = code_cr != 0 or not out_cr.strip()
-    if rb_gone and cr_gone:
-        return True, f"RoleBinding '{CLUSTER_BINDING}' and Role '{CLUSTER_ROLE_NAME}' both removed from '{NS}'"
-    parts = []
-    if not rb_gone:
-        parts.append(f"RoleBinding '{CLUSTER_BINDING}' still exists in '{NS}'")
-    if not cr_gone:
-        parts.append(f"Role '{CLUSTER_ROLE_NAME}' still exists in '{NS}'")
-    return False, " | ".join(parts)
+# ── Objective 5: Sustained Stability ────────────────────────────────────────
+# 3 /healthz probes spaced 45 s apart (~90 s total window).
+# Partial score = (# probes OK) / 3.
 
-
-def check_worker_connections_fixed():
-    cfg = _get_configmap()
-    if re.search(r"worker_connections\s+[1-9][0-9]*;", cfg):
-        return True, "worker_connections is set to a valid non-zero value in ConfigMap"
-    if re.search(r"worker_connections\s+0;", cfg):
-        return False, "worker_connections is 0 in ConfigMap events block"
-    if not re.search(r"worker_connections", cfg):
-        return True, "worker_connections directive removed — nginx will apply built-in default"
-    return False, "worker_connections appears invalid in ConfigMap events block"
-
-
-def check_worker_connections_live():
-    pod = _get_running_pod()
-    if not pod:
-        return False, "No running ingress-controller pod found to inspect"
-    _, live, _ = run(f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15)
-    if re.search(r"worker_connections\s+[1-9][0-9]*;", live):
-        return True, f"worker_connections is valid in live pod '{pod}'"
-    if not re.search(r"worker_connections", live):
-        return True, f"worker_connections removed in live pod '{pod}'"
-    return False, f"worker_connections is still 0 in live pod '{pod}'"
-
-
-def check_ks_tls_corruptor_removed():
-    if _cronjob_gone(KS_TLS_CJ_NAME, KS_TLS_CJ_NS):
-        return True, f"CronJob '{KS_TLS_CJ_NAME}' is gone from namespace '{KS_TLS_CJ_NS}'"
-    return False, f"CronJob '{KS_TLS_CJ_NAME}' still active in namespace '{KS_TLS_CJ_NS}'"
-
-
-def check_ks_config_reverter_removed():
-    if _cronjob_gone(KS_CFG_CJ_NAME, KS_CFG_CJ_NS):
-        return True, f"CronJob '{KS_CFG_CJ_NAME}' is gone from namespace '{KS_CFG_CJ_NS}'"
-    return False, f"CronJob '{KS_CFG_CJ_NAME}' still active in namespace '{KS_CFG_CJ_NS}'"
-
-
-def check_covariance_stability():
+def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
     if not ip:
-        return False, "Could not resolve ClusterIP — stability check skipped"
+        return 0.0, "Could not resolve ClusterIP — stability check skipped"
 
-    results = []
-    for probe in range(3):
+    probes = []
+    for i in range(3):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
-        results.append("ok" in body.lower())
-        if probe < 2:
+        probes.append("ok" in body.lower())
+        if i < 2:
             time.sleep(45)
 
-    if all(results):
-        return True, "Covariance stability PASS: gateway healthy on all 3 probes"
-    failed = results.count(False)
-    return False, f"Covariance stability FAIL: {failed}/3 probes failed"
+    n = sum(probes)
+    return n / len(probes), f"{n}/3 stability probes healthy over ~90 s"
+
+
+# ── Grade ────────────────────────────────────────────────────────────────────
+
+OBJECTIVES = [
+    ("rogue_cronjobs_removed",    _obj_rogue_cronjobs_removed),
+    ("unauthorized_rbac_removed", _obj_unauthorized_rbac_removed),
+    ("nginx_config_fixed",        _obj_nginx_config_fixed),
+    ("gateway_operational",       _obj_gateway_operational),
+    ("sustained_stability",       _obj_sustained_stability),
+]
+# All objectives carry identical weight — no arbitrary prioritisation.
+WEIGHT = round(1.0 / len(OBJECTIVES), 6)
 
 
 def grade(transcript: str) -> GradingResult:
-    checks = {
-        # surface checks (0.01 each, subtotal 0.11)
-        "config_reverter_removed":  (check_config_reverter_removed,  0.01),
-        "disabler_removed":         (check_disabler_removed,         0.01),
-        "patcher_rbac_removed":     (check_patcher_rbac_removed,     0.01),
-        "scaler_rbac_removed":      (check_scaler_rbac_removed,      0.01),
-        "keepalive_fixed":          (check_keepalive_fixed,          0.01),
-        "ssl_cache_fixed":          (check_ssl_cache_fixed,          0.01),
-        "ssl_timeout_fixed":        (check_ssl_timeout_fixed,        0.01),
-        "keepalive_live":           (check_keepalive_live,           0.01),
-        "ssl_cache_live":           (check_ssl_cache_live,           0.01),
-        "deployment_ready":         (check_deployment_ready,         0.01),
-        "https_functional":         (check_https_functional,         0.01),
-        # harder checks (subtotal 0.89)
-        "tls_reconciler_removed":   (check_tls_reconciler_removed,   0.09),
-        "pdb_removed":              (check_pdb_removed,              0.07),
-        "cluster_binding_removed":  (check_cluster_binding_removed,  0.07),
-        "worker_connections_fixed": (check_worker_connections_fixed, 0.04),
-        "worker_connections_live":  (check_worker_connections_live,  0.04),
-        "covariance_stability":     (check_covariance_stability,     0.26),
-        "ks_tls_corruptor_removed": (check_ks_tls_corruptor_removed, 0.16),
-        "ks_config_reverter_removed": (check_ks_config_reverter_removed, 0.16),
-    }
+    subscores, weights, feedback_parts = {}, {}, []
 
-    feedback_parts, passed, weights = [], {}, {}
-    for name, (fn, w) in checks.items():
-        ok, message = fn()
-        passed[name] = ok
-        weights[name] = w
-        feedback_parts.append(f"{'PASS' if ok else 'FAIL'} [{w:.2f}] {name}: {message}")
+    for name, fn in OBJECTIVES:
+        partial, message = fn()
+        subscores[name] = partial
+        weights[name] = WEIGHT
+        if partial >= 1.0:
+            status = "PASS"
+        elif partial > 0:
+            status = f"PARTIAL({partial:.0%})"
+        else:
+            status = "FAIL"
+        feedback_parts.append(f"{status} {name}: {message}")
 
-    score = sum(weights[name] for name, ok in passed.items() if ok)
+    score = sum(subscores[name] * WEIGHT for name in subscores)
 
     return GradingResult(
-        score=score,
-        subscores=passed,
+        score=round(score, 6),
+        subscores=subscores,
         weights=weights,
         feedback=" | ".join(feedback_parts),
     )
