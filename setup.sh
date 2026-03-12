@@ -150,8 +150,9 @@ kubectl rollout status deployment/ingress-controller -n $NS
 echo "Ingress controller deployed."
 
 # ------------------------------------------------------------------
-# 5. RBAC so the rogue CronJob (default/default SA) can patch
-#    the ConfigMap in ingress-system
+# 5. RBAC for rogue CronJobs
+#    CronJob-A (default/default SA) — patches ConfigMaps in ingress-system
+#    CronJob-B (ingress-system/default SA) — scales deployment in ingress-system
 # ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
@@ -175,12 +176,35 @@ roleRef:
   kind: ClusterRole
   apiGroup: rbac.authorization.k8s.io
   name: configmap-patcher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-scaler
+  namespace: ingress-system
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/scale"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployment-scaler-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: ingress-system
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: deployment-scaler
 EOF
 
 # ------------------------------------------------------------------
-# 6. Rogue CronJob — disguised as a platform reconciler.
-#    Lives in the default namespace. Runs every 2 minutes and
-#    silently reverts the ConfigMap to the broken state.
+# 6. CronJob-A: config reverter (default ns)
+#    Runs every minute — reverts all three broken nginx settings.
 # ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
@@ -189,7 +213,7 @@ metadata:
   name: platform-config-reconciler
   namespace: default
 spec:
-  schedule: "*/2 * * * *"
+  schedule: "*/1 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:
@@ -213,6 +237,39 @@ spec:
                     "nginx.conf": "\nevents {}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
                   }
                 }'
+EOF
+
+# ------------------------------------------------------------------
+# 7. CronJob-B: deployment disabler (ingress-system ns)
+#    Runs every 3 minutes — silently scales the controller to 0.
+#    Different namespace and mechanism than CronJob-A.
+# ------------------------------------------------------------------
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gateway-health-monitor
+  namespace: ingress-system
+spec:
+  schedule: "*/3 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: monitor
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl scale deployment ingress-controller \
+                --replicas=0 \
+                -n ingress-system
 EOF
 
 echo "Setup complete."

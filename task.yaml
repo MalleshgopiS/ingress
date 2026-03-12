@@ -11,9 +11,9 @@ description: |
   briefly, then degrades again. The team has ruled out
   infrastructure failure and suspects the ingress configuration.
 
-  A previous on-call engineer attempted a manual config patch
-  but reported that the fix did not hold. The cause of that
-  rollback is unknown.
+  A previous on-call engineer applied a configuration fix but
+  observed the changes were overwritten within minutes. Something
+  in the cluster appears to be actively reverting the configuration.
 
   Workloads are deployed in the ingress-system namespace.
 
@@ -27,7 +27,6 @@ constraints:
   - Do not modify container images
   - Do not change resource limits
   - Do not add or remove services
-  - Apply configuration-level fixes only
 
 allowed_namespaces:
   - default
