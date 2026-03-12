@@ -66,9 +66,7 @@ echo "TLS secret created."
 
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='
-events {
-    worker_connections 0;
-}
+events {}
 
 http {
     keepalive_timeout 0;
