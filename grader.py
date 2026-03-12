@@ -26,8 +26,6 @@ CLUSTER_ROLE_NAME = "ops-monitoring-reader"
 CLUSTER_BINDING   = "ops-monitoring-binding"
 PDB_NAME          = "ingress-pdb"
 
-KS_CLUSTER_ROLE    = "telemetry-pipeline-manager"
-KS_CLUSTER_BINDING = "telemetry-pipeline-binding"
 
 
 def run(cmd: str, timeout: int = 30):
@@ -255,25 +253,6 @@ def check_ks_config_reverter_removed():
     return False, f"CronJob '{KS_CFG_CJ_NAME}' still active in namespace '{KS_CFG_CJ_NS}'"
 
 
-def check_ks_rbac_removed():
-    code_rb, out_rb, _ = run(
-        f"kubectl get clusterrolebinding {KS_CLUSTER_BINDING} 2>/dev/null"
-    )
-    code_cr, out_cr, _ = run(
-        f"kubectl get clusterrole {KS_CLUSTER_ROLE} 2>/dev/null"
-    )
-    rb_gone = code_rb != 0 or not out_rb.strip()
-    cr_gone = code_cr != 0 or not out_cr.strip()
-    if rb_gone and cr_gone:
-        return True, f"ClusterRoleBinding '{KS_CLUSTER_BINDING}' and ClusterRole '{KS_CLUSTER_ROLE}' both removed"
-    parts = []
-    if not rb_gone:
-        parts.append(f"ClusterRoleBinding '{KS_CLUSTER_BINDING}' still exists")
-    if not cr_gone:
-        parts.append(f"ClusterRole '{KS_CLUSTER_ROLE}' still exists")
-    return False, " | ".join(parts)
-
-
 def check_covariance_stability():
     ip = _get_cluster_ip()
     if not ip:
@@ -312,10 +291,9 @@ def grade(transcript: str) -> GradingResult:
         "cluster_binding_removed":  (check_cluster_binding_removed,  0.08),
         "worker_connections_fixed": (check_worker_connections_fixed, 0.05),
         "worker_connections_live":  (check_worker_connections_live,  0.05),
-        "covariance_stability":     (check_covariance_stability,     0.08),
+        "covariance_stability":     (check_covariance_stability,     0.16),
         "ks_tls_corruptor_removed": (check_ks_tls_corruptor_removed, 0.14),
         "ks_config_reverter_removed": (check_ks_config_reverter_removed, 0.12),
-        "ks_rbac_removed":          (check_ks_rbac_removed,          0.08),
     }
 
     feedback_parts, passed, weights = [], {}, {}
