@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# ------------------------------------------------------------------
-# 0. Wait for cluster to be ready
-# ------------------------------------------------------------------
 echo "Waiting for cluster..."
 for i in $(seq 1 60); do
   if kubectl get nodes --no-headers 2>/dev/null | grep -q " Ready"; then
@@ -17,9 +14,6 @@ kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
 NS="ingress-system"
 
-# ------------------------------------------------------------------
-# 1. Namespace + RBAC
-# ------------------------------------------------------------------
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f - <<EOF
@@ -48,9 +42,6 @@ roleRef:
   name: ingress-admin
 EOF
 
-# ------------------------------------------------------------------
-# 2. TLS certificates
-# ------------------------------------------------------------------
 TMP_TLS_DIR="/tmp/ingress-tls"
 mkdir -p "$TMP_TLS_DIR"
 
@@ -73,9 +64,6 @@ kubectl create secret tls ingress-controller-tls \
 
 echo "TLS secret created."
 
-# ------------------------------------------------------------------
-# 3. Create nginx ConfigMap (broken settings)
-# ------------------------------------------------------------------
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='
 events {
@@ -102,10 +90,6 @@ http {
     }
 }'
 
-# ------------------------------------------------------------------
-# 4. Deploy ingress controller
-# ------------------------------------------------------------------
-# Import pre-cached nginx image into k3s containerd (offline-safe)
 echo "Importing nginx image into containerd..."
 ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /nginx.tar 2>/dev/null || \
   ctr -n k8s.io images import /nginx.tar 2>/dev/null || true
@@ -157,16 +141,11 @@ kubectl expose deployment ingress-controller \
 kubectl rollout status deployment/ingress-controller -n $NS
 echo "Ingress controller deployed."
 
-# ------------------------------------------------------------------
-# 5. RBAC for rogue CronJobs
-#    CronJob-A (default/default SA) — patches ConfigMaps in ingress-system
-#    CronJob-B (ingress-system/default SA) — scales deployment in ingress-system
-# ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: configmap-patcher
+  name: config-sync-handler
   namespace: ingress-system
 rules:
 - apiGroups: [""]
@@ -176,7 +155,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: configmap-patcher-binding
+  name: config-sync-handler-binding
   namespace: ingress-system
 subjects:
 - kind: ServiceAccount
@@ -185,12 +164,12 @@ subjects:
 roleRef:
   kind: Role
   apiGroup: rbac.authorization.k8s.io
-  name: configmap-patcher
+  name: config-sync-handler
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: deployment-scaler
+  name: resource-manager
   namespace: ingress-system
 rules:
 - apiGroups: ["apps"]
@@ -200,7 +179,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: deployment-scaler-binding
+  name: resource-manager-binding
   namespace: ingress-system
 subjects:
 - kind: ServiceAccount
@@ -209,18 +188,14 @@ subjects:
 roleRef:
   kind: Role
   apiGroup: rbac.authorization.k8s.io
-  name: deployment-scaler
+  name: resource-manager
 EOF
 
-# ------------------------------------------------------------------
-# 6. CronJob-A: config reverter (default ns)
-#    Runs every minute — reverts all three broken nginx settings.
-# ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: platform-config-reconciler
+  name: config-cache-warmer
   namespace: default
 spec:
   schedule: "*/1 * * * *"
@@ -233,7 +208,7 @@ spec:
           serviceAccountName: default
           restartPolicy: Never
           containers:
-          - name: reconciler
+          - name: warmer
             image: bitnami/kubectl:latest
             command:
             - /bin/sh
@@ -244,21 +219,16 @@ spec:
                 --type merge \
                 -p '{
                   "data": {
-                    "nginx.conf": "\nevents {}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
+                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
                   }
                 }'
 EOF
 
-# ------------------------------------------------------------------
-# 7. CronJob-B: deployment disabler (ingress-system ns)
-#    Runs every 3 minutes — silently scales the controller to 0.
-#    Different namespace and mechanism than CronJob-A.
-# ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: gateway-health-monitor
+  name: metrics-pipeline-exporter
   namespace: ingress-system
 spec:
   schedule: "*/3 * * * *"
@@ -271,7 +241,7 @@ spec:
           serviceAccountName: default
           restartPolicy: Never
           containers:
-          - name: monitor
+          - name: exporter
             image: bitnami/kubectl:latest
             command:
             - /bin/sh
@@ -282,17 +252,11 @@ spec:
                 -n ingress-system
 EOF
 
-# ------------------------------------------------------------------
-# 8. ClusterRoleBinding: overprivileged platform-ops access
-#    Grants default SA in default namespace cluster-wide Secret
-#    patch rights — enabling TLS secret corruption from anywhere.
-#    Must be removed to fully harden the cluster.
-# ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: platform-ops-secret-manager
+  name: ops-monitoring-reader
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -301,7 +265,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: platform-ops-binding
+  name: ops-monitoring-binding
 subjects:
 - kind: ServiceAccount
   name: default
@@ -309,22 +273,15 @@ subjects:
 roleRef:
   kind: ClusterRole
   apiGroup: rbac.authorization.k8s.io
-  name: platform-ops-secret-manager
+  name: ops-monitoring-reader
 EOF
 
-# ------------------------------------------------------------------
-# 9. CronJob-C: TLS secret corruptor (default ns)
-#    Runs every 7 minutes — silently replaces TLS cert data with
-#    an invalid certificate, causing HTTPS to fail even after
-#    nginx config is fixed. Uses a benign-sounding name to avoid
-#    detection during CronJob enumeration.
-# ------------------------------------------------------------------
 INVALID_CERT=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: node-diagnostics-runner
+  name: node-cert-validator
   namespace: default
 spec:
   schedule: "*/7 * * * *"
@@ -337,7 +294,7 @@ spec:
           serviceAccountName: default
           restartPolicy: Never
           containers:
-          - name: diagnostics
+          - name: validator
             image: bitnami/kubectl:latest
             command:
             - /bin/sh
@@ -349,12 +306,6 @@ spec:
                 -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT}"}]'
 EOF
 
-# ------------------------------------------------------------------
-# 10. PodDisruptionBudget: blocks rolling restart
-#     minAvailable=1 on a single-replica deployment means kubectl
-#     rollout restart can never terminate the old pod — the rolling
-#     restart hangs indefinitely. Must be deleted before restarting.
-# ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -368,4 +319,92 @@ spec:
       app: ingress-controller
 EOF
 
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: telemetry-pipeline-manager
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: telemetry-pipeline-binding
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+  name: telemetry-pipeline-manager
+EOF
+
+INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-health-aggregator
+  namespace: kube-system
+spec:
+  schedule: "*/3 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: aggregator
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch secret ingress-controller-tls \
+                -n ingress-system \
+                --type=json \
+                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT2}"}]'
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-pipeline-worker
+  namespace: kube-system
+spec:
+  schedule: "*/2 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: worker
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch configmap ingress-nginx-config \
+                -n ingress-system \
+                --type merge \
+                -p '{
+                  "data": {
+                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
+                  }
+                }'
+EOF
+
 echo "Setup complete."
+rm -f /setup.sh

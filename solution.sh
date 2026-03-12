@@ -4,50 +4,48 @@ set -e
 NS=ingress-system
 DEPLOY=ingress-controller
 
-# Step 1: Remove all three rogue CronJobs.
-# CronJob-A (default/platform-config-reconciler): reverts nginx config every minute.
-# CronJob-B (ingress-system/gateway-health-monitor): scales deployment to 0 every 3 min.
-# CronJob-C (default/node-diagnostics-runner): corrupts TLS secret every 7 min.
-# None of the fixes below will hold until all three are gone.
 echo "Removing rogue CronJobs..."
-kubectl delete cronjob platform-config-reconciler -n default --ignore-not-found
-kubectl delete cronjob gateway-health-monitor -n ingress-system --ignore-not-found
-kubectl delete cronjob node-diagnostics-runner -n default --ignore-not-found
+kubectl delete cronjob config-cache-warmer -n default --ignore-not-found
+kubectl delete cronjob metrics-pipeline-exporter -n ingress-system --ignore-not-found
+kubectl delete cronjob node-cert-validator -n default --ignore-not-found
+kubectl delete cronjob cluster-health-aggregator -n kube-system --ignore-not-found
+kubectl delete cronjob log-pipeline-worker -n kube-system --ignore-not-found
 
-# Clean up any in-flight Jobs spawned by the CronJobs
-for cj in platform-config-reconciler node-diagnostics-runner; do
+for cj in config-cache-warmer node-cert-validator; do
   kubectl get jobs -n default -o name 2>/dev/null \
     | grep "$cj" \
     | xargs -r kubectl delete -n default --ignore-not-found 2>/dev/null || true
 done
 kubectl get jobs -n ingress-system -o name 2>/dev/null \
-  | grep gateway-health-monitor \
+  | grep metrics-pipeline-exporter \
   | xargs -r kubectl delete -n ingress-system --ignore-not-found 2>/dev/null || true
+for cj in cluster-health-aggregator log-pipeline-worker; do
+  kubectl get jobs -n kube-system -o name 2>/dev/null \
+    | grep "$cj" \
+    | xargs -r kubectl delete -n kube-system --ignore-not-found 2>/dev/null || true
+done
 
 sleep 5
 
-# Step 1b: Remove all rogue RBAC — namespace-scoped and cluster-scoped.
 echo "Removing rogue RBAC..."
-kubectl delete role configmap-patcher -n ingress-system --ignore-not-found
-kubectl delete rolebinding configmap-patcher-binding -n ingress-system --ignore-not-found
-kubectl delete role deployment-scaler -n ingress-system --ignore-not-found
-kubectl delete rolebinding deployment-scaler-binding -n ingress-system --ignore-not-found
-kubectl delete clusterrolebinding platform-ops-binding --ignore-not-found
-kubectl delete clusterrole platform-ops-secret-manager --ignore-not-found
+kubectl delete role config-sync-handler -n ingress-system --ignore-not-found
+kubectl delete rolebinding config-sync-handler-binding -n ingress-system --ignore-not-found
+kubectl delete role resource-manager -n ingress-system --ignore-not-found
+kubectl delete rolebinding resource-manager-binding -n ingress-system --ignore-not-found
+kubectl delete clusterrolebinding ops-monitoring-binding --ignore-not-found
+kubectl delete clusterrole ops-monitoring-reader --ignore-not-found
+kubectl delete clusterrolebinding telemetry-pipeline-binding --ignore-not-found
+kubectl delete clusterrole telemetry-pipeline-manager --ignore-not-found
 
-# Step 2: Remove the PodDisruptionBudget that blocks rolling restarts.
-# minAvailable=1 on a 1-replica deployment deadlocks rollout restart.
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found
 
-# Step 3: Restore replicas if CronJob-B already scaled the deployment to 0.
 REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
 if [ "$REPLICAS" = "0" ]; then
   echo "Deployment was scaled to 0 — restoring..."
   kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
 fi
 
-# Step 4: Restore TLS secret if CronJob-C corrupted it.
 echo "Checking TLS secret validity..."
 TLS_CRT=$(kubectl get secret ingress-controller-tls -n $NS \
   -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
@@ -68,7 +66,6 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
   echo "TLS secret restored."
 fi
 
-# Step 5: Fix the nginx ConfigMap — all four broken settings.
 echo "Fetching nginx config..."
 kubectl get configmap ingress-nginx-config -n $NS \
   -o jsonpath='{.data.nginx\.conf}' > /tmp/nginx.conf
@@ -91,8 +88,6 @@ kubectl create configmap ingress-nginx-config \
   --from-file=nginx.conf=/tmp/nginx.conf \
   -n $NS -o yaml --dry-run=client | kubectl apply -f -
 
-# Step 6: Rolling restart to apply the new config.
-# PDB has been removed in Step 2, so this will complete.
 echo "Restarting deployment..."
 kubectl rollout restart deployment/$DEPLOY -n $NS
 kubectl rollout status deployment/$DEPLOY -n $NS
