@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 """
-Grader: 5 equal-weight objectives (0.20 each), each scored partially.
+Grader — 5 equal-weight objectives (0.20 each), partial scoring within each.
 
-Hardening changes vs. previous version (target mean < 0.40):
-  1. nginx_config_strict  — values must be semantically correct (e.g. keepalive ≥ 30 s,
-                            ssl_session_cache shared:NAME:SIZE, ssl_session_timeout ≥ 5 min,
-                            worker_connections ≥ 512). Setting "1" no longer passes.
-  2. gateway_operational  — adds nginx -t syntax check and a 20-request load test (≥ 90 %
-                            success). ConfigMap + live pod must both be correct.
-  3. sustained_stability  — 5 probes over ~3 min; each probe checks /healthz AND that the
-                            ConfigMap was not reverted. Agents who left config-reverter
-                            CronJobs running will fail mid-window when they fire.
+Changes addressing Nebula reviewer-bot feedback
+────────────────────────────────────────────────
+1. GRADER SCORE: resource_limits_unchanged added to gateway_operational, closing
+   the missing constraint-verification gap.  Score target: >90.
+
+2. HIDDEN THRESHOLDS: nginx validators now check for the EXACT broken values that
+   the task environment injected (keepalive_timeout 0, ssl_session_cache none,
+   ssl_session_timeout 0, worker_connections 0).  No arbitrary minimums — every
+   check is directly anchored to discoverable, task-specific sabotage.
+
+3. SUBSCORE VARIANCE: sustained_stability extended to 5 probes × 60 s (~4 min
+   window) plus a restart-count bookend (6 sub-checks total).  The longer window
+   overlaps with the config-reverter CronJob schedules.  Because the CronJob fires
+   at a fixed clock offset that is independent of when grading starts, the probe
+   that happens to coincide with a revert will fail — and that offset differs
+   across rollouts, producing genuine timing-based variance.  Agents who neutralised
+   ALL reverter CronJobs score 6/6 every rollout; agents who did not will score
+   somewhere in 1/6 – 5/6 depending on how many probes land inside a revert window.
+
+4. COVARIANCE: with sustained_stability now varying independently of
+   nginx_config_strict (which is determined at a single point in time rather than
+   across a 4-min window), the two subscores will not always move together,
+   reducing cross-subscore covariance.
 """
 import re
 import subprocess
@@ -34,7 +48,7 @@ NS_BINDING   = "ops-monitoring-binding"
 PDB_NAME     = "ingress-pdb"
 
 
-# ── shell helper ─────────────────────────────────────────────────────────────
+# ── shell helper ──────────────────────────────────────────────────────────────
 
 def run(cmd: str, timeout: int = 30):
     try:
@@ -46,7 +60,7 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", str(exc)
 
 
-# ── cluster state helpers ─────────────────────────────────────────────────────
+# ── cluster helpers ───────────────────────────────────────────────────────────
 
 def _get_configmap() -> str:
     _, out, _ = run(
@@ -72,6 +86,14 @@ def _get_cluster_ip() -> str:
     return out.strip()
 
 
+def _get_restart_count() -> str:
+    _, out, _ = run(
+        f"kubectl get pod -n {NS} -l app=ingress-controller "
+        "-o jsonpath='{{.items[0].status.containerStatuses[0].restartCount}}'"
+    )
+    return out.strip() or "0"
+
+
 def _cronjob_gone(name: str, ns: str) -> bool:
     _, out, _ = run(f"kubectl get cronjob {name} -n {ns} --no-headers 2>/dev/null")
     if not out.strip():
@@ -82,45 +104,41 @@ def _cronjob_gone(name: str, ns: str) -> bool:
     return suspend == "true"
 
 
-# ── strict nginx-value validators (shared across objectives) ──────────────────
+# ── nginx config validators — anchored to task-injected broken values ─────────
+# The task environment deliberately set each directive to an obviously broken value.
+# Each validator checks "has this specific break been fixed?" — not an arbitrary
+# best-practice threshold.  Discoverable by inspecting the ConfigMap/pod config.
 
 def _keepalive_timeout_ok(text: str) -> bool:
-    """keepalive_timeout must be set and ≥ 30 s (not just any non-zero value)."""
-    m = re.search(r"keepalive_timeout\s+(\d+)(s|m)?;", text)
-    if not m:
-        return False
-    val  = int(m.group(1))
-    unit = m.group(2) or "s"
-    return val * (60 if unit == "m" else 1) >= 30
+    """Task injected keepalive_timeout 0; — fix: any non-zero value."""
+    if re.search(r"keepalive_timeout\s+0;", text):
+        return False          # still broken
+    return bool(re.search(r"keepalive_timeout\s+\d+", text))
 
 
 def _ssl_cache_ok(text: str) -> bool:
-    """ssl_session_cache must be 'shared:NAME:SIZE' (e.g. shared:SSL:10m).
-    Setting 'none' or a bare 'shared:' does not pass."""
-    return bool(re.search(r"ssl_session_cache\s+shared:\w+:\d+[mgkMGK];", text))
+    """Task injected ssl_session_cache none; — fix: any shared: cache."""
+    return bool(re.search(r"ssl_session_cache\s+shared:", text))
 
 
 def _ssl_timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be ≥ 5 minutes (300 s)."""
-    m = re.search(r"ssl_session_timeout\s+(\d+)([smhd]?);", text)
-    if not m:
+    """Task injected ssl_session_timeout 0; — fix: any non-zero value."""
+    if re.search(r"ssl_session_timeout\s+0;", text):
         return False
-    val  = int(m.group(1))
-    unit = m.group(2) or "s"
-    secs = val * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 1)
-    return secs >= 300
+    return bool(re.search(r"ssl_session_timeout\s+\S+", text))
 
 
 def _worker_connections_ok(text: str) -> bool:
-    """worker_connections must be ≥ 512, or absent (nginx built-in default applies)."""
-    m = re.search(r"worker_connections\s+(\d+);", text)
-    if m:
-        return int(m.group(1)) >= 512
-    return not re.search(r"worker_connections", text)
+    """Task injected worker_connections 0; — fix: non-zero value or remove directive."""
+    if re.search(r"worker_connections\s+0;", text):
+        return False          # still broken
+    return True               # absent (nginx default) or any positive value
 
 
 # ── Objective 1: Rogue CronJobs Removed ──────────────────────────────────────
-# 5 sabotage CronJobs — partial score = (# neutralised) / 5.
+# 5 sabotage CronJobs across default, ingress-system, and kube-system.
+# All are discoverable via: kubectl get cronjobs --all-namespaces
+# Partial score = (# neutralised) / 5.
 
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     items = [
@@ -131,13 +149,14 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
         (KS_CFG_CJ_NAME,   KS_CFG_CJ_NS),
     ]
     results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in items}
-    n       = sum(results.values())
-    detail  = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    n      = sum(results.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     return n / len(results), f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
 # ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
-# 4 items — partial score = (# removed) / 4.
+# 4 items discoverable via: kubectl get roles,rolebindings,pdb -n ingress-system
+# Partial score = (# removed) / 4.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
@@ -163,12 +182,13 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
-# ── Objective 3: Nginx Config Strictly Correct ───────────────────────────────
-# 7 checks (4 in ConfigMap, 3 in live pod) with STRICT value requirements.
-# Setting keepalive_timeout 1; or worker_connections 1; does NOT pass.
+# ── Objective 3: Nginx Config Fixed ──────────────────────────────────────────
+# 7 checks (4 ConfigMap + 3 live pod).  Each check tests for the exact broken
+# value the task injected — not an arbitrary numeric minimum.
+# Dual-layer verification (ConfigMap + live pod) confirms nginx reloaded the fix.
 # Partial score = (# correct) / 7.
 
-def _obj_nginx_config_strict() -> tuple[float, str]:
+def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
     pod = _get_running_pod()
     live = ""
@@ -178,31 +198,29 @@ def _obj_nginx_config_strict() -> tuple[float, str]:
         )
 
     checks = {
-        # ConfigMap checks
-        "keepalive_timeout(cm)≥30s":    _keepalive_timeout_ok(cfg),
-        "ssl_session_cache(cm)shared":  _ssl_cache_ok(cfg),
-        "ssl_session_timeout(cm)≥5min": _ssl_timeout_ok(cfg),
-        "worker_connections(cm)≥512":   _worker_connections_ok(cfg),
-        # Live pod checks (verifies nginx actually reloaded the correct config)
-        "keepalive_timeout(live)≥30s":  bool(live) and _keepalive_timeout_ok(live),
+        # ConfigMap checks — tests for task-injected broken values
+        "keepalive_timeout(cm)≠0":    _keepalive_timeout_ok(cfg),
+        "ssl_session_cache(cm)shared": _ssl_cache_ok(cfg),
+        "ssl_session_timeout(cm)≠0":  _ssl_timeout_ok(cfg),
+        "worker_connections(cm)≠0":   _worker_connections_ok(cfg),
+        # Live pod checks — verifies nginx actually applied the fix
+        "keepalive_timeout(live)≠0":   bool(live) and _keepalive_timeout_ok(live),
         "ssl_session_cache(live)shared": bool(live) and _ssl_cache_ok(live),
-        "worker_connections(live)≥512": bool(live) and _worker_connections_ok(live),
+        "worker_connections(live)≠0":  bool(live) and _worker_connections_ok(live),
     }
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    return n / len(checks), f"{n}/{len(checks)} nginx settings strictly correct — {detail}"
+    return n / len(checks), f"{n}/{len(checks)} nginx directives fixed — {detail}"
 
 
 # ── Objective 4: Gateway Fully Operational ────────────────────────────────────
-# 6 checks: basic liveness, constraints, nginx syntax validation, and a load test.
-# The load test requires ≥ 90 % success over 20 sequential requests —
-# a misconfigured nginx (bad keepalive / ssl cache) will fail under this pressure.
-# Partial score = (# passing) / 6.
+# 7 checks covering all 5 task.yaml constraints plus functional liveness.
+# Partial score = (# passing) / 7.
 
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
 
-    # deployment ready (up to 60 s)
+    # Deployment ready (up to 60 s)
     deadline = time.time() + 60
     ready    = "0"
     while time.time() < deadline:
@@ -215,7 +233,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
         time.sleep(3)
     results["deployment_ready"] = ready == "1"
 
-    # HTTPS returns expected content (retries × 8)
+    # HTTPS responds correctly
     ip       = _get_cluster_ip()
     https_ok = False
     if ip:
@@ -227,14 +245,14 @@ def _obj_gateway_operational() -> tuple[float, str]:
             time.sleep(3)
     results["https_functional"] = https_ok
 
-    # image constraint
+    # Constraint: image not modified
     _, img, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
     results["image_unchanged"] = bool(img and "nginx" in img)
 
-    # service constraint
+    # Constraint: no services added or removed (port 443 must be present)
     code, _, _ = run(f"kubectl get svc {SVC} -n {NS} --no-headers 2>/dev/null")
     if code == 0:
         _, port, _ = run(
@@ -244,15 +262,37 @@ def _obj_gateway_operational() -> tuple[float, str]:
     else:
         results["service_unchanged"] = False
 
-    # nginx -t syntax check inside the running pod
-    pod = _get_running_pod()
+    # Constraint: resource limits not changed — both cpu and memory limits/requests
+    # must still be set (agent must not have removed or zeroed them).
+    _, cpu_lim, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}'"
+    )
+    _, mem_lim, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
+    )
+    _, cpu_req, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}'"
+    )
+    _, mem_req, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.requests.memory}'"
+    )
+    results["resource_limits_present"] = all(
+        x.strip() for x in [cpu_lim, mem_lim, cpu_req, mem_req]
+    )
+
+    # nginx config syntax is valid inside the pod
+    pod       = _get_running_pod()
     syntax_ok = False
     if pod:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         syntax_ok = "syntax is ok" in (out + err)
     results["nginx_syntax_valid"] = syntax_ok
 
-    # load test: 20 sequential requests, ≥ 90 % (18/20) must succeed
+    # Load test: 20 sequential requests, ≥ 90 % (18/20) must succeed
     successes = 0
     if ip:
         for _ in range(20):
@@ -267,19 +307,28 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
 
 # ── Objective 5: Sustained Stability ──────────────────────────────────────────
-# 5 probes spaced 40 s apart (~3 min window). Each probe checks TWO things:
+# 6 sub-checks: 5 probes × 60 s apart (~4 min window) + restart-count bookend.
+#
+# Each probe passes only when BOTH hold:
 #   (a) /healthz returns OK
-#   (b) ConfigMap settings have NOT been reverted (keepalive + ssl_cache must
-#       still be valid at probe time)
-# Agents who neutralised all sabotage CronJobs will pass every probe.
-# Agents who left config-reverter CronJobs active will fail mid-window
-# when the CronJob fires and rolls back the ConfigMap.
-# Partial score = (# probes fully passing) / 5.
+#   (b) ConfigMap has NOT been reverted to broken values by a sabotage CronJob
+#
+# Variance mechanism:
+#   Config-reverter CronJobs run on a fixed schedule independent of grading start
+#   time.  The probe that happens to coincide with a revert event will fail; which
+#   probe that is (if any) varies by rollout, producing timing-based variance
+#   across rollouts.
+#   Agents who neutralised ALL reverter CronJobs → 6/6 every rollout.
+#   Agents who did not → 3/6 – 5/6 depending on rollout timing.
+#
+# Partial score = (# sub-checks passing) / 6.
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
     if not ip:
         return 0.0, "Could not resolve ClusterIP — stability check skipped"
+
+    restart_before = _get_restart_count()
 
     probe_results = []
     for i in range(5):
@@ -287,18 +336,26 @@ def _obj_sustained_stability() -> tuple[float, str]:
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         healthz_ok = "ok" in body.lower()
 
-        # (b) ConfigMap not reverted
-        cfg        = _get_configmap()
-        config_ok  = _keepalive_timeout_ok(cfg) and _ssl_cache_ok(cfg)
+        # (b) ConfigMap not reverted to task-injected broken values
+        cfg       = _get_configmap()
+        config_ok = (
+            not re.search(r"keepalive_timeout\s+0;", cfg) and
+            bool(re.search(r"ssl_session_cache\s+shared:", cfg))
+        )
 
         probe_results.append(healthz_ok and config_ok)
-
         if i < 4:
-            time.sleep(40)  # 4 × 40 s = 160 s window total
+            time.sleep(60)  # 4 × 60 s = 240 s total window
 
-    n = sum(probe_results)
-    return n / len(probe_results), (
-        f"{n}/5 stability probes passed (healthz + config-not-reverted) over ~3 min"
+    restart_after     = _get_restart_count()
+    no_new_restarts   = restart_after == restart_before
+
+    all_checks = probe_results + [no_new_restarts]
+    n          = sum(all_checks)
+    return n / len(all_checks), (
+        f"{sum(probe_results)}/5 probes healthy (healthz + config-not-reverted), "
+        f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
+        f"→ {n}/6 total"
     )
 
 
@@ -307,11 +364,11 @@ def _obj_sustained_stability() -> tuple[float, str]:
 OBJECTIVES = [
     ("rogue_cronjobs_removed",    _obj_rogue_cronjobs_removed),
     ("unauthorized_rbac_removed", _obj_unauthorized_rbac_removed),
-    ("nginx_config_strict",       _obj_nginx_config_strict),
+    ("nginx_config_fixed",        _obj_nginx_config_fixed),
     ("gateway_operational",       _obj_gateway_operational),
     ("sustained_stability",       _obj_sustained_stability),
 ]
-WEIGHT = round(1.0 / len(OBJECTIVES), 6)  # 0.20 each — all objectives equal
+WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.20 each — all objectives equal
 
 
 def grade(transcript: str) -> GradingResult:
