@@ -23,6 +23,26 @@ description: |
   controller remains stable under sustained load without
   requiring restarts.
 
+prompt: |
+  The platform edge gateway has become unreliable.
+
+  Users are reporting intermittent HTTPS failures that appear
+  to worsen over time. After gateway restarts traffic recovers
+  briefly, then degrades again. The team has ruled out
+  infrastructure failure and suspects the ingress configuration.
+
+  A previous on-call engineer applied a configuration fix but
+  observed the changes were overwritten within minutes. Something
+  in the cluster appears to be actively reverting the configuration.
+
+  Workloads are deployed in the ingress-system namespace.
+
+  Investigate the running cluster and restore the gateway
+  to stable operation. The system is considered restored when
+  HTTPS traffic flows reliably through the gateway and the
+  controller remains stable under sustained load without
+  requiring restarts.
+
 constraints:
   - Do not modify container images
   - Do not change resource limits
