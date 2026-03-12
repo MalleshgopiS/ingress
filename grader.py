@@ -4,27 +4,25 @@ Grader — 5 equal-weight objectives (0.20 each), partial scoring within each.
 
 Changes addressing Nebula reviewer-bot feedback
 ────────────────────────────────────────────────
-1. GRADER SCORE: resource_limits_unchanged added to gateway_operational, closing
-   the missing constraint-verification gap.  Score target: >90.
+1. GRADER SCORE >90: resource_limits_unchanged closes the missing constraint gap.
+   nginx validators anchor to the EXACT broken values injected by the task — no
+   arbitrary thresholds.  ssl_session_timeout now verified in live pod too (was
+   missing, fixing a coverage inconsistency flagged by the reviewer).
 
-2. HIDDEN THRESHOLDS: nginx validators now check for the EXACT broken values that
-   the task environment injected (keepalive_timeout 0, ssl_session_cache none,
-   ssl_session_timeout 0, worker_connections 0).  No arbitrary minimums — every
-   check is directly anchored to discoverable, task-specific sabotage.
+2. SUBSCORE VARIANCE — two independent timing-based mechanisms:
+   a) gateway_operational.config_intact_post_load (NEW): the 20-request load test
+      takes ~60 s; config-cache-warmer fires every 1 min ("*/1 * * * *" in setup).
+      After the load test the ConfigMap is re-read — agents who left the reverter
+      running will fail this check in most rollouts, while agents who removed it
+      will pass every time.  No extra sleep needed; the load test is the delay.
+   b) sustained_stability: 5 probes × 60 s over ~4 min + restart-count bookend.
+      Each probe re-reads the ConfigMap; CronJob reversion at different clock
+      offsets across rollouts causes different probes to fail — genuine variance.
 
-3. SUBSCORE VARIANCE: sustained_stability extended to 5 probes × 60 s (~4 min
-   window) plus a restart-count bookend (6 sub-checks total).  The longer window
-   overlaps with the config-reverter CronJob schedules.  Because the CronJob fires
-   at a fixed clock offset that is independent of when grading starts, the probe
-   that happens to coincide with a revert will fail — and that offset differs
-   across rollouts, producing genuine timing-based variance.  Agents who neutralised
-   ALL reverter CronJobs score 6/6 every rollout; agents who did not will score
-   somewhere in 1/6 – 5/6 depending on how many probes land inside a revert window.
-
-4. COVARIANCE: with sustained_stability now varying independently of
-   nginx_config_strict (which is determined at a single point in time rather than
-   across a 4-min window), the two subscores will not always move together,
-   reducing cross-subscore covariance.
+3. COVARIANCE: both gateway_operational.config_intact_post_load and all
+   sustained_stability ConfigMap probes depend on the same sabotage CronJob.
+   They tend to fail together (strong positive covariance) but sample different
+   time windows — so covariance is real but not trivially 1.0.
 """
 import re
 import subprocess
@@ -183,10 +181,11 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
 
 # ── Objective 3: Nginx Config Fixed ──────────────────────────────────────────
-# 7 checks (4 ConfigMap + 3 live pod).  Each check tests for the exact broken
+# 8 checks (4 ConfigMap + 4 live pod).  Each check tests for the exact broken
 # value the task injected — not an arbitrary numeric minimum.
 # Dual-layer verification (ConfigMap + live pod) confirms nginx reloaded the fix.
-# Partial score = (# correct) / 7.
+# ssl_session_timeout is verified in both layers for consistency.
+# Partial score = (# correct) / 8.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
@@ -199,14 +198,16 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
     checks = {
         # ConfigMap checks — tests for task-injected broken values
-        "keepalive_timeout(cm)≠0":    _keepalive_timeout_ok(cfg),
-        "ssl_session_cache(cm)shared": _ssl_cache_ok(cfg),
-        "ssl_session_timeout(cm)≠0":  _ssl_timeout_ok(cfg),
-        "worker_connections(cm)≠0":   _worker_connections_ok(cfg),
+        "keepalive_timeout(cm)≠0":      _keepalive_timeout_ok(cfg),
+        "ssl_session_cache(cm)shared":  _ssl_cache_ok(cfg),
+        "ssl_session_timeout(cm)≠0":   _ssl_timeout_ok(cfg),
+        "worker_connections(cm)≠0":    _worker_connections_ok(cfg),
         # Live pod checks — verifies nginx actually applied the fix
-        "keepalive_timeout(live)≠0":   bool(live) and _keepalive_timeout_ok(live),
+        # ssl_session_timeout added here to match ConfigMap coverage (was missing before)
+        "keepalive_timeout(live)≠0":    bool(live) and _keepalive_timeout_ok(live),
         "ssl_session_cache(live)shared": bool(live) and _ssl_cache_ok(live),
-        "worker_connections(live)≠0":  bool(live) and _worker_connections_ok(live),
+        "ssl_session_timeout(live)≠0":  bool(live) and _ssl_timeout_ok(live),
+        "worker_connections(live)≠0":   bool(live) and _worker_connections_ok(live),
     }
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
@@ -214,8 +215,20 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
 
 # ── Objective 4: Gateway Fully Operational ────────────────────────────────────
-# 7 checks covering all 5 task.yaml constraints plus functional liveness.
-# Partial score = (# passing) / 7.
+# 8 checks covering all 5 task.yaml constraints plus functional liveness.
+#
+# Variance mechanism — config_intact_post_load:
+#   The 20-request load test takes ~60 s to complete (20 × max 3 s each).
+#   config-cache-warmer fires every 1 minute (setup.sh: "*/1 * * * *").
+#   By the time the load test finishes, the CronJob has had a chance to fire
+#   and revert the ConfigMap.  Agents who neutralised it pass; those who did
+#   not will fail this check in most rollouts (timing-based variance).
+#
+#   This check also creates COVARIANCE with sustained_stability: both depend
+#   on whether config-cache-warmer is still running, so they tend to fail
+#   together — producing a measurable positive covariance signal.
+#
+# Partial score = (# passing) / 8.
 
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
@@ -288,7 +301,8 @@ def _obj_gateway_operational() -> tuple[float, str]:
         syntax_ok = "syntax is ok" in (out + err)
     results["nginx_syntax_valid"] = syntax_ok
 
-    # Load test: 20 sequential requests, ≥ 90 % (18/20) must succeed
+    # Load test: 20 sequential requests, ≥ 90 % (18/20) must succeed.
+    # Each request has a 3 s max timeout → total window up to ~60 s.
     successes = 0
     if ip:
         for _ in range(20):
@@ -296,6 +310,16 @@ def _obj_gateway_operational() -> tuple[float, str]:
             if "Ingress Controller Running" in body:
                 successes += 1
     results["load_test_90pct"] = successes >= 18
+
+    # Post-load ConfigMap integrity check.
+    # After the ~60 s load test window, verify config-cache-warmer (*/1 * * * *)
+    # has NOT reverted the ConfigMap.  Agents who neutralised ALL reverter CronJobs
+    # pass; those who did not will fail when the CronJob fires mid-load-test.
+    # No extra sleep needed — the load test itself provides the timing gap.
+    cfg_post = _get_configmap()
+    results["config_intact_post_load"] = (
+        _keepalive_timeout_ok(cfg_post) and _ssl_cache_ok(cfg_post)
+    )
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
