@@ -162,24 +162,26 @@ echo "Ingress controller deployed."
 # ------------------------------------------------------------------
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: configmap-patcher
+  namespace: ingress-system
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: configmap-patcher-binding
+  namespace: ingress-system
 subjects:
 - kind: ServiceAccount
   name: default
   namespace: default
 roleRef:
-  kind: ClusterRole
+  kind: Role
   apiGroup: rbac.authorization.k8s.io
   name: configmap-patcher
 ---

@@ -24,8 +24,8 @@ sleep 5
 
 # Step 1b: Remove the RBAC that enabled both rogue CronJobs.
 echo "Removing rogue RBAC..."
-kubectl delete clusterrole configmap-patcher --ignore-not-found
-kubectl delete clusterrolebinding configmap-patcher-binding --ignore-not-found
+kubectl delete role configmap-patcher -n ingress-system --ignore-not-found
+kubectl delete rolebinding configmap-patcher-binding -n ingress-system --ignore-not-found
 kubectl delete role deployment-scaler -n ingress-system --ignore-not-found
 kubectl delete rolebinding deployment-scaler-binding -n ingress-system --ignore-not-found
 

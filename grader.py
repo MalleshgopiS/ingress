@@ -25,8 +25,8 @@ ROGUE_CJ_NS      = "default"
 DISABLER_CJ_NAME = "gateway-health-monitor"
 DISABLER_CJ_NS   = "ingress-system"
 
-PATCHER_CLUSTERROLE = "configmap-patcher"
-SCALER_ROLE         = "deployment-scaler"
+PATCHER_ROLE = "configmap-patcher"
+SCALER_ROLE  = "deployment-scaler"
 
 
 def run(cmd: str, timeout: int = 30):
@@ -102,14 +102,14 @@ def check_disabler_removed():
 
 def check_patcher_rbac_removed():
     """
-    The ClusterRole 'configmap-patcher' that granted the config-reverter
-    CronJob cross-namespace write access to ConfigMaps must be deleted.
+    The Role 'configmap-patcher' in ingress-system that granted the config-reverter
+    CronJob write access to ConfigMaps must be deleted.
     Leaving the RBAC in place allows any actor to re-deploy the same attack.
     """
-    code, out, _ = run(f"kubectl get clusterrole {PATCHER_CLUSTERROLE} 2>/dev/null")
+    code, out, _ = run(f"kubectl get role {PATCHER_ROLE} -n {NS} 2>/dev/null")
     if code != 0 or not out.strip():
-        return True, f"ClusterRole '{PATCHER_CLUSTERROLE}' has been removed"
-    return False, f"ClusterRole '{PATCHER_CLUSTERROLE}' still exists — RBAC not cleaned up"
+        return True, f"Role '{PATCHER_ROLE}' has been removed from namespace '{NS}'"
+    return False, f"Role '{PATCHER_ROLE}' still exists in namespace '{NS}' — RBAC not cleaned up"
 
 
 def check_scaler_rbac_removed():
