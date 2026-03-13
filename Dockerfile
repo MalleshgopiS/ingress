@@ -1,6 +1,5 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
-# kube-system added so agents can discover and remove CronJobs planted there
 ENV ALLOWED_NAMESPACES="ingress-system,kube-system"
 
 USER root
@@ -12,14 +11,11 @@ RUN apt-get update && \
     python3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Download crane for image pre-caching
 RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz" \
     | tar xz -C /usr/local/bin crane && chmod +x /usr/local/bin/crane
 
-# Pre-cache nginx image so k3s can use it without internet access
 RUN crane pull --platform linux/amd64 nginx:alpine /nginx.tar
 
-# Pre-cache bitnami/kubectl so CronJob pods can run without internet access
 RUN crane pull --platform linux/amd64 bitnami/kubectl:latest /kubectl.tar
 
 RUN mkdir -p /grader

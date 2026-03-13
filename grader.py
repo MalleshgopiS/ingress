@@ -1,31 +1,5 @@
 #!/usr/bin/env python3
-"""
-Grader — 5 equal-weight objectives (0.20 each), partial scoring within each.
 
-Changes addressing Nebula reviewer-bot feedback
-────────────────────────────────────────────────
-1. GRADER SCORE >90: resource_limits_unchanged closes the missing constraint gap.
-   nginx validators anchor to the EXACT broken values injected by the task — no
-   arbitrary thresholds.  ssl_session_timeout now verified in live pod too (was
-   missing).  Objective 2 now checks all 6 unauthorized RBAC items that setup.sh
-   creates (was missing telemetry-pipeline-manager ClusterRole/Binding and
-   ops-cronjob-manager Role/Binding in kube-system).
-
-2. SUBSCORE VARIANCE — two independent timing-based mechanisms:
-   a) gateway_operational.config_intact_post_load (NEW): the 20-request load test
-      takes ~60 s; config-cache-warmer fires every 1 min ("*/1 * * * *" in setup).
-      After the load test the ConfigMap is re-read — agents who left the reverter
-      running will fail this check in most rollouts, while agents who removed it
-      will pass every time.  No extra sleep needed; the load test is the delay.
-   b) sustained_stability: 5 probes × 60 s over ~4 min + restart-count bookend.
-      Each probe re-reads the ConfigMap; CronJob reversion at different clock
-      offsets across rollouts causes different probes to fail — genuine variance.
-
-3. COVARIANCE: both gateway_operational.config_intact_post_load and all
-   sustained_stability ConfigMap probes depend on the same sabotage CronJob.
-   They tend to fail together (strong positive covariance) but sample different
-   time windows — so covariance is real but not trivially 1.0.
-"""
 import re
 import subprocess
 import time
@@ -105,11 +79,6 @@ def _cronjob_gone(name: str, ns: str) -> bool:
     return suspend == "true"
 
 
-# ── nginx config validators — anchored to task-injected broken values ─────────
-# The task environment deliberately set each directive to an obviously broken value.
-# Each validator checks "has this specific break been fixed?" — not an arbitrary
-# best-practice threshold.  Discoverable by inspecting the ConfigMap/pod config.
-
 def _keepalive_timeout_ok(text: str) -> bool:
     """Task injected keepalive_timeout 0; — fix: any non-zero value."""
     if re.search(r"keepalive_timeout\s+0;", text):
@@ -136,11 +105,6 @@ def _worker_connections_ok(text: str) -> bool:
     return True               # absent (nginx default) or any positive value
 
 
-# ── Objective 1: Rogue CronJobs Removed ──────────────────────────────────────
-# 5 sabotage CronJobs across default, ingress-system, and kube-system.
-# All are discoverable via: kubectl get cronjobs --all-namespaces
-# Partial score = (# neutralised) / 5.
-
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     items = [
         (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
@@ -155,13 +119,6 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
-# ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
-# 4 items discoverable via: kubectl get roles,rolebindings,pdb -n ingress-system
-# (Cluster-scoped ClusterRole/ClusterRoleBinding are excluded — ubuntu SA cannot
-# delete cluster-scoped resources.  kube-system namespace RBAC is also excluded
-# here because setup.sh plants those to enable CronJob execution, not as a
-# primary security objective.  CronJob removal is the signal for kube-system.)
-# Partial score = (# removed) / 4.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
@@ -191,13 +148,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
-# ── Objective 3: Nginx Config Fixed ──────────────────────────────────────────
-# 8 checks (4 ConfigMap + 4 live pod).  Each check tests for the exact broken
-# value the task injected — not an arbitrary numeric minimum.
-# Dual-layer verification (ConfigMap + live pod) confirms nginx reloaded the fix.
-# ssl_session_timeout is verified in both layers for consistency.
-# Partial score = (# correct) / 8.
-
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
     pod = _get_running_pod()
@@ -224,22 +174,6 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     return n / len(checks), f"{n}/{len(checks)} nginx directives fixed — {detail}"
 
-
-# ── Objective 4: Gateway Fully Operational ────────────────────────────────────
-# 8 checks covering all 5 task.yaml constraints plus functional liveness.
-#
-# Variance mechanism — config_intact_post_load:
-#   The 20-request load test takes ~60 s to complete (20 × max 3 s each).
-#   config-cache-warmer fires every 1 minute (setup.sh: "*/1 * * * *").
-#   By the time the load test finishes, the CronJob has had a chance to fire
-#   and revert the ConfigMap.  Agents who neutralised it pass; those who did
-#   not will fail this check in most rollouts (timing-based variance).
-#
-#   This check also creates COVARIANCE with sustained_stability: both depend
-#   on whether config-cache-warmer is still running, so they tend to fail
-#   together — producing a measurable positive covariance signal.
-#
-# Partial score = (# passing) / 8.
 
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
@@ -286,11 +220,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
     else:
         results["service_unchanged"] = False
 
-    # Constraint: resource limits unchanged.
-    # setup.sh creates the deployment WITHOUT any resource limits or requests.
-    # The correct post-fix state is therefore also no limits/requests.
-    # An agent who adds limits (cpu/memory) violates the "do not change resource
-    # limits" constraint and should fail this check.
+
     _, cpu_lim, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}'"
@@ -322,11 +252,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
                 successes += 1
     results["load_test_90pct"] = successes >= 18
 
-    # Post-load ConfigMap integrity check.
-    # After the ~60 s load test window, verify config-cache-warmer (*/1 * * * *)
-    # has NOT reverted the ConfigMap.  Agents who neutralised ALL reverter CronJobs
-    # pass; those who did not will fail when the CronJob fires mid-load-test.
-    # No extra sleep needed — the load test itself provides the timing gap.
+   
     cfg_post = _get_configmap()
     results["config_intact_post_load"] = (
         _keepalive_timeout_ok(cfg_post) and _ssl_cache_ok(cfg_post)
@@ -337,22 +263,6 @@ def _obj_gateway_operational() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
-# ── Objective 5: Sustained Stability ──────────────────────────────────────────
-# 6 sub-checks: 5 probes × 60 s apart (~4 min window) + restart-count bookend.
-#
-# Each probe passes only when BOTH hold:
-#   (a) /healthz returns OK
-#   (b) ConfigMap has NOT been reverted to broken values by a sabotage CronJob
-#
-# Variance mechanism:
-#   Config-reverter CronJobs run on a fixed schedule independent of grading start
-#   time.  The probe that happens to coincide with a revert event will fail; which
-#   probe that is (if any) varies by rollout, producing timing-based variance
-#   across rollouts.
-#   Agents who neutralised ALL reverter CronJobs → 6/6 every rollout.
-#   Agents who did not → 3/6 – 5/6 depending on rollout timing.
-#
-# Partial score = (# sub-checks passing) / 6.
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
