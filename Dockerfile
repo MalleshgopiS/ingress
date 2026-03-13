@@ -1,7 +1,7 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
 # kube-system added so agents can discover and remove CronJobs planted there
-ENV ALLOWED_NAMESPACES="ingress-system kube-system"
+ENV ALLOWED_NAMESPACES="ingress-system,kube-system"
 
 USER root
 
