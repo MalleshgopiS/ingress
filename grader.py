@@ -157,8 +157,10 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
 # ── Objective 2: Unauthorized RBAC + PDB Removed ─────────────────────────────
 # 4 items discoverable via: kubectl get roles,rolebindings,pdb -n ingress-system
-# (ClusterRole/Binding and kube-system Role/Binding are excluded — the agent's
-# ubuntu SA only has RBAC admin permissions in ingress-system.)
+# (Cluster-scoped ClusterRole/ClusterRoleBinding are excluded — ubuntu SA cannot
+# delete cluster-scoped resources.  kube-system namespace RBAC is also excluded
+# here because setup.sh plants those to enable CronJob execution, not as a
+# primary security objective.  CronJob removal is the signal for kube-system.)
 # Partial score = (# removed) / 4.
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:

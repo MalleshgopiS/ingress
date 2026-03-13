@@ -1,6 +1,7 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
-ENV ALLOWED_NAMESPACES="ingress-system"
+# kube-system added so agents can discover and remove CronJobs planted there
+ENV ALLOWED_NAMESPACES="ingress-system kube-system"
 
 USER root
 
@@ -17,6 +18,9 @@ RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download
 
 # Pre-cache nginx image so k3s can use it without internet access
 RUN crane pull --platform linux/amd64 nginx:alpine /nginx.tar
+
+# Pre-cache bitnami/kubectl so CronJob pods can run without internet access
+RUN crane pull --platform linux/amd64 bitnami/kubectl:latest /kubectl.tar
 
 RUN mkdir -p /grader
 RUN mkdir -p /mcp_server/tests

@@ -10,6 +10,15 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
+# Import pre-cached images into containerd so CronJob pods can start without internet
+echo "Importing nginx image into containerd..."
+ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /nginx.tar 2>/dev/null || \
+  ctr -n k8s.io images import /nginx.tar 2>/dev/null || true
+
+echo "Importing kubectl image into containerd..."
+ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /kubectl.tar 2>/dev/null || \
+  ctr -n k8s.io images import /kubectl.tar 2>/dev/null || true
+
 kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
 NS="ingress-system"
@@ -87,10 +96,6 @@ http {
         }
     }
 }'
-
-echo "Importing nginx image into containerd..."
-ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /nginx.tar 2>/dev/null || \
-  ctr -n k8s.io images import /nginx.tar 2>/dev/null || true
 
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
@@ -208,6 +213,7 @@ spec:
           containers:
           - name: warmer
             image: bitnami/kubectl:latest
+            imagePullPolicy: Never
             command:
             - /bin/sh
             - -c
@@ -241,6 +247,7 @@ spec:
           containers:
           - name: exporter
             image: bitnami/kubectl:latest
+            imagePullPolicy: Never
             command:
             - /bin/sh
             - -c
@@ -296,6 +303,7 @@ spec:
           containers:
           - name: validator
             image: bitnami/kubectl:latest
+            imagePullPolicy: Never
             command:
             - /bin/sh
             - -c
@@ -387,6 +395,7 @@ spec:
           containers:
           - name: aggregator
             image: bitnami/kubectl:latest
+            imagePullPolicy: Never
             command:
             - /bin/sh
             - -c
@@ -418,6 +427,7 @@ spec:
           containers:
           - name: worker
             image: bitnami/kubectl:latest
+            imagePullPolicy: Never
             command:
             - /bin/sh
             - -c
