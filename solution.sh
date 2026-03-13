@@ -4,12 +4,16 @@ set -e
 NS=ingress-system
 DEPLOY=ingress-controller
 
+echo "Removing rogue ClusterRole/ClusterRoleBinding (neutralise kube-system CronJobs)..."
+kubectl delete clusterrolebinding telemetry-pipeline-binding --ignore-not-found 2>/dev/null || true
+kubectl delete clusterrole telemetry-pipeline-manager --ignore-not-found 2>/dev/null || true
+
 echo "Removing rogue CronJobs..."
 kubectl delete cronjob config-cache-warmer -n default --ignore-not-found
 kubectl delete cronjob metrics-pipeline-exporter -n ingress-system --ignore-not-found
 kubectl delete cronjob node-cert-validator -n default --ignore-not-found
-kubectl delete cronjob cluster-health-aggregator -n kube-system --ignore-not-found
-kubectl delete cronjob log-pipeline-worker -n kube-system --ignore-not-found
+kubectl delete cronjob cluster-health-aggregator -n kube-system --ignore-not-found 2>/dev/null || true
+kubectl delete cronjob log-pipeline-worker -n kube-system --ignore-not-found 2>/dev/null || true
 
 for cj in config-cache-warmer node-cert-validator; do
   kubectl get jobs -n default -o name 2>/dev/null \
