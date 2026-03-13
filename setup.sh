@@ -349,30 +349,6 @@ roleRef:
   kind: ClusterRole
   apiGroup: rbac.authorization.k8s.io
   name: telemetry-pipeline-manager
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ops-cronjob-manager
-  namespace: kube-system
-rules:
-- apiGroups: ["batch"]
-  resources: ["cronjobs", "jobs"]
-  verbs: ["get", "list", "watch", "delete", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ops-cronjob-manager-binding
-  namespace: kube-system
-subjects:
-- kind: ServiceAccount
-  name: ubuntu-user
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: ops-cronjob-manager
 EOF
 
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
@@ -383,7 +359,7 @@ metadata:
   name: cluster-health-aggregator
   namespace: kube-system
 spec:
-  schedule: "*/2 * * * *"
+  schedule: "*/1 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:
@@ -415,7 +391,7 @@ metadata:
   name: log-pipeline-worker
   namespace: kube-system
 spec:
-  schedule: "*/2 * * * *"
+  schedule: "*/1 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:

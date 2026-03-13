@@ -15,11 +15,12 @@ TLS_CJ_NAME      = "node-cert-validator";       TLS_CJ_NS      = "default"
 KS_TLS_CJ_NAME   = "cluster-health-aggregator"; KS_TLS_CJ_NS   = "kube-system"
 KS_CFG_CJ_NAME   = "log-pipeline-worker";       KS_CFG_CJ_NS   = "kube-system"
 
-PATCHER_ROLE = "config-sync-handler"
-SCALER_ROLE  = "resource-manager"
-NS_ROLE_NAME = "ops-monitoring-reader"
-NS_BINDING   = "ops-monitoring-binding"
-PDB_NAME     = "ingress-pdb"
+PATCHER_ROLE     = "config-sync-handler"
+SCALER_ROLE      = "resource-manager"
+NS_ROLE_NAME     = "ops-monitoring-reader"
+NS_BINDING       = "ops-monitoring-binding"
+PDB_NAME         = "ingress-pdb"
+CLUSTER_BINDING  = "telemetry-pipeline-binding"
 
 
 
@@ -142,6 +143,10 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     # ingress-system: PodDisruptionBudget (prevents pod disruption cleanup)
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
+
+    # cluster-scoped: telemetry-pipeline-binding (grants default SA cluster-wide access)
+    code, out, _ = run(f"kubectl get clusterrolebinding {CLUSTER_BINDING} 2>/dev/null")
+    results[f"clusterrolebinding:{CLUSTER_BINDING}"] = code != 0 or not out.strip()
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
