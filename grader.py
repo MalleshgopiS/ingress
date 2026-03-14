@@ -449,6 +449,13 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null")
     checks["sidecar_sa_removed"] = code != 0 or not out.strip()
 
+    # Check 6: deployment spec serviceAccountName must not reference ingress-watcher
+    _, sa_name, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.serviceAccountName}'"
+    )
+    checks["deployment_sa_clean"] = sa_name.strip() != SIDECAR_SA
+
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     return n / len(checks), f"{n}/{len(checks)} deployment spec integrity checks — {detail}"

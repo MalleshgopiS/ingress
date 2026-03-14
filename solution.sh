@@ -95,6 +95,11 @@ kubectl patch deployment $DEPLOY -n $NS --type=json \
   -p '[{"op":"remove","path":"/spec/template/spec/containers/1"}]' \
   2>/dev/null || true
 
+echo "Resetting serviceAccountName (ingress-watcher SA deleted above)..."
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"replace","path":"/spec/template/spec/serviceAccountName","value":"default"}]' \
+  2>/dev/null || true
+
 echo "Removing broken livenessProbe (was checking port 80; nginx listens on 443)..."
 kubectl patch deployment $DEPLOY -n $NS --type=json \
   -p '[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' \
