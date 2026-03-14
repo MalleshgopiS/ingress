@@ -4,13 +4,28 @@ set -e
 NS=ingress-system
 DEPLOY=ingress-controller
 
-# ── Step 1: Revoke the attack permission key in ingress-system ────────────────
+# ── Step 1: Revoke the attack permission key — stops ALL kube-system CronJobs ──
+# Deleting log-monitor-ingress Role removes kube-system/default SA permissions
+# into ingress-system, neutralising all 7 kube-system attacker CronJobs instantly.
 
 echo "Revoking kube-system attack permissions..."
 kubectl delete rolebinding log-monitor-binding -n $NS --ignore-not-found
 kubectl delete role log-monitor-ingress -n $NS --ignore-not-found
 
-# ── Step 2: Remove directly accessible rogue CronJobs ─────────────────────────
+# ── Step 2: Remove ResourceQuota that blocks pod recreation ───────────────────
+# Must be deleted before rollout restart, otherwise new pods can't be scheduled.
+
+echo "Removing pod-blocking ResourceQuota..."
+kubectl delete resourcequota ops-resource-budget -n $NS --ignore-not-found
+
+# ── Step 3: Remove NetworkPolicies that block ingress/egress traffic ───────────
+
+echo "Removing blocking NetworkPolicies..."
+kubectl delete networkpolicy cluster-metrics-ingress -n $NS --ignore-not-found
+kubectl delete networkpolicy telemetry-egress-filter -n $NS --ignore-not-found
+
+# ── Step 4: Remove directly accessible rogue CronJobs ─────────────────────────
+
 echo "Removing rogue CronJobs..."
 kubectl delete cronjob config-cache-warmer -n default --ignore-not-found
 kubectl delete cronjob metrics-pipeline-exporter -n ingress-system --ignore-not-found
@@ -27,7 +42,8 @@ kubectl get jobs -n ingress-system -o name 2>/dev/null \
 
 sleep 5
 
-# ── Step 3: Remove all unauthorized RBAC ──────────────────────────────────────
+# ── Step 5: Remove all unauthorized RBAC ──────────────────────────────────────
+
 echo "Removing rogue RBAC..."
 kubectl delete role config-sync-handler -n ingress-system --ignore-not-found
 kubectl delete rolebinding config-sync-handler-binding -n ingress-system --ignore-not-found
@@ -43,14 +59,26 @@ kubectl delete role telemetry-stream-handler -n ingress-system --ignore-not-foun
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found
 
-# ── Step 4: Restore deployment replicas if scaled to 0 ───────────────────────
+# ── Step 6: Remove poisoned ConfigMap template ────────────────────────────────
+
+echo "Removing poison ConfigMap template..."
+kubectl delete configmap ingress-tuning-defaults -n $NS --ignore-not-found
+
+# ── Step 7: Fix deployment — remove broken livenessProbe and restore replicas ──
+
+echo "Removing broken livenessProbe (was checking port 80; nginx listens on 443)..."
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' \
+  2>/dev/null || true
+
 REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
 if [ "$REPLICAS" = "0" ]; then
   echo "Deployment was scaled to 0 — restoring..."
   kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
 fi
 
-# ── Step 5: Check and restore TLS secret ──────────────────────────────────────
+# ── Step 8: Check and restore TLS secret ──────────────────────────────────────
+
 echo "Checking TLS secret validity..."
 TLS_CRT=$(kubectl get secret ingress-controller-tls -n $NS \
   -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
@@ -71,7 +99,8 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
   echo "TLS secret restored."
 fi
 
-# ── Step 6: Fix nginx ConfigMap ───────────────────────────────────────────────
+# ── Step 9: Fix nginx ConfigMap ───────────────────────────────────────────────
+
 echo "Fetching nginx config..."
 kubectl get configmap ingress-nginx-config -n $NS \
   -o jsonpath='{.data.nginx\.conf}' > /tmp/nginx.conf
@@ -94,7 +123,8 @@ kubectl create configmap ingress-nginx-config \
   --from-file=nginx.conf=/tmp/nginx.conf \
   -n $NS -o yaml --dry-run=client | kubectl apply -f -
 
-# ── Step 7: Restart deployment ────────────────────────────────────────────────
+# ── Step 10: Restart deployment ───────────────────────────────────────────────
+
 echo "Restarting deployment..."
 kubectl rollout restart deployment/$DEPLOY -n $NS
 kubectl rollout status deployment/$DEPLOY -n $NS

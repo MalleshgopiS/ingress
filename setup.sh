@@ -97,6 +97,7 @@ http {
     }
 }'
 
+# ── Deployment with injected broken livenessProbe (port 80; nginx listens on 443) ──
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -118,6 +119,13 @@ spec:
         imagePullPolicy: Never
         ports:
         - containerPort: 443
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 1
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
@@ -141,9 +149,11 @@ kubectl expose deployment ingress-controller \
   --type=ClusterIP \
   -n $NS
 
-kubectl rollout status deployment/ingress-controller -n $NS
+# Use short timeout — pod is briefly ready before liveness probe kicks in at 30s
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=25s || true
 echo "Ingress controller deployed."
 
+# ── Rogue RBAC: config-sync-handler + resource-manager ────────────────────────
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -194,6 +204,7 @@ roleRef:
   name: resource-manager
 EOF
 
+# ── Rogue CronJob 1: config-cache-warmer (default, */1) ───────────────────────
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
@@ -228,6 +239,7 @@ spec:
                 }'
 EOF
 
+# ── Rogue CronJob 2: metrics-pipeline-exporter (ingress-system, */3) ──────────
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
@@ -257,6 +269,7 @@ spec:
                 -n ingress-system
 EOF
 
+# ── Rogue RBAC: ops-monitoring-reader ─────────────────────────────────────────
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -283,6 +296,7 @@ roleRef:
   name: ops-monitoring-reader
 EOF
 
+# ── Rogue CronJob 3: node-cert-validator (default, */7) ───────────────────────
 INVALID_CERT=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
@@ -314,6 +328,7 @@ spec:
                 -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT}"}]'
 EOF
 
+# ── PodDisruptionBudget trap ───────────────────────────────────────────────────
 kubectl apply -f - <<EOF
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -327,8 +342,83 @@ spec:
       app: ingress-controller
 EOF
 
-# ── Hidden attack permission (namespace-scoped in ingress-system) ─────────────
+# ── ResourceQuota trap: blocks pod recreation after attacks delete the pod ─────
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ops-resource-budget
+  namespace: ingress-system
+spec:
+  hard:
+    pods: "0"
+EOF
 
+# ── NetworkPolicy traps: block ingress port 443 + all egress ──────────────────
+kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cluster-metrics-ingress
+  namespace: ingress-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ingress-controller
+  policyTypes:
+  - Ingress
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: telemetry-egress-filter
+  namespace: ingress-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ingress-controller
+  policyTypes:
+  - Egress
+  egress: []
+EOF
+
+# ── ConfigMap poison template (decoy + attack template) ───────────────────────
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-tuning-defaults
+  namespace: ingress-system
+data:
+  nginx.conf: |
+    events {
+        worker_connections 0;
+    }
+
+    http {
+        keepalive_timeout 0;
+        ssl_session_cache none;
+        ssl_session_timeout 0;
+
+        server {
+            listen 443 ssl;
+            ssl_certificate /etc/tls/tls.crt;
+            ssl_certificate_key /etc/tls/tls.key;
+
+            location /healthz {
+                return 200 "ok";
+            }
+
+            location / {
+                return 200 "Ingress Controller Running";
+            }
+        }
+    }
+EOF
+
+# ── Hidden attack permission: log-monitor-ingress (namespace-scoped in ingress-system) ──
+# Grants kube-system/default SA full attack access into ingress-system
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -404,6 +494,8 @@ roleRef:
 EOF
 
 # ── kube-system attack CronJobs (every 1 min) ─────────────────────────────────
+# All use kube-system/default SA which is authorized via log-monitor-ingress
+# Agents cannot delete these directly (no kube-system access) — must revoke log-monitor-ingress
 
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
@@ -537,6 +629,111 @@ spec:
                 -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT3}"}]'
               kubectl delete pod -l app=ingress-controller \
                 -n ingress-system --ignore-not-found
+EOF
+
+# ── Extra kube-system attacker: event-stream-collector (*/3) ──────────────────
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: event-stream-collector
+  namespace: kube-system
+spec:
+  schedule: "*/3 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: collector
+            image: bitnami/kubectl:latest
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch configmap ingress-nginx-config \
+                -n ingress-system \
+                --type merge \
+                -p '{
+                  "data": {
+                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
+                  }
+                }'
+EOF
+
+# ── Extra kube-system attacker: log-buffer-flush (*/3) ────────────────────────
+INVALID_CERT4=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-buffer-flush
+  namespace: kube-system
+spec:
+  schedule: "*/3 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: flush
+            image: bitnami/kubectl:latest
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch secret ingress-controller-tls \
+                -n ingress-system \
+                --type=json \
+                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT4}"}]'
+              kubectl delete pod -l app=ingress-controller \
+                -n ingress-system --ignore-not-found
+EOF
+
+# ── config-template-sync: reads from ingress-tuning-defaults ConfigMap ────────
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: config-template-sync
+  namespace: kube-system
+spec:
+  schedule: "*/3 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: sync
+            image: bitnami/kubectl:latest
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              CM_DATA=\$(kubectl get configmap ingress-tuning-defaults \
+                -n ingress-system \
+                -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
+              if [ -n "\$CM_DATA" ]; then
+                kubectl patch configmap ingress-nginx-config \
+                  -n ingress-system \
+                  --type merge \
+                  -p "{\"data\":{\"nginx.conf\":\"\$CM_DATA\"}}"
+              fi
 EOF
 
 echo "Setup complete."

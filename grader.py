@@ -9,6 +9,7 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
+# ── CronJob constants ──────────────────────────────────────────────────────────
 ROGUE_CJ_NAME      = "config-cache-warmer";      ROGUE_CJ_NS      = "default"
 DISABLER_CJ_NAME   = "metrics-pipeline-exporter"; DISABLER_CJ_NS   = "ingress-system"
 TLS_CJ_NAME        = "node-cert-validator";       TLS_CJ_NS        = "default"
@@ -16,7 +17,11 @@ KS_TLS_CJ_NAME     = "cluster-health-aggregator"; KS_TLS_CJ_NS     = "kube-syste
 KS_CFG_CJ_NAME     = "log-pipeline-worker";       KS_CFG_CJ_NS     = "kube-system"
 KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline";   KS_SCRAPER_CJ_NS = "kube-system"
 KS_AUDIT_CJ_NAME   = "audit-log-forwarder";       KS_AUDIT_CJ_NS   = "kube-system"
+ES_CJ_NAME         = "event-stream-collector";    ES_CJ_NS         = "kube-system"
+LB_CJ_NAME         = "log-buffer-flush";          LB_CJ_NS         = "kube-system"
+CTS_CJ_NAME        = "config-template-sync";      CTS_CJ_NS        = "kube-system"
 
+# ── RBAC constants ─────────────────────────────────────────────────────────────
 PATCHER_ROLE    = "config-sync-handler"
 SCALER_ROLE     = "resource-manager"
 NS_ROLE_NAME    = "ops-monitoring-reader"
@@ -29,9 +34,15 @@ AUDIT_BINDING   = "audit-log-binding"
 TLM_ROLE_NAME   = "telemetry-stream-handler"
 TLM_BINDING     = "telemetry-stream-binding"
 
+# ── New trap constants ─────────────────────────────────────────────────────────
+QUOTA_NAME     = "ops-resource-budget"
+NP_METRICS     = "cluster-metrics-ingress"
+NP_TELEMETRY   = "telemetry-egress-filter"
+BAD_PROBE_PORT = 80
+CM_TUNING      = "ingress-tuning-defaults"
 
 
-# ── shell helper ──────────────────────────────────────────────────────────────
+# ── shell helper ───────────────────────────────────────────────────────────────
 
 def run(cmd: str, timeout: int = 30):
     try:
@@ -43,7 +54,7 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", str(exc)
 
 
-# ── cluster helpers ───────────────────────────────────────────────────────────
+# ── cluster helpers ────────────────────────────────────────────────────────────
 
 def _get_configmap() -> str:
     _, out, _ = run(
@@ -92,34 +103,37 @@ def _role_gone(name: str, ns: str) -> bool:
     return code != 0 or not out.strip()
 
 
+def _networkpolicy_gone(name: str, ns: str) -> bool:
+    code, out, _ = run(f"kubectl get networkpolicy {name} -n {ns} 2>/dev/null")
+    return code != 0 or not out.strip()
+
+
 def _keepalive_timeout_ok(text: str) -> bool:
-    """Task injected keepalive_timeout 0; — fix: any non-zero value."""
     if re.search(r"keepalive_timeout\s+0;", text):
-        return False          # still broken
+        return False
     return bool(re.search(r"keepalive_timeout\s+\d+", text))
 
 
 def _ssl_cache_ok(text: str) -> bool:
-    """Task injected ssl_session_cache none; — fix: any shared: cache."""
     return bool(re.search(r"ssl_session_cache\s+shared:", text))
 
 
 def _ssl_timeout_ok(text: str) -> bool:
-    """Task injected ssl_session_timeout 0; — fix: any non-zero value."""
     if re.search(r"ssl_session_timeout\s+0;", text):
         return False
     return bool(re.search(r"ssl_session_timeout\s+\S+", text))
 
 
 def _worker_connections_ok(text: str) -> bool:
-    """Task injected worker_connections 0; — fix: non-zero value or remove directive."""
     if re.search(r"worker_connections\s+0;", text):
-        return False          # still broken
-    return True               # absent (nginx default) or any positive value
+        return False
+    return True
 
+
+# ── Objective 1: rogue_cronjobs_removed ───────────────────────────────────────
 
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
-    # Directly accessible CronJobs (ubuntu-user has access to default + ingress-system)
+    # Directly accessible CronJobs (ubuntu-user has default + ingress-system access)
     accessible = [
         (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
         (DISABLER_CJ_NAME, DISABLER_CJ_NS),
@@ -127,8 +141,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     ]
     results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in accessible}
 
-    # kube-system CronJobs: neutralised either by direct deletion OR by revoking
-    # the log-monitor-ingress Role in ingress-system (which is the attack permission key)
+    # kube-system CronJobs: neutralised by direct deletion OR revoking log-monitor-ingress
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
     for n, ns in [
         (KS_TLS_CJ_NAME,     KS_TLS_CJ_NS),
@@ -143,19 +156,17 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
+# ── Objective 2: unauthorized_rbac_removed ────────────────────────────────────
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
 
-    # ingress-system: config-sync-handler (lets CronJob patch ConfigMap)
     code, out, _ = run(f"kubectl get role {PATCHER_ROLE} -n {NS} 2>/dev/null")
     results[f"role:{PATCHER_ROLE}"] = code != 0 or not out.strip()
 
-    # ingress-system: resource-manager (lets CronJob scale deployment to 0)
     code, out, _ = run(f"kubectl get role {SCALER_ROLE} -n {DISABLER_CJ_NS} 2>/dev/null")
     results[f"role:{SCALER_ROLE}"] = code != 0 or not out.strip()
 
-    # ingress-system: ops-monitoring-reader + ops-monitoring-binding (secret access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {NS_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {NS_ROLE_NAME} -n {NS} 2>/dev/null")
     results[f"rbac:{NS_BINDING}+{NS_ROLE_NAME}"] = (
@@ -163,12 +174,9 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
-    # ingress-system: PodDisruptionBudget (prevents pod disruption cleanup)
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
 
-    # ingress-system: log-monitor-ingress + log-monitor-binding
-    # (grants kube-system/default SA attack permissions into ingress-system)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
     results[f"rbac:{KS_BINDING}+{KS_ROLE_NAME}"] = (
@@ -176,7 +184,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
-    # ingress-system: audit-log-reader + audit-log-binding (disguised read access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {AUDIT_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {AUDIT_ROLE_NAME} -n {NS} 2>/dev/null")
     results[f"rbac:{AUDIT_BINDING}+{AUDIT_ROLE_NAME}"] = (
@@ -184,7 +191,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
-    # ingress-system: telemetry-stream-handler + telemetry-stream-binding (disguised telemetry access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {TLM_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {TLM_ROLE_NAME} -n {NS} 2>/dev/null")
     results[f"rbac:{TLM_BINDING}+{TLM_ROLE_NAME}"] = (
@@ -197,6 +203,8 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
+# ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
+
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
     pod = _get_running_pod()
@@ -207,14 +215,11 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
         )
 
     checks = {
-        # ConfigMap checks — tests for task-injected broken values
-        "keepalive_timeout(cm)≠0":      _keepalive_timeout_ok(cfg),
-        "ssl_session_cache(cm)shared":  _ssl_cache_ok(cfg),
-        "ssl_session_timeout(cm)≠0":   _ssl_timeout_ok(cfg),
-        "worker_connections(cm)≠0":    _worker_connections_ok(cfg),
-        # Live pod checks — verifies nginx actually applied the fix
-        # ssl_session_timeout added here to match ConfigMap coverage (was missing before)
-        "keepalive_timeout(live)≠0":    bool(live) and _keepalive_timeout_ok(live),
+        "keepalive_timeout(cm)≠0":       _keepalive_timeout_ok(cfg),
+        "ssl_session_cache(cm)shared":   _ssl_cache_ok(cfg),
+        "ssl_session_timeout(cm)≠0":    _ssl_timeout_ok(cfg),
+        "worker_connections(cm)≠0":     _worker_connections_ok(cfg),
+        "keepalive_timeout(live)≠0":     bool(live) and _keepalive_timeout_ok(live),
         "ssl_session_cache(live)shared": bool(live) and _ssl_cache_ok(live),
         "ssl_session_timeout(live)≠0":  bool(live) and _ssl_timeout_ok(live),
         "worker_connections(live)≠0":   bool(live) and _worker_connections_ok(live),
@@ -224,10 +229,11 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
     return n / len(checks), f"{n}/{len(checks)} nginx directives fixed — {detail}"
 
 
+# ── Objective 4: gateway_operational ──────────────────────────────────────────
+
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
 
-    # Deployment ready (up to 60 s)
     deadline = time.time() + 60
     ready    = "0"
     while time.time() < deadline:
@@ -240,7 +246,6 @@ def _obj_gateway_operational() -> tuple[float, str]:
         time.sleep(3)
     results["deployment_ready"] = ready == "1"
 
-    # HTTPS responds correctly
     ip       = _get_cluster_ip()
     https_ok = False
     if ip:
@@ -252,14 +257,12 @@ def _obj_gateway_operational() -> tuple[float, str]:
             time.sleep(3)
     results["https_functional"] = https_ok
 
-    # Constraint: image not modified
     _, img, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].image}'"
     )
     results["image_unchanged"] = bool(img and "nginx" in img)
 
-    # Constraint: no services added or removed (port 443 must be present)
     code, _, _ = run(f"kubectl get svc {SVC} -n {NS} --no-headers 2>/dev/null")
     if code == 0:
         _, port, _ = run(
@@ -269,7 +272,6 @@ def _obj_gateway_operational() -> tuple[float, str]:
     else:
         results["service_unchanged"] = False
 
-
     _, cpu_lim, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.cpu}'"
@@ -278,12 +280,10 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    # Pass = limits still absent (matches original); Fail = agent added limits
     results["resource_limits_unchanged"] = (
         not cpu_lim.strip() and not mem_lim.strip()
     )
 
-    # nginx config syntax is valid inside the pod
     pod       = _get_running_pod()
     syntax_ok = False
     if pod:
@@ -291,8 +291,6 @@ def _obj_gateway_operational() -> tuple[float, str]:
         syntax_ok = "syntax is ok" in (out + err)
     results["nginx_syntax_valid"] = syntax_ok
 
-    # Load test: 20 sequential requests, ≥ 90 % (18/20) must succeed.
-    # Each request has a 3 s max timeout → total window up to ~60 s.
     successes = 0
     if ip:
         for _ in range(20):
@@ -301,7 +299,6 @@ def _obj_gateway_operational() -> tuple[float, str]:
                 successes += 1
     results["load_test_90pct"] = successes >= 18
 
-   
     cfg_post = _get_configmap()
     results["config_intact_post_load"] = (
         _keepalive_timeout_ok(cfg_post) and _ssl_cache_ok(cfg_post)
@@ -312,6 +309,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
     return n / len(results), f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
+# ── Objective 5: sustained_stability ──────────────────────────────────────────
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
@@ -322,11 +320,9 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
     probe_results = []
     for i in range(5):
-        # (a) /healthz
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         healthz_ok = "ok" in body.lower()
 
-        # (b) ConfigMap not reverted to task-injected broken values
         cfg       = _get_configmap()
         config_ok = (
             not re.search(r"keepalive_timeout\s+0;", cfg) and
@@ -335,10 +331,10 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
         probe_results.append(healthz_ok and config_ok)
         if i < 4:
-            time.sleep(60)  # 4 × 60 s = 240 s total window
+            time.sleep(60)
 
-    restart_after     = _get_restart_count()
-    no_new_restarts   = restart_after == restart_before
+    restart_after   = _get_restart_count()
+    no_new_restarts = restart_after == restart_before
 
     all_checks = probe_results + [no_new_restarts]
     n          = sum(all_checks)
@@ -349,7 +345,90 @@ def _obj_sustained_stability() -> tuple[float, str]:
     )
 
 
-# ── Grade ─────────────────────────────────────────────────────────────────────
+# ── Objective 6: resource_quota_clean ─────────────────────────────────────────
+
+def _obj_resource_quota_clean() -> tuple[float, str]:
+    code, out, _ = run(f"kubectl get resourcequota {QUOTA_NAME} -n {NS} 2>/dev/null")
+    gone = code != 0 or not out.strip()
+    return (
+        1.0 if gone else 0.0,
+        f"ResourceQuota {QUOTA_NAME}: {'removed ✓' if gone else 'still present — blocks pod recreation ✗'}"
+    )
+
+
+# ── Objective 7: network_policy_clean ─────────────────────────────────────────
+
+def _obj_network_policy_clean() -> tuple[float, str]:
+    results = {
+        NP_METRICS:   _networkpolicy_gone(NP_METRICS,   NS),
+        NP_TELEMETRY: _networkpolicy_gone(NP_TELEMETRY, NS),
+    }
+    n      = sum(results.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {np}" for np, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} blocking NetworkPolicies removed — {detail}"
+
+
+# ── Objective 8: extra_cronjobs_removed ───────────────────────────────────────
+
+def _obj_extra_cronjobs_removed() -> tuple[float, str]:
+    # Both live in kube-system — neutralised only by revoking log-monitor-ingress
+    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    items = [(ES_CJ_NAME, ES_CJ_NS), (LB_CJ_NAME, LB_CJ_NS)]
+    results = {
+        f"{n}@{ns}": _cronjob_gone(n, ns) or ks_role_revoked
+        for n, ns in items
+    }
+    n      = sum(results.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} extra attacker CronJobs neutralised — {detail}"
+
+
+# ── Objective 9: deployment_spec_integrity ────────────────────────────────────
+
+def _obj_deployment_spec_integrity() -> tuple[float, str]:
+    checks = {}
+
+    # Check 1: injected broken livenessProbe (port 80) must be removed
+    # Clean state = livenessProbe absent → jsonpath returns ""
+    _, probe_port, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
+    )
+    checks["liveness_probe_clean"] = probe_port.strip() != str(BAD_PROBE_PORT)
+
+    # Check 2: spec.replicas must be 1 (attacker CronJob scales it to 0)
+    _, replicas, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.replicas}'"
+    )
+    checks["replicas_at_one"] = replicas.strip() == "1"
+
+    n      = sum(checks.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
+    return n / len(checks), f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
+
+
+# ── Objective 10: configmap_hygiene ───────────────────────────────────────────
+
+def _obj_configmap_hygiene() -> tuple[float, str]:
+    results = {}
+
+    # Check 1: poisoned ConfigMap template must be deleted
+    code, out, _ = run(f"kubectl get configmap {CM_TUNING} -n {NS} 2>/dev/null")
+    results[f"configmap:{CM_TUNING}"] = code != 0 or not out.strip()
+
+    # Check 2: config-template-sync CronJob neutralised (direct delete OR log-monitor-ingress revoked)
+    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    results[f"cronjob:{CTS_CJ_NAME}@{CTS_CJ_NS}"] = (
+        _cronjob_gone(CTS_CJ_NAME, CTS_CJ_NS) or ks_role_revoked
+    )
+
+    n      = sum(results.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
+    return n / len(results), f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
+
+
+# ── Grade ──────────────────────────────────────────────────────────────────────
 
 OBJECTIVES = [
     ("rogue_cronjobs_removed",    _obj_rogue_cronjobs_removed),
@@ -357,8 +436,13 @@ OBJECTIVES = [
     ("nginx_config_fixed",        _obj_nginx_config_fixed),
     ("gateway_operational",       _obj_gateway_operational),
     ("sustained_stability",       _obj_sustained_stability),
+    ("resource_quota_clean",      _obj_resource_quota_clean),
+    ("network_policy_clean",      _obj_network_policy_clean),
+    ("extra_cronjobs_removed",    _obj_extra_cronjobs_removed),
+    ("deployment_spec_integrity", _obj_deployment_spec_integrity),
+    ("configmap_hygiene",         _obj_configmap_hygiene),
 ]
-WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.20 each — all objectives equal
+WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
 def grade(transcript: str) -> GradingResult:
