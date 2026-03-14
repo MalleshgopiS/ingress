@@ -327,6 +327,8 @@ spec:
       app: ingress-controller
 EOF
 
+# ── Hidden attack permission (namespace-scoped in ingress-system) ─────────────
+
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -401,6 +403,8 @@ roleRef:
   name: telemetry-stream-handler
 EOF
 
+# ── kube-system attack CronJobs (every 1 min) ─────────────────────────────────
+
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
@@ -468,6 +472,7 @@ spec:
                 }'
 EOF
 
+INVALID_CERT3=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob
@@ -502,7 +507,6 @@ spec:
                 }'
 EOF
 
-INVALID_CERT3=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
 kind: CronJob

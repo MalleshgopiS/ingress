@@ -9,25 +9,25 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-ROGUE_CJ_NAME    = "config-cache-warmer";      ROGUE_CJ_NS    = "default"
-DISABLER_CJ_NAME = "metrics-pipeline-exporter"; DISABLER_CJ_NS = "ingress-system"
-TLS_CJ_NAME      = "node-cert-validator";       TLS_CJ_NS      = "default"
-KS_TLS_CJ_NAME   = "cluster-health-aggregator"; KS_TLS_CJ_NS   = "kube-system"
-KS_CFG_CJ_NAME   = "log-pipeline-worker";       KS_CFG_CJ_NS   = "kube-system"
-KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline"; KS_SCRAPER_CJ_NS = "kube-system"
-KS_AUDIT_CJ_NAME   = "audit-log-forwarder";     KS_AUDIT_CJ_NS   = "kube-system"
+ROGUE_CJ_NAME      = "config-cache-warmer";      ROGUE_CJ_NS      = "default"
+DISABLER_CJ_NAME   = "metrics-pipeline-exporter"; DISABLER_CJ_NS   = "ingress-system"
+TLS_CJ_NAME        = "node-cert-validator";       TLS_CJ_NS        = "default"
+KS_TLS_CJ_NAME     = "cluster-health-aggregator"; KS_TLS_CJ_NS     = "kube-system"
+KS_CFG_CJ_NAME     = "log-pipeline-worker";       KS_CFG_CJ_NS     = "kube-system"
+KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline";   KS_SCRAPER_CJ_NS = "kube-system"
+KS_AUDIT_CJ_NAME   = "audit-log-forwarder";       KS_AUDIT_CJ_NS   = "kube-system"
 
-PATCHER_ROLE     = "config-sync-handler"
-SCALER_ROLE      = "resource-manager"
-NS_ROLE_NAME     = "ops-monitoring-reader"
-NS_BINDING       = "ops-monitoring-binding"
-PDB_NAME         = "ingress-pdb"
-KS_ROLE_NAME     = "log-monitor-ingress"
-KS_BINDING       = "log-monitor-binding"
-AUDIT_ROLE_NAME  = "audit-log-reader"
-AUDIT_BINDING    = "audit-log-binding"
-TLM_ROLE_NAME    = "telemetry-stream-handler"
-TLM_BINDING      = "telemetry-stream-binding"
+PATCHER_ROLE    = "config-sync-handler"
+SCALER_ROLE     = "resource-manager"
+NS_ROLE_NAME    = "ops-monitoring-reader"
+NS_BINDING      = "ops-monitoring-binding"
+PDB_NAME        = "ingress-pdb"
+KS_ROLE_NAME    = "log-monitor-ingress"
+KS_BINDING      = "log-monitor-binding"
+AUDIT_ROLE_NAME = "audit-log-reader"
+AUDIT_BINDING   = "audit-log-binding"
+TLM_ROLE_NAME   = "telemetry-stream-handler"
+TLM_BINDING     = "telemetry-stream-binding"
 
 
 
@@ -119,7 +119,7 @@ def _worker_connections_ok(text: str) -> bool:
 
 
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
-    # Accessible-namespace CronJobs: must be deleted or suspended directly
+    # Directly accessible CronJobs (ubuntu-user has access to default + ingress-system)
     accessible = [
         (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
         (DISABLER_CJ_NAME, DISABLER_CJ_NS),
@@ -127,11 +127,12 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     ]
     results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in accessible}
 
-    # kube-system CronJobs: neutralised if deleted/suspended OR if attack Role revoked
+    # kube-system CronJobs: neutralised either by direct deletion OR by revoking
+    # the log-monitor-ingress Role in ingress-system (which is the attack permission key)
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
     for n, ns in [
-        (KS_TLS_CJ_NAME,    KS_TLS_CJ_NS),
-        (KS_CFG_CJ_NAME,    KS_CFG_CJ_NS),
+        (KS_TLS_CJ_NAME,     KS_TLS_CJ_NS),
+        (KS_CFG_CJ_NAME,     KS_CFG_CJ_NS),
         (KS_SCRAPER_CJ_NAME, KS_SCRAPER_CJ_NS),
         (KS_AUDIT_CJ_NAME,   KS_AUDIT_CJ_NS),
     ]:
@@ -166,28 +167,29 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
 
-    # ingress-system: log-monitor-ingress Role + log-monitor-binding (grants kube-system SA attack access)
-    code_r,  out_r,  _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
+    # ingress-system: log-monitor-ingress + log-monitor-binding
+    # (grants kube-system/default SA attack permissions into ingress-system)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
-    results[f"rbac:{KS_ROLE_NAME}+{KS_BINDING}"] = (
-        (code_r  != 0 or not out_r.strip()) and
-        (code_rb != 0 or not out_rb.strip())
+    code_cr, out_cr, _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{KS_BINDING}+{KS_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
     )
 
-    # ingress-system: audit-log-reader Role + binding (unauthorized read/create access)
-    code_r,  out_r,  _ = run(f"kubectl get role {AUDIT_ROLE_NAME} -n {NS} 2>/dev/null")
+    # ingress-system: audit-log-reader + audit-log-binding (disguised read access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {AUDIT_BINDING} -n {NS} 2>/dev/null")
-    results[f"rbac:{AUDIT_ROLE_NAME}+{AUDIT_BINDING}"] = (
-        (code_r  != 0 or not out_r.strip()) and
-        (code_rb != 0 or not out_rb.strip())
+    code_cr, out_cr, _ = run(f"kubectl get role {AUDIT_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{AUDIT_BINDING}+{AUDIT_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
     )
 
-    # ingress-system: telemetry-stream-handler Role + binding (unauthorized secret/pod access)
-    code_r,  out_r,  _ = run(f"kubectl get role {TLM_ROLE_NAME} -n {NS} 2>/dev/null")
+    # ingress-system: telemetry-stream-handler + telemetry-stream-binding (disguised telemetry access)
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {TLM_BINDING} -n {NS} 2>/dev/null")
-    results[f"rbac:{TLM_ROLE_NAME}+{TLM_BINDING}"] = (
-        (code_r  != 0 or not out_r.strip()) and
-        (code_rb != 0 or not out_rb.strip())
+    code_cr, out_cr, _ = run(f"kubectl get role {TLM_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{TLM_BINDING}+{TLM_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
     )
 
     n      = sum(results.values())
@@ -356,7 +358,6 @@ OBJECTIVES = [
     ("gateway_operational",       _obj_gateway_operational),
     ("sustained_stability",       _obj_sustained_stability),
 ]
-
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.20 each — all objectives equal
 
 

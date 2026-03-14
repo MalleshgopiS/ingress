@@ -1,6 +1,6 @@
 FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
 
-ENV ALLOWED_NAMESPACES="ingress-system,default"
+ENV ALLOWED_NAMESPACES="ingress-system,kube-system"
 
 USER root
 

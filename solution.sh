@@ -4,10 +4,13 @@ set -e
 NS=ingress-system
 DEPLOY=ingress-controller
 
-echo "Revoking kube-system CronJob attack permissions (neutralising kube-system CronJobs)..."
-kubectl delete rolebinding log-monitor-binding -n ingress-system --ignore-not-found
-kubectl delete role log-monitor-ingress -n ingress-system --ignore-not-found
+# ── Step 1: Revoke the attack permission key in ingress-system ────────────────
 
+echo "Revoking kube-system attack permissions..."
+kubectl delete rolebinding log-monitor-binding -n $NS --ignore-not-found
+kubectl delete role log-monitor-ingress -n $NS --ignore-not-found
+
+# ── Step 2: Remove directly accessible rogue CronJobs ─────────────────────────
 echo "Removing rogue CronJobs..."
 kubectl delete cronjob config-cache-warmer -n default --ignore-not-found
 kubectl delete cronjob metrics-pipeline-exporter -n ingress-system --ignore-not-found
@@ -24,6 +27,7 @@ kubectl get jobs -n ingress-system -o name 2>/dev/null \
 
 sleep 5
 
+# ── Step 3: Remove all unauthorized RBAC ──────────────────────────────────────
 echo "Removing rogue RBAC..."
 kubectl delete role config-sync-handler -n ingress-system --ignore-not-found
 kubectl delete rolebinding config-sync-handler-binding -n ingress-system --ignore-not-found
@@ -31,19 +35,22 @@ kubectl delete role resource-manager -n ingress-system --ignore-not-found
 kubectl delete rolebinding resource-manager-binding -n ingress-system --ignore-not-found
 kubectl delete rolebinding ops-monitoring-binding -n ingress-system --ignore-not-found
 kubectl delete role ops-monitoring-reader -n ingress-system --ignore-not-found
-kubectl delete role audit-log-reader -n ingress-system --ignore-not-found
 kubectl delete rolebinding audit-log-binding -n ingress-system --ignore-not-found
-kubectl delete role telemetry-stream-handler -n ingress-system --ignore-not-found
+kubectl delete role audit-log-reader -n ingress-system --ignore-not-found
 kubectl delete rolebinding telemetry-stream-binding -n ingress-system --ignore-not-found
+kubectl delete role telemetry-stream-handler -n ingress-system --ignore-not-found
+
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found
 
+# ── Step 4: Restore deployment replicas if scaled to 0 ───────────────────────
 REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
 if [ "$REPLICAS" = "0" ]; then
   echo "Deployment was scaled to 0 — restoring..."
   kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
 fi
 
+# ── Step 5: Check and restore TLS secret ──────────────────────────────────────
 echo "Checking TLS secret validity..."
 TLS_CRT=$(kubectl get secret ingress-controller-tls -n $NS \
   -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
@@ -64,6 +71,7 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
   echo "TLS secret restored."
 fi
 
+# ── Step 6: Fix nginx ConfigMap ───────────────────────────────────────────────
 echo "Fetching nginx config..."
 kubectl get configmap ingress-nginx-config -n $NS \
   -o jsonpath='{.data.nginx\.conf}' > /tmp/nginx.conf
@@ -86,6 +94,7 @@ kubectl create configmap ingress-nginx-config \
   --from-file=nginx.conf=/tmp/nginx.conf \
   -n $NS -o yaml --dry-run=client | kubectl apply -f -
 
+# ── Step 7: Restart deployment ────────────────────────────────────────────────
 echo "Restarting deployment..."
 kubectl rollout restart deployment/$DEPLOY -n $NS
 kubectl rollout status deployment/$DEPLOY -n $NS
