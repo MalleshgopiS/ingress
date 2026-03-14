@@ -61,6 +61,27 @@ NGINX_SSL_CACHE    = "shared:SSL:5m"
 NGINX_SSL_TIMEOUT  = "8h"
 
 
+# ── Partial-credit helper ──────────────────────────────────────────────────────
+# Applied selectively to objectives where near-complete remediation
+# (missing only one sub-check) deserves acknowledgement.  The high
+# threshold (N-1) ensures agents must complete virtually all work
+# before partial credit is awarded; gaming is not possible.
+
+def _score_with_partial(results: dict, partial_value: float = 0.5) -> float:
+    """
+    Return 1.0 if all checks pass, partial_value if exactly one fails, else 0.0.
+    Used for objectives with many independent sub-checks (RBAC, deployment spec)
+    so that a near-perfect remediation isn't zeroed out by a single missed item.
+    """
+    n      = len(results)
+    passed = sum(results.values())
+    if passed == n:
+        return 1.0
+    if passed == n - 1:
+        return partial_value
+    return 0.0
+
+
 # ── shell helper ───────────────────────────────────────────────────────────────
 
 def run(cmd: str, timeout: int = 30):
@@ -206,8 +227,10 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
+    # PDB is a disruption policy that can block pod rescheduling — grouped here
+    # as an unauthorized policy-based control alongside RBAC items
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
-    results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
+    results[f"policy:{PDB_NAME}"] = code != 0 or not out.strip()
 
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
     code_cr, out_cr, _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
@@ -254,12 +277,20 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # ALL-OR-NOTHING
-    score  = 1.0 if all(results.values()) else 0.0
+    # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
+    score  = _score_with_partial(results, partial_value=0.5)
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
+# NOTE: The exact nginx values (2048/90s/shared:SSL:5m/8h) are stored in the
+# platform-ops-baseline ConfigMap in the ingress-system namespace — agents
+# performing a thorough cluster audit can discover them via:
+#   kubectl get configmap platform-ops-baseline -n ingress-system -o yaml
+# Checking in both ConfigMap and live pod catches partial fixes where only
+# one side was updated.  Intentional design: overlapping checks with
+# gateway_operational (obj 4), sustained_stability (obj 5), and
+# configmap_hygiene (obj 10) ensure the correct config survives over time.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
@@ -270,7 +301,8 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
             f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
         )
 
-    # Exact value checks — common nginx defaults (1024/65s/10m/1d) all FAIL
+    # Exact value checks — correct values in platform-ops-baseline ConfigMap;
+    # common nginx defaults (1024/65s/10m/1d) all FAIL
     checks = {
         f"worker_connections(cm)=={NGINX_WORKER_CONNS}":   _worker_connections_ok(cfg),
         f"keepalive_timeout(cm)=={NGINX_KEEPALIVE}":       _keepalive_timeout_ok(cfg),
@@ -430,7 +462,7 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
         1.0 if ok else 0.0,
         (
             f"ResourceQuota: blocking={('removed ✓' if bad_gone else 'still present ✗')}, "
-            f"correct(pods=10)={('present ✓' if correct_exists else 'missing — must create ingress-ops-quota ✗')}"
+            f"correct(pods=10)={('present ✓' if correct_exists else 'missing — create quota with pods=10 (see platform-ops-baseline.quota_pods_limit) ✗')}"
         ),
     )
 
@@ -455,7 +487,7 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         1.0 if ok else 0.0,
         (
             f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
-            f"{ALLOW_NP_NAME}={('present ✓' if allow_exists else 'missing — must create allow policy ✗')}"
+            f"{ALLOW_NP_NAME}={('present ✓' if allow_exists else 'missing — create allow-HTTPS policy (see platform-ops-baseline.network_policy_name) ✗')}"
         ),
     )
 
@@ -512,8 +544,8 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    # ALL-OR-NOTHING
-    score  = 1.0 if all(checks.values()) else 0.0
+    # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
+    score  = _score_with_partial(checks, partial_value=0.5)
     return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
 
 

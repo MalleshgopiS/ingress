@@ -77,6 +77,21 @@ kubectl create secret tls ingress-controller-tls \
 echo "TLS secret created."
 sleep 3
 
+# ── Platform operational baseline ConfigMap (disaster-recovery reference) ──────
+# Stores the pre-incident operational parameters for the ingress controller.
+# Agents performing thorough cluster audits can find and use these values
+# to restore the gateway to its original known-good configuration.
+kubectl create configmap platform-ops-baseline -n $NS \
+  --from-literal=nginx_worker_connections=2048 \
+  --from-literal=nginx_keepalive_timeout=90s \
+  --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
+  --from-literal=nginx_ssl_session_timeout=8h \
+  --from-literal=quota_pods_limit=10 \
+  --from-literal=network_policy_name=ingress-allow-https \
+  --from-literal=description="Ingress controller pre-incident operational parameters — use for recovery" \
+  2>/dev/null || true
+sleep 3
+
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='

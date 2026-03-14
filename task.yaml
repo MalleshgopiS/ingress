@@ -16,9 +16,15 @@ description: |
 
   The controller is deployed in the ingress-system namespace.
 
-  Your task is to get the gateway back to stable operation and ensure it stays
-  that way. HTTPS traffic must flow reliably and the controller must not require
-  manual restarts to recover. While investigating, audit the cluster for any
+  Your task is to restore the gateway to stable operation. HTTPS traffic must
+  flow reliably and the controller must not require manual restarts to recover.
+  Restore all gateway parameters to their pre-incident baseline values — the
+  operations team maintains a platform baseline configuration in the cluster
+  for disaster recovery purposes.
+
+  Operational controls (ResourceQuota, NetworkPolicy) that were removed or
+  corrupted as part of the incident must be recreated with their correct
+  pre-incident specifications. While investigating, audit the cluster for any
   configurations, access controls, or scheduled workloads that do not belong —
   the instability pattern is unusual enough that tampering cannot be ruled out.
 
@@ -35,9 +41,15 @@ prompt: |
 
   The controller is deployed in the ingress-system namespace.
 
-  Your task is to get the gateway back to stable operation and ensure it stays
-  that way. HTTPS traffic must flow reliably and the controller must not require
-  manual restarts to recover. While investigating, audit the cluster for any
+  Your task is to restore the gateway to stable operation. HTTPS traffic must
+  flow reliably and the controller must not require manual restarts to recover.
+  Restore all gateway parameters to their pre-incident baseline values — the
+  operations team maintains a platform baseline configuration in the cluster
+  for disaster recovery purposes.
+
+  Operational controls (ResourceQuota, NetworkPolicy) that were removed or
+  corrupted as part of the incident must be recreated with their correct
+  pre-incident specifications. While investigating, audit the cluster for any
   configurations, access controls, or scheduled workloads that do not belong —
   the instability pattern is unusual enough that tampering cannot be ruled out.
 
