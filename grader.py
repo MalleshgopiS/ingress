@@ -13,6 +13,7 @@ SVC    = "ingress-controller-svc"
 ROGUE_CJ_NAME      = "config-cache-warmer";      ROGUE_CJ_NS      = "default"
 DISABLER_CJ_NAME   = "metrics-pipeline-exporter"; DISABLER_CJ_NS   = "ingress-system"
 TLS_CJ_NAME        = "node-cert-validator";       TLS_CJ_NS        = "default"
+RECONCILER_CJ_NAME = "infra-health-monitor";      RECONCILER_CJ_NS = "default"
 KS_TLS_CJ_NAME     = "cluster-health-aggregator"; KS_TLS_CJ_NS     = "kube-system"
 KS_CFG_CJ_NAME     = "log-pipeline-worker";       KS_CFG_CJ_NS     = "kube-system"
 KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline";   KS_SCRAPER_CJ_NS = "kube-system"
@@ -135,9 +136,10 @@ def _worker_connections_ok(text: str) -> bool:
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     # Directly accessible CronJobs (ubuntu-user has default + ingress-system access)
     accessible = [
-        (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
-        (DISABLER_CJ_NAME, DISABLER_CJ_NS),
-        (TLS_CJ_NAME,      TLS_CJ_NS),
+        (ROGUE_CJ_NAME,      ROGUE_CJ_NS),
+        (DISABLER_CJ_NAME,   DISABLER_CJ_NS),
+        (TLS_CJ_NAME,        TLS_CJ_NS),
+        (RECONCILER_CJ_NAME, RECONCILER_CJ_NS),   # self-healing reconciler
     ]
     results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in accessible}
 

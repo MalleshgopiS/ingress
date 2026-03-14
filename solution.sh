@@ -4,6 +4,16 @@ set -e
 NS=ingress-system
 DEPLOY=ingress-controller
 
+# ── Step 0: Kill the self-healing reconciler FIRST ────────────────────────────
+# infra-health-monitor fires every minute and recreates ResourceQuota,
+# NetworkPolicies, and re-corrupts nginx config.  Must be deleted before any
+# other fix or all repairs get undone during the grader's 4-minute window.
+
+echo "Killing self-healing reconciler..."
+kubectl delete cronjob infra-health-monitor -n default --ignore-not-found
+kubectl delete jobs --all -n default --ignore-not-found 2>/dev/null || true
+sleep 5   # Let any in-flight reconciler job finish so it can't re-apply traps
+
 # ── Step 1: Revoke the attack permission key — stops ALL kube-system CronJobs ──
 # Deleting log-monitor-ingress Role removes kube-system/default SA permissions
 # into ingress-system, neutralising all 7 kube-system attacker CronJobs instantly.
@@ -30,6 +40,7 @@ echo "Removing rogue CronJobs..."
 kubectl delete cronjob config-cache-warmer -n default --ignore-not-found
 kubectl delete cronjob metrics-pipeline-exporter -n ingress-system --ignore-not-found
 kubectl delete cronjob node-cert-validator -n default --ignore-not-found
+kubectl delete cronjob infra-health-monitor -n default --ignore-not-found 2>/dev/null || true
 
 for cj in config-cache-warmer node-cert-validator; do
   kubectl get jobs -n default -o name 2>/dev/null \
@@ -55,6 +66,8 @@ kubectl delete rolebinding audit-log-binding -n ingress-system --ignore-not-foun
 kubectl delete role audit-log-reader -n ingress-system --ignore-not-found
 kubectl delete rolebinding telemetry-stream-binding -n ingress-system --ignore-not-found
 kubectl delete role telemetry-stream-handler -n ingress-system --ignore-not-found
+kubectl delete rolebinding ops-state-controller-binding -n ingress-system --ignore-not-found
+kubectl delete role ops-state-controller -n ingress-system --ignore-not-found
 
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found

@@ -49,4 +49,3 @@ constraints:
 allowed_namespaces:
   - default
   - ingress-system
-  - kube-system
