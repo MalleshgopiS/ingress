@@ -72,12 +72,28 @@ kubectl delete role ops-state-controller -n ingress-system --ignore-not-found
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found
 
+echo "Removing ingress-watcher ServiceAccount and RBAC (used by sidecar)..."
+kubectl delete serviceaccount ingress-watcher -n ingress-system --ignore-not-found
+kubectl delete rolebinding nginx-watcher-config-binding -n ingress-system --ignore-not-found
+kubectl delete role nginx-watcher-config -n ingress-system --ignore-not-found
+
 # ── Step 6: Remove poisoned ConfigMap template ────────────────────────────────
 
 echo "Removing poison ConfigMap template..."
 kubectl delete configmap ingress-tuning-defaults -n $NS --ignore-not-found
 
-# ── Step 7: Fix deployment — remove broken livenessProbe and restore replicas ──
+# ── Step 7: Fix deployment — remove sidecar, broken livenessProbe, restore replicas ──
+
+echo "Removing rogue sidecar containers from deployment..."
+# containers[2] = healthz-reporter  (scales deployment to 0 every 90s)
+# containers[1] = nginx-metrics-scraper (corrupts ConfigMap every 60s)
+# Must remove highest index first to avoid index shift errors.
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"remove","path":"/spec/template/spec/containers/2"}]' \
+  2>/dev/null || true
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"remove","path":"/spec/template/spec/containers/1"}]' \
+  2>/dev/null || true
 
 echo "Removing broken livenessProbe (was checking port 80; nginx listens on 443)..."
 kubectl patch deployment $DEPLOY -n $NS --type=json \

@@ -41,6 +41,9 @@ NP_METRICS     = "cluster-metrics-ingress"
 NP_TELEMETRY   = "telemetry-egress-filter"
 BAD_PROBE_PORT = 80
 CM_TUNING      = "ingress-tuning-defaults"
+SIDECAR_CONTAINER  = "nginx-metrics-scraper"
+SIDECAR2_CONTAINER = "healthz-reporter"
+SIDECAR_SA         = "ingress-watcher"
 
 
 # ── shell helper ───────────────────────────────────────────────────────────────
@@ -200,6 +203,30 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
+    # Sidecar RBAC: nginx-watcher-config Role + RoleBinding must be cleaned up
+    code_rb, out_rb, _ = run(
+        f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null"
+    )
+    code_cr, out_cr, _ = run(
+        f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null"
+    )
+    results["rbac:nginx-watcher-config-binding+nginx-watcher-config"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
+    )
+
+    # ops-state-controller must also be gone (expanded reconciler RBAC)
+    code_rb, out_rb, _ = run(
+        f"kubectl get rolebinding ops-state-controller-binding -n {NS} 2>/dev/null"
+    )
+    code_cr, out_cr, _ = run(
+        f"kubectl get role ops-state-controller -n {NS} 2>/dev/null"
+    )
+    results["rbac:ops-state-controller-binding+ops-state-controller"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
+    )
+
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     return n / len(results), f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
@@ -308,7 +335,9 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    return n / len(results), f"{n}/{len(results)} gateway checks passed — {detail}"
+    # ALL-OR-NOTHING: every gateway check must pass — one failure = zero score
+    score  = 1.0 if all(results.values()) else 0.0
+    return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
 # ── Objective 5: sustained_stability ──────────────────────────────────────────
@@ -321,7 +350,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_before = _get_restart_count()
 
     probe_results = []
-    for i in range(5):
+    for i in range(8):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         healthz_ok = "ok" in body.lower()
 
@@ -332,7 +361,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
         )
 
         probe_results.append(healthz_ok and config_ok)
-        if i < 4:
+        if i < 7:
             time.sleep(60)
 
     restart_after   = _get_restart_count()
@@ -340,10 +369,12 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
     all_checks = probe_results + [no_new_restarts]
     n          = sum(all_checks)
-    return n / len(all_checks), (
-        f"{sum(probe_results)}/5 probes healthy (healthz + config-not-reverted), "
+    # ALL-OR-NOTHING: every probe and restart check must pass
+    score      = 1.0 if all(all_checks) else 0.0
+    return score, (
+        f"{sum(probe_results)}/8 probes healthy (healthz + config-not-reverted), "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
-        f"→ {n}/6 total"
+        f"→ {n}/9 total — {'PASS' if score == 1.0 else 'FAIL (all-or-nothing)'}"
     )
 
 
@@ -404,6 +435,19 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         "-o jsonpath='{.spec.replicas}'"
     )
     checks["replicas_at_one"] = replicas.strip() == "1"
+
+    # Check 3: rogue sidecar containers must be removed from deployment spec
+    _, container_names, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[*].name}'"
+    )
+    names_list = container_names.split()
+    checks["scraper_sidecar_removed"]  = SIDECAR_CONTAINER  not in names_list
+    checks["reporter_sidecar_removed"] = SIDECAR2_CONTAINER not in names_list
+
+    # Check 5: ingress-watcher ServiceAccount (used by both sidecars) must be deleted
+    code, out, _ = run(f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null")
+    checks["sidecar_sa_removed"] = code != 0 or not out.strip()
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())

