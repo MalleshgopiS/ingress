@@ -329,26 +329,28 @@ EOF
 
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
-  name: telemetry-pipeline-manager
+  name: log-monitor-ingress
+  namespace: ingress-system
 rules:
 - apiGroups: [""]
   resources: ["configmaps", "secrets", "pods"]
   verbs: ["get", "list", "patch", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
-  name: telemetry-pipeline-binding
+  name: log-monitor-binding
+  namespace: ingress-system
 subjects:
 - kind: ServiceAccount
   name: default
   namespace: kube-system
 roleRef:
-  kind: ClusterRole
+  kind: Role
   apiGroup: rbac.authorization.k8s.io
-  name: telemetry-pipeline-manager
+  name: log-monitor-ingress
 EOF
 
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')

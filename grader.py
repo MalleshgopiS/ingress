@@ -20,7 +20,8 @@ SCALER_ROLE      = "resource-manager"
 NS_ROLE_NAME     = "ops-monitoring-reader"
 NS_BINDING       = "ops-monitoring-binding"
 PDB_NAME         = "ingress-pdb"
-CLUSTER_BINDING  = "telemetry-pipeline-binding"
+KS_ROLE_NAME     = "log-monitor-ingress"
+KS_BINDING       = "log-monitor-binding"
 
 
 
@@ -80,6 +81,11 @@ def _cronjob_gone(name: str, ns: str) -> bool:
     return suspend == "true"
 
 
+def _role_gone(name: str, ns: str) -> bool:
+    code, out, _ = run(f"kubectl get role {name} -n {ns} 2>/dev/null")
+    return code != 0 or not out.strip()
+
+
 def _keepalive_timeout_ok(text: str) -> bool:
     """Task injected keepalive_timeout 0; — fix: any non-zero value."""
     if re.search(r"keepalive_timeout\s+0;", text):
@@ -107,14 +113,19 @@ def _worker_connections_ok(text: str) -> bool:
 
 
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
-    items = [
+    # Accessible-namespace CronJobs: must be deleted or suspended directly
+    accessible = [
         (ROGUE_CJ_NAME,    ROGUE_CJ_NS),
         (DISABLER_CJ_NAME, DISABLER_CJ_NS),
         (TLS_CJ_NAME,      TLS_CJ_NS),
-        (KS_TLS_CJ_NAME,   KS_TLS_CJ_NS),
-        (KS_CFG_CJ_NAME,   KS_CFG_CJ_NS),
     ]
-    results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in items}
+    results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in accessible}
+
+    # kube-system CronJobs: neutralised if deleted/suspended OR if attack Role revoked
+    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    for n, ns in [(KS_TLS_CJ_NAME, KS_TLS_CJ_NS), (KS_CFG_CJ_NAME, KS_CFG_CJ_NS)]:
+        results[f"{n}@{ns}"] = _cronjob_gone(n, ns) or ks_role_revoked
+
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     return n / len(results), f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
@@ -144,9 +155,13 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"pdb:{PDB_NAME}"] = code != 0 or not out.strip()
 
-    # cluster-scoped: telemetry-pipeline-binding (grants default SA cluster-wide access)
-    code, out, _ = run(f"kubectl get clusterrolebinding {CLUSTER_BINDING} 2>/dev/null")
-    results[f"clusterrolebinding:{CLUSTER_BINDING}"] = code != 0 or not out.strip()
+    # ingress-system: log-monitor-ingress Role + log-monitor-binding (grants kube-system SA attack access)
+    code_r,  out_r,  _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
+    results[f"rbac:{KS_ROLE_NAME}+{KS_BINDING}"] = (
+        (code_r  != 0 or not out_r.strip()) and
+        (code_rb != 0 or not out_rb.strip())
+    )
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
