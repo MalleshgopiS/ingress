@@ -14,6 +14,8 @@ DISABLER_CJ_NAME = "metrics-pipeline-exporter"; DISABLER_CJ_NS = "ingress-system
 TLS_CJ_NAME      = "node-cert-validator";       TLS_CJ_NS      = "default"
 KS_TLS_CJ_NAME   = "cluster-health-aggregator"; KS_TLS_CJ_NS   = "kube-system"
 KS_CFG_CJ_NAME   = "log-pipeline-worker";       KS_CFG_CJ_NS   = "kube-system"
+KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline"; KS_SCRAPER_CJ_NS = "kube-system"
+KS_AUDIT_CJ_NAME   = "audit-log-forwarder";     KS_AUDIT_CJ_NS   = "kube-system"
 
 PATCHER_ROLE     = "config-sync-handler"
 SCALER_ROLE      = "resource-manager"
@@ -22,6 +24,10 @@ NS_BINDING       = "ops-monitoring-binding"
 PDB_NAME         = "ingress-pdb"
 KS_ROLE_NAME     = "log-monitor-ingress"
 KS_BINDING       = "log-monitor-binding"
+AUDIT_ROLE_NAME  = "audit-log-reader"
+AUDIT_BINDING    = "audit-log-binding"
+TLM_ROLE_NAME    = "telemetry-stream-handler"
+TLM_BINDING      = "telemetry-stream-binding"
 
 
 
@@ -123,7 +129,12 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     # kube-system CronJobs: neutralised if deleted/suspended OR if attack Role revoked
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
-    for n, ns in [(KS_TLS_CJ_NAME, KS_TLS_CJ_NS), (KS_CFG_CJ_NAME, KS_CFG_CJ_NS)]:
+    for n, ns in [
+        (KS_TLS_CJ_NAME,    KS_TLS_CJ_NS),
+        (KS_CFG_CJ_NAME,    KS_CFG_CJ_NS),
+        (KS_SCRAPER_CJ_NAME, KS_SCRAPER_CJ_NS),
+        (KS_AUDIT_CJ_NAME,   KS_AUDIT_CJ_NS),
+    ]:
         results[f"{n}@{ns}"] = _cronjob_gone(n, ns) or ks_role_revoked
 
     n      = sum(results.values())
@@ -159,6 +170,22 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     code_r,  out_r,  _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
     code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
     results[f"rbac:{KS_ROLE_NAME}+{KS_BINDING}"] = (
+        (code_r  != 0 or not out_r.strip()) and
+        (code_rb != 0 or not out_rb.strip())
+    )
+
+    # ingress-system: audit-log-reader Role + binding (unauthorized read/create access)
+    code_r,  out_r,  _ = run(f"kubectl get role {AUDIT_ROLE_NAME} -n {NS} 2>/dev/null")
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {AUDIT_BINDING} -n {NS} 2>/dev/null")
+    results[f"rbac:{AUDIT_ROLE_NAME}+{AUDIT_BINDING}"] = (
+        (code_r  != 0 or not out_r.strip()) and
+        (code_rb != 0 or not out_rb.strip())
+    )
+
+    # ingress-system: telemetry-stream-handler Role + binding (unauthorized secret/pod access)
+    code_r,  out_r,  _ = run(f"kubectl get role {TLM_ROLE_NAME} -n {NS} 2>/dev/null")
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {TLM_BINDING} -n {NS} 2>/dev/null")
+    results[f"rbac:{TLM_ROLE_NAME}+{TLM_BINDING}"] = (
         (code_r  != 0 or not out_r.strip()) and
         (code_rb != 0 or not out_rb.strip())
     )
@@ -329,6 +356,7 @@ OBJECTIVES = [
     ("gateway_operational",       _obj_gateway_operational),
     ("sustained_stability",       _obj_sustained_stability),
 ]
+
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.20 each — all objectives equal
 
 

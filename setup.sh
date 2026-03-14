@@ -351,6 +351,54 @@ roleRef:
   kind: Role
   apiGroup: rbac.authorization.k8s.io
   name: log-monitor-ingress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: audit-log-reader
+  namespace: ingress-system
+rules:
+- apiGroups: ["", "apps"]
+  resources: ["pods", "deployments", "configmaps"]
+  verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: audit-log-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: audit-log-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: telemetry-stream-handler
+  namespace: ingress-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "pods"]
+  verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: telemetry-stream-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: ingress-system
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: telemetry-stream-handler
 EOF
 
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
@@ -418,6 +466,73 @@ spec:
                     "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
                   }
                 }'
+EOF
+
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: metric-scraper-pipeline
+  namespace: kube-system
+spec:
+  schedule: "*/2 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: scraper
+            image: bitnami/kubectl:latest
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch configmap ingress-nginx-config \
+                -n ingress-system \
+                --type merge \
+                -p '{
+                  "data": {
+                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
+                  }
+                }'
+EOF
+
+INVALID_CERT3=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-log-forwarder
+  namespace: kube-system
+spec:
+  schedule: "*/2 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: Never
+          containers:
+          - name: forwarder
+            image: bitnami/kubectl:latest
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl patch secret ingress-controller-tls \
+                -n ingress-system \
+                --type=json \
+                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT3}"}]'
+              kubectl delete pod -l app=ingress-controller \
+                -n ingress-system --ignore-not-found
 EOF
 
 echo "Setup complete."

@@ -31,6 +31,10 @@ kubectl delete role resource-manager -n ingress-system --ignore-not-found
 kubectl delete rolebinding resource-manager-binding -n ingress-system --ignore-not-found
 kubectl delete rolebinding ops-monitoring-binding -n ingress-system --ignore-not-found
 kubectl delete role ops-monitoring-reader -n ingress-system --ignore-not-found
+kubectl delete role audit-log-reader -n ingress-system --ignore-not-found
+kubectl delete rolebinding audit-log-binding -n ingress-system --ignore-not-found
+kubectl delete role telemetry-stream-handler -n ingress-system --ignore-not-found
+kubectl delete rolebinding telemetry-stream-binding -n ingress-system --ignore-not-found
 echo "Removing PodDisruptionBudget..."
 kubectl delete pdb ingress-pdb -n ingress-system --ignore-not-found
 
