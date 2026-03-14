@@ -157,8 +157,8 @@ http {
     ssl_session_timeout 8h;
     server {
         listen 443 ssl;
-        ssl_certificate     /etc/nginx/tls/tls.crt;
-        ssl_certificate_key /etc/nginx/tls/tls.key;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
         location / {
             return 200 "Ingress Controller Running\n";
             add_header Content-Type text/plain;

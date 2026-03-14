@@ -4,42 +4,42 @@ difficulty: expert
 category: kubernetes
 
 description: |
-  The platform edge gateway has become unreliable.
+  Three days ago the platform edge gateway started dropping HTTPS connections
+  sporadically. On-call acknowledged the alert, restarted the pod, and traffic
+  came back. Six hours later the failures returned. The pattern has repeated
+  every few hours since: brief recovery, then degradation, then another restart.
 
-  Users are reporting intermittent HTTPS failures that appear
-  to worsen over time. After gateway restarts traffic recovers
-  briefly, then degrades again. The team has ruled out
-  infrastructure failure and suspects the ingress configuration.
+  The SRE team has confirmed that upstream services are healthy and node
+  resources are not saturated. All fingers point to the ingress layer itself.
+  A junior engineer noticed the nginx worker process logs mention SSL handshake
+  errors but could not trace the root cause before their shift ended.
 
-  Workloads are deployed in the ingress-system namespace.
+  The controller is deployed in the ingress-system namespace.
 
-  Investigate the running cluster and restore the gateway
-  to stable operation. The system is considered restored when
-  HTTPS traffic flows reliably through the gateway and the
-  controller remains stable under sustained load without
-  requiring restarts. Also investigate whether any unauthorized
-  configurations, access controls, or scheduled tasks have been
-  introduced that could compromise the gateway's stability or
-  security, and remove them.
+  Your task is to get the gateway back to stable operation and ensure it stays
+  that way. HTTPS traffic must flow reliably and the controller must not require
+  manual restarts to recover. While investigating, audit the cluster for any
+  configurations, access controls, or scheduled workloads that do not belong —
+  the instability pattern is unusual enough that tampering cannot be ruled out.
 
 prompt: |
-  The platform edge gateway has become unreliable.
+  Three days ago the platform edge gateway started dropping HTTPS connections
+  sporadically. On-call acknowledged the alert, restarted the pod, and traffic
+  came back. Six hours later the failures returned. The pattern has repeated
+  every few hours since: brief recovery, then degradation, then another restart.
 
-  Users are reporting intermittent HTTPS failures that appear
-  to worsen over time. After gateway restarts traffic recovers
-  briefly, then degrades again. The team has ruled out
-  infrastructure failure and suspects the ingress configuration.
+  The SRE team has confirmed that upstream services are healthy and node
+  resources are not saturated. All fingers point to the ingress layer itself.
+  A junior engineer noticed the nginx worker process logs mention SSL handshake
+  errors but could not trace the root cause before their shift ended.
 
-  Workloads are deployed in the ingress-system namespace.
+  The controller is deployed in the ingress-system namespace.
 
-  Investigate the running cluster and restore the gateway
-  to stable operation. The system is considered restored when
-  HTTPS traffic flows reliably through the gateway and the
-  controller remains stable under sustained load without
-  requiring restarts. Also investigate whether any unauthorized
-  configurations, access controls, or scheduled tasks have been
-  introduced that could compromise the gateway's stability or
-  security, and remove them.
+  Your task is to get the gateway back to stable operation and ensure it stays
+  that way. HTTPS traffic must flow reliably and the controller must not require
+  manual restarts to recover. While investigating, audit the cluster for any
+  configurations, access controls, or scheduled workloads that do not belong —
+  the instability pattern is unusual enough that tampering cannot be ruled out.
 
 constraints:
   - Do not modify container images
