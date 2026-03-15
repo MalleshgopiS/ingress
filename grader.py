@@ -195,7 +195,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
+    score  = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -289,7 +289,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
+    score  = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
@@ -321,7 +321,7 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
     }
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = 1.0 if all(checks.values()) else 0.0
+    score  = sum(checks.values()) / len(checks)
     return score, f"{n}/{len(checks)} nginx directives exact — {detail}"
 
 
@@ -401,7 +401,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
+    score  = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -430,7 +430,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
     all_checks = probe_results + [no_new_restarts]
     n          = sum(all_checks)
-    score      = 1.0 if all(all_checks) else 0.0
+    score      = sum(all_checks) / len(all_checks)
     return score, (
         f"{sum(probe_results)}/8 probes healthy, "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
@@ -563,7 +563,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
+    score  = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
@@ -606,7 +606,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = 1.0 if all(checks.values()) else 0.0
+    score  = sum(checks.values()) / len(checks)
     return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
 
 
@@ -630,7 +630,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
+    score  = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
