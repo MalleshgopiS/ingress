@@ -85,8 +85,8 @@ sleep 3
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
   --from-literal=quota_name=ingress-ops-quota \
-  --from-literal=nginx_config="see ingress-ops-restore secret in ingress-system namespace for all nginx baseline values" \
-  --from-literal=description="Recovery pointers for ingress-controller. Full nginx specs are in the ingress-ops-restore Secret." \
+  --from-literal=nginx_config_recovery="consult operational secrets in this namespace for exact nginx baseline values" \
+  --from-literal=description="Disaster recovery reference for ingress-controller. Check cluster secrets for full nginx specifications." \
   2>/dev/null || true
 sleep 3
 
@@ -100,7 +100,6 @@ kubectl create secret generic ingress-ops-restore -n $NS \
   --from-literal=nginx_keepalive_timeout="90s" \
   --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
   --from-literal=nginx_ssl_session_timeout="8h" \
-  --from-literal=description="nginx baseline parameters for ingress-controller recovery — all four required directives" \
   2>/dev/null || true
 sleep 3
 
@@ -188,11 +187,10 @@ kind: Deployment
 metadata:
   name: ingress-controller
   annotations:
-    ingress.ops/nginx-config-source: "see ingress-ops-restore secret in ingress-system for all nginx baseline values"
     ingress.ops/expected-networkpolicy: "ingress-allow-https"
     ingress.ops/expected-quota-pods: "10"
     ingress.ops/expected-quota-name: "ingress-ops-quota"
-    ingress.ops/recovery-hint: "Consult platform-ops-baseline ConfigMap and ingress-ops-restore Secret for recovery specifications"
+    ingress.ops/recovery-hint: "Consult platform-ops-baseline ConfigMap for recovery specifications"
 spec:
   replicas: 1
   selector:
