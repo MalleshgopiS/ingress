@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import base64
 import json
 import re
 import subprocess
@@ -31,10 +32,16 @@ NS_BINDING      = "ops-monitoring-binding"
 PDB_NAME        = "ingress-pdb"
 KS_ROLE_NAME    = "log-monitor-ingress"
 KS_BINDING      = "log-monitor-binding"
-AUDIT_ROLE_NAME = "audit-log-reader"
-AUDIT_BINDING   = "audit-log-binding"
-TLM_ROLE_NAME   = "telemetry-stream-handler"
-TLM_BINDING     = "telemetry-stream-binding"
+AUDIT_ROLE_NAME  = "audit-log-reader"
+AUDIT_BINDING    = "audit-log-binding"
+TLM_ROLE_NAME    = "telemetry-stream-handler"
+TLM_BINDING      = "telemetry-stream-binding"
+IB_ROLE_NAME     = "infra-bridge-controller"
+IB_BINDING       = "infra-bridge-binding"
+EH_ROLE_NAME     = "event-handler-rbac"
+EH_BINDING       = "event-handler-binding"
+MA_ROLE_NAME     = "metrics-aggregator"
+MA_BINDING       = "metrics-aggregator-binding"
 
 # ── Trap / sidecar constants ───────────────────────────────────────────────────
 QUOTA_NAME         = "ops-resource-budget"
@@ -52,9 +59,9 @@ CORRECT_QUOTA_NAME = "ingress-ops-quota"
 ALLOW_NP_NAME      = "ingress-allow-https"
 
 # ── Exact nginx target values ──────────────────────────────────────────────────
-# Discoverable from deployment annotations (worker/keepalive) and
-# ingress-ops-restore Secret (ssl_session_cache / ssl_session_timeout).
-# Common nginx defaults (1024 / 65s / 10m / 1d) all FAIL.
+# ALL FOUR values are only in ingress-ops-restore Secret (not in annotations).
+# platform-ops-baseline ConfigMap points to the Secret.
+# Decoy ConfigMap nginx-ops-defaults has plausible-but-wrong values (1024/65s/10m/1d).
 NGINX_WORKER_CONNS = "2048"
 NGINX_KEEPALIVE    = "90s"
 NGINX_SSL_CACHE    = "shared:SSL:5m"
@@ -179,6 +186,9 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
         (KS_CFG_CJ_NAME,     KS_CFG_CJ_NS),
         (KS_SCRAPER_CJ_NAME, KS_SCRAPER_CJ_NS),
         (KS_AUDIT_CJ_NAME,   KS_AUDIT_CJ_NS),
+        (ES_CJ_NAME,         ES_CJ_NS),
+        (LB_CJ_NAME,         LB_CJ_NS),
+        (CTS_CJ_NAME,        CTS_CJ_NS),
     ]:
         results[f"{n}@{ns}"] = _cronjob_gone(n, ns) or ks_role_revoked
 
@@ -255,6 +265,27 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {IB_BINDING} -n {NS} 2>/dev/null")
+    code_cr, out_cr, _ = run(f"kubectl get role {IB_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{IB_BINDING}+{IB_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
+    )
+
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {EH_BINDING} -n {NS} 2>/dev/null")
+    code_cr, out_cr, _ = run(f"kubectl get role {EH_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{EH_BINDING}+{EH_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
+    )
+
+    code_rb, out_rb, _ = run(f"kubectl get rolebinding {MA_BINDING} -n {NS} 2>/dev/null")
+    code_cr, out_cr, _ = run(f"kubectl get role {MA_ROLE_NAME} -n {NS} 2>/dev/null")
+    results[f"rbac:{MA_BINDING}+{MA_ROLE_NAME}"] = (
+        (code_rb != 0 or not out_rb.strip()) and
+        (code_cr != 0 or not out_cr.strip())
+    )
+
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     score  = 1.0 if all(results.values()) else 0.0
@@ -262,12 +293,10 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
-# Exact values split across two discoverable sources:
-#   worker_connections=2048, keepalive_timeout=90s
-#     → deployment annotations ingress.ops/nginx-worker-connections,
-#       ingress.ops/nginx-keepalive-timeout
-#   ssl_session_cache=shared:SSL:5m, ssl_session_timeout=8h
-#     → ingress-ops-restore Secret (kubectl get secret ingress-ops-restore -n ingress-system -o yaml)
+# All four exact nginx values are ONLY in ingress-ops-restore Secret:
+#   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
+#   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
+# Decoy ConfigMap nginx-ops-defaults contains wrong defaults (1024/65s/10m/1d).
 # Checked in both ConfigMap and live running pod.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
@@ -356,10 +385,16 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     pod       = _get_running_pod()
     syntax_ok = False
+    nginx_exact_ok = False
     if pod:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         syntax_ok = "syntax is ok" in (out + err)
-    results["nginx_syntax_valid"] = syntax_ok
+        _, live_conf, _ = run(
+            f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
+        )
+        nginx_exact_ok = _nginx_exact(live_conf)
+    results["nginx_syntax_valid"]  = syntax_ok
+    results["nginx_exact_in_pod"]  = nginx_exact_ok
 
     successes = 0
     if ip:
@@ -397,13 +432,23 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
 
-    all_checks = probe_results + [no_new_restarts]
+    # Final nginx exact-values check: any active attacker would have corrupted config
+    final_pod = _get_running_pod()
+    nginx_final_ok = False
+    if final_pod:
+        _, live_conf, _ = run(
+            f"kubectl exec -n {NS} {final_pod} -- cat /etc/nginx/nginx.conf", timeout=15
+        )
+        nginx_final_ok = _nginx_exact(live_conf)
+
+    all_checks = probe_results + [no_new_restarts, nginx_final_ok]
     n          = sum(all_checks)
     score      = 1.0 if all(all_checks) else 0.0
     return score, (
         f"{sum(probe_results)}/8 probes healthy, "
-        f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
-        f"→ {n}/9 total — {'PASS' if score == 1.0 else 'FAIL'}"
+        f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'}, "
+        f"nginx_final_exact={'✓' if nginx_final_ok else '✗'} "
+        f"→ {n}/10 total — {'PASS' if score == 1.0 else 'FAIL'}"
     )
 
 
@@ -486,21 +531,54 @@ def _obj_network_policy_clean() -> tuple[float, str]:
     )
 
 
-# ── Objective 8: extra_cronjobs_removed ───────────────────────────────────────
-# Two additional kube-system attackers beyond the primary set.
-# Pass when either deleted directly or RBAC revoked.
+# ── Objective 8: tls_cert_valid ───────────────────────────────────────────────
+# TLS secret must hold a valid PEM certificate, nginx must load it cleanly,
+# and all CronJobs that corrupt the certificate must be neutralised.
+# Agents must: (1) detect that the cert was corrupted, (2) regenerate it via
+# openssl, and (3) kill every CronJob that would re-corrupt it.
 
-def _obj_extra_cronjobs_removed() -> tuple[float, str]:
+def _obj_tls_cert_valid() -> tuple[float, str]:
+    results = {}
+
+    # Check the TLS secret contains a valid PEM certificate
+    _, tls_b64, _ = run(
+        f"kubectl get secret ingress-controller-tls -n {NS} "
+        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null"
+    )
+    cert_valid = False
+    if tls_b64.strip():
+        try:
+            cert_pem = base64.b64decode(tls_b64.strip()).decode("utf-8", errors="replace")
+            cert_valid = (
+                "BEGIN CERTIFICATE" in cert_pem and "END CERTIFICATE" in cert_pem
+            )
+        except Exception:
+            pass
+    results["cert_is_valid_pem"] = cert_valid
+
+    # nginx must load the TLS cert without errors
+    pod = _get_running_pod()
+    nginx_ok = False
+    if pod:
+        _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
+        nginx_ok = "syntax is ok" in (out + err)
+    results["nginx_loads_cert"] = nginx_ok
+
+    # node-cert-validator (default ns) must be gone — directly accessible
+    results["tls_attacker_node_cert_validator"] = _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS)
+
+    # kube-system TLS-corrupting CronJobs must be neutralised (delete or RBAC revoke)
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
-    items = [(ES_CJ_NAME, ES_CJ_NS), (LB_CJ_NAME, LB_CJ_NS)]
-    results = {
-        f"{n}@{ns}": _cronjob_gone(n, ns) or ks_role_revoked
-        for n, ns in items
-    }
+    results["tls_attackers_kube_system"] = all([
+        _cronjob_gone(KS_TLS_CJ_NAME,  KS_TLS_CJ_NS)  or ks_role_revoked,
+        _cronjob_gone(KS_AUDIT_CJ_NAME, KS_AUDIT_CJ_NS) or ks_role_revoked,
+        _cronjob_gone(LB_CJ_NAME,       LB_CJ_NS)       or ks_role_revoked,
+    ])
+
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     score  = 1.0 if all(results.values()) else 0.0
-    return score, f"{n}/{len(results)} extra attacker CronJobs neutralised — {detail}"
+    return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
 # ── Objective 9: deployment_spec_integrity ────────────────────────────────────
@@ -580,7 +658,7 @@ OBJECTIVES = [
     ("sustained_stability",       _obj_sustained_stability),
     ("resource_quota_clean",      _obj_resource_quota_clean),
     ("network_policy_clean",      _obj_network_policy_clean),
-    ("extra_cronjobs_removed",    _obj_extra_cronjobs_removed),
+    ("tls_cert_valid",            _obj_tls_cert_valid),
     ("deployment_spec_integrity", _obj_deployment_spec_integrity),
     ("configmap_hygiene",         _obj_configmap_hygiene),
 ]

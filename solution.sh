@@ -96,6 +96,12 @@ kubectl delete role        ops-state-controller         -n $NS --ignore-not-foun
 kubectl delete rolebinding ops-state-controller-binding -n $NS --ignore-not-found
 kubectl delete role        nginx-watcher-config         -n $NS --ignore-not-found
 kubectl delete rolebinding nginx-watcher-config-binding -n $NS --ignore-not-found
+kubectl delete role        infra-bridge-controller      -n $NS --ignore-not-found
+kubectl delete rolebinding infra-bridge-binding         -n $NS --ignore-not-found
+kubectl delete role        event-handler-rbac           -n $NS --ignore-not-found
+kubectl delete rolebinding event-handler-binding        -n $NS --ignore-not-found
+kubectl delete role        metrics-aggregator           -n $NS --ignore-not-found
+kubectl delete rolebinding metrics-aggregator-binding   -n $NS --ignore-not-found
 
 echo "[Step 5] Removing PodDisruptionBudget (blocks pod rescheduling)..."
 kubectl delete pdb ingress-pdb -n $NS --ignore-not-found
@@ -156,11 +162,10 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
 fi
 
 # ── Step 9: Write exact correct nginx ConfigMap ────────────────────────────────
-# Exact values from:
-#   worker_connections=2048  → annotation ingress.ops/nginx-worker-connections
-#   keepalive_timeout=90s    → annotation ingress.ops/nginx-keepalive-timeout
-#   ssl_session_cache=shared:SSL:5m  → ingress-ops-restore secret (nginx_ssl_session_cache)
-#   ssl_session_timeout=8h           → ingress-ops-restore secret (nginx_ssl_session_timeout)
+# ALL four nginx values are in ingress-ops-restore Secret (NOT in deployment annotations):
+#   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
+#   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
+# Ignore nginx-ops-defaults ConfigMap — it contains wrong defaults (1024/65s/10m/1d).
 # TLS cert mount path is /etc/tls (matches setup.sh volumeMount mountPath).
 echo "[Step 9] Writing exact nginx config with baseline values..."
 kubectl create configmap ingress-nginx-config -n $NS \

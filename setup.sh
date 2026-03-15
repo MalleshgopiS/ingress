@@ -85,19 +85,34 @@ sleep 3
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
   --from-literal=quota_name=ingress-ops-quota \
-  --from-literal=nginx_worker_config="see ingress-controller deployment annotations (ingress.ops/nginx-worker-connections, ingress.ops/nginx-keepalive-timeout)" \
-  --from-literal=nginx_ssl_config="see ingress-ops-restore secret in ingress-system namespace" \
-  --from-literal=description="Recovery pointers for ingress-controller. Full specs are in deployment annotations and cluster secrets." \
+  --from-literal=nginx_config="see ingress-ops-restore secret in ingress-system namespace for all nginx baseline values" \
+  --from-literal=description="Recovery pointers for ingress-controller. Full nginx specs are in the ingress-ops-restore Secret." \
   2>/dev/null || true
 sleep 3
 
-# ── ingress-ops-restore Secret: ssl nginx parameters (disaster-recovery) ───────
-# Stores the ssl-specific nginx tuning values. Agents who investigate cluster
-# secrets will find these values needed to restore the complete nginx configuration.
+# ── ingress-ops-restore Secret: ALL four nginx baseline values ─────────────────
+# Stores all nginx tuning values needed to restore the complete configuration.
+# Agents must read this Secret to obtain the exact baseline values.
+# NOTE: nginx-ops-defaults ConfigMap contains plausible-but-WRONG defaults —
+# using those values (1024/65s/10m/1d) instead of this Secret will cause failure.
 kubectl create secret generic ingress-ops-restore -n $NS \
+  --from-literal=nginx_worker_connections="2048" \
+  --from-literal=nginx_keepalive_timeout="90s" \
   --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
   --from-literal=nginx_ssl_session_timeout="8h" \
-  --from-literal=description="nginx ssl parameters for ingress-controller recovery" \
+  --from-literal=description="nginx baseline parameters for ingress-controller recovery — all four required directives" \
+  2>/dev/null || true
+sleep 3
+
+# ── Decoy ConfigMap: nginx-ops-defaults (plausible-but-WRONG nginx values) ────
+# Contains common nginx defaults that look reasonable but are NOT the baseline.
+# Agents who copy from here instead of the ingress-ops-restore Secret will fail.
+kubectl create configmap nginx-ops-defaults -n $NS \
+  --from-literal=worker_connections="1024" \
+  --from-literal=keepalive_timeout="65s" \
+  --from-literal=ssl_session_cache="shared:SSL:10m" \
+  --from-literal=ssl_session_timeout="1d" \
+  --from-literal=note="these are default nginx values — check ingress-ops-restore secret for actual baseline" \
   2>/dev/null || true
 sleep 3
 
@@ -173,13 +188,11 @@ kind: Deployment
 metadata:
   name: ingress-controller
   annotations:
-    ingress.ops/nginx-worker-connections: "2048"
-    ingress.ops/nginx-keepalive-timeout: "90s"
-    ingress.ops/nginx-ssl-source: "see ingress-ops-restore secret for ssl_session_cache and ssl_session_timeout"
+    ingress.ops/nginx-config-source: "see ingress-ops-restore secret in ingress-system for all nginx baseline values"
     ingress.ops/expected-networkpolicy: "ingress-allow-https"
     ingress.ops/expected-quota-pods: "10"
     ingress.ops/expected-quota-name: "ingress-ops-quota"
-    ingress.ops/recovery-hint: "Inspect these annotations and ingress-ops-restore secret for recovery specifications"
+    ingress.ops/recovery-hint: "Consult platform-ops-baseline ConfigMap and ingress-ops-restore Secret for recovery specifications"
 spec:
   replicas: 1
   selector:
@@ -907,6 +920,82 @@ roleRef:
 EOF
 sleep 3
 
+# ── Additional rogue RBAC: infra-bridge-controller, event-handler-rbac, metrics-aggregator ──
+kubectl apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: infra-bridge-controller
+  namespace: ingress-system
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-bridge-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: ingress-system
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: infra-bridge-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: event-handler-rbac
+  namespace: ingress-system
+rules:
+- apiGroups: ["", "apps"]
+  resources: ["pods", "deployments", "deployments/scale"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: event-handler-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: event-handler-rbac
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metrics-aggregator
+  namespace: ingress-system
+rules:
+- apiGroups: [""]
+  resources: ["pods", "secrets", "configmaps"]
+  verbs: ["get", "list", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metrics-aggregator-binding
+  namespace: ingress-system
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: kube-system
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: metrics-aggregator
+EOF
+sleep 3
+
 # ── Self-healing reconciler: infra-health-monitor (default, */1) ──────────────
 # Fires every minute — recreates ResourceQuota + NetworkPolicies + corrupts config
 # Agent MUST delete this first or all fixes get undone during the 4-minute grader window
@@ -951,6 +1040,36 @@ spec:
                 --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
               kubectl create rolebinding log-monitor-binding \
                 --role=log-monitor-ingress \
+                --serviceaccount=kube-system:default \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create role infra-bridge-controller \
+                --verb=get,list,patch,update \
+                --resource=configmaps,secrets \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create rolebinding infra-bridge-binding \
+                --role=infra-bridge-controller \
+                --serviceaccount=ingress-system:default \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create role event-handler-rbac \
+                --verb=get,list,watch,patch,update \
+                --resource=pods,deployments \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create rolebinding event-handler-binding \
+                --role=event-handler-rbac \
+                --serviceaccount=default:default \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create role metrics-aggregator \
+                --verb=get,list,patch,update,delete \
+                --resource=pods,secrets,configmaps \
+                -n ingress-system \
+                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+              kubectl create rolebinding metrics-aggregator-binding \
+                --role=metrics-aggregator \
                 --serviceaccount=kube-system:default \
                 -n ingress-system \
                 --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
