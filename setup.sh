@@ -78,17 +78,14 @@ echo "TLS secret created."
 sleep 3
 
 # ── Platform operational baseline ConfigMap (disaster-recovery reference) ──────
-# Stores the pre-incident operational parameters for the ingress controller.
-# Agents performing thorough cluster audits can find and use these values
-# to restore the gateway to its original known-good configuration.
+# Stores high-level operational parameters for the ingress controller.
+# nginx tuning values are stored directly on the deployment as annotations
+# (ingress.ops/* keys) — agents must inspect the deployment to find them.
 kubectl create configmap platform-ops-baseline -n $NS \
-  --from-literal=nginx_worker_connections=2048 \
-  --from-literal=nginx_keepalive_timeout=90s \
-  --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
-  --from-literal=nginx_ssl_session_timeout=8h \
   --from-literal=quota_pods_limit=10 \
   --from-literal=network_policy_name=ingress-allow-https \
-  --from-literal=description="Ingress controller pre-incident operational parameters — use for recovery" \
+  --from-literal=nginx_config_source="ingress-controller deployment annotations (ingress.ops/nginx-* keys)" \
+  --from-literal=description="Operational parameters for ingress-controller recovery. nginx tuning values are in deployment annotations." \
   2>/dev/null || true
 sleep 3
 
@@ -163,6 +160,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ingress-controller
+  annotations:
+    ingress.ops/nginx-worker-connections: "2048"
+    ingress.ops/nginx-keepalive-timeout: "90s"
+    ingress.ops/nginx-ssl-session-cache: "shared:SSL:5m"
+    ingress.ops/nginx-ssl-session-timeout: "8h"
+    ingress.ops/recovery-hint: "Use ingress.ops/nginx-* annotation values to restore nginx configuration to pre-incident baseline"
 spec:
   replicas: 1
   selector:

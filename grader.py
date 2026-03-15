@@ -63,21 +63,24 @@ NGINX_SSL_TIMEOUT  = "8h"
 
 # ── Partial-credit helper ──────────────────────────────────────────────────────
 # Applied selectively to objectives where near-complete remediation
-# (missing only one sub-check) deserves acknowledgement.  The high
-# threshold (N-1) ensures agents must complete virtually all work
-# before partial credit is awarded; gaming is not possible.
+# deserves acknowledgement.  N-2 threshold rewards agents who complete
+# the majority of work, creating meaningful score variance across rollouts.
 
-def _score_with_partial(results: dict, partial_value: float = 0.5) -> float:
+def _score_with_partial(results: dict, partial_value: float = 0.5,
+                        miss_allowance: int = 2) -> float:
     """
-    Return 1.0 if all checks pass, partial_value if exactly one fails, else 0.0.
-    Used for objectives with many independent sub-checks (RBAC, deployment spec)
-    so that a near-perfect remediation isn't zeroed out by a single missed item.
+    Return 1.0 if all checks pass.
+    Return partial_value if (n - miss_allowance) or more checks pass.
+    Return 0.0 otherwise.
+    miss_allowance=2 (N-2): agents who complete all-but-two sub-checks earn
+    partial credit — this matches the observed pattern where agents consistently
+    miss 2 specific items (PDB + nginx-watcher RBAC; SA removal + SA ref cleanup).
     """
     n      = len(results)
     passed = sum(results.values())
     if passed == n:
         return 1.0
-    if passed == n - 1:
+    if passed >= n - miss_allowance:
         return partial_value
     return 0.0
 
@@ -283,10 +286,13 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
-# NOTE: The exact nginx values (2048/90s/shared:SSL:5m/8h) are stored in the
-# platform-ops-baseline ConfigMap in the ingress-system namespace — agents
-# performing a thorough cluster audit can discover them via:
-#   kubectl get configmap platform-ops-baseline -n ingress-system -o yaml
+# NOTE: The exact nginx values (2048/90s/shared:SSL:5m/8h) are stored as
+# annotations on the ingress-controller deployment — agents performing a
+# thorough cluster audit can discover them via:
+#   kubectl get deployment ingress-controller -n ingress-system -o yaml
+# (look for ingress.ops/nginx-* annotation keys)
+# The platform-ops-baseline ConfigMap references these annotations:
+#   platform-ops-baseline.nginx_config_source = "ingress-controller deployment annotations"
 # Checking in both ConfigMap and live pod catches partial fixes where only
 # one side was updated.  Intentional design: overlapping checks with
 # gateway_operational (obj 4), sustained_stability (obj 5), and
@@ -476,18 +482,41 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         _networkpolicy_gone(NP_TELEMETRY, NS)
     )
 
-    # Part B: a correct allow-HTTPS policy must be present
-    code, out, _ = run(
-        f"kubectl get networkpolicy {ALLOW_NP_NAME} -n {NS} 2>/dev/null"
+    # Part B: ingress-allow-https must exist AND correctly allow TCP 443
+    # with the correct pod selector — a placeholder policy with the right
+    # name but wrong rules does NOT count.
+    allow_exists  = False
+    port_ok       = False
+    selector_ok   = False
+    _, np_json, _ = run(
+        f"kubectl get networkpolicy {ALLOW_NP_NAME} -n {NS} -o json 2>/dev/null"
     )
-    allow_exists = code == 0 and bool(out.strip())
+    try:
+        np_data      = json.loads(np_json)
+        allow_exists = bool(np_data.get("metadata", {}).get("name"))
+        ingress_rules = np_data.get("spec", {}).get("ingress", [])
+        port_ok = any(
+            any(
+                p.get("port") == 443 and p.get("protocol", "TCP") == "TCP"
+                for p in rule.get("ports", [])
+            )
+            for rule in ingress_rules
+        )
+        pod_labels  = np_data.get("spec", {}).get("podSelector", {}).get("matchLabels", {})
+        selector_ok = pod_labels.get("app") == "ingress-controller"
+    except Exception:
+        pass
 
-    ok = bad_removed and allow_exists
+    allow_valid = allow_exists and port_ok and selector_ok
+    ok          = bad_removed and allow_valid
     return (
         1.0 if ok else 0.0,
         (
             f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
-            f"{ALLOW_NP_NAME}={('present ✓' if allow_exists else 'missing — create allow-HTTPS policy (see platform-ops-baseline.network_policy_name) ✗')}"
+            f"{ALLOW_NP_NAME}: exists={('✓' if allow_exists else '✗')} "
+            f"port-443={('✓' if port_ok else '✗')} "
+            f"selector(app=ingress-controller)={('✓' if selector_ok else '✗')} "
+            + ('' if allow_valid else '— create allow-HTTPS policy with port 443 and correct pod selector (see platform-ops-baseline.network_policy_name) ✗')
         ),
     )
 

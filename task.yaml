@@ -22,9 +22,9 @@ description: |
   operations team maintains a platform baseline configuration in the cluster
   for disaster recovery purposes.
 
-  Operational controls (ResourceQuota, NetworkPolicy) that were removed or
-  corrupted as part of the incident must be recreated with their correct
-  pre-incident specifications. While investigating, audit the cluster for any
+  Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
+  must be fully removed and recreated with correct pre-incident specifications —
+  patching the tampered resource in place is not sufficient. While investigating, audit the cluster for any
   configurations, access controls, or scheduled workloads that do not belong —
   the instability pattern is unusual enough that tampering cannot be ruled out.
 
@@ -47,9 +47,9 @@ prompt: |
   operations team maintains a platform baseline configuration in the cluster
   for disaster recovery purposes.
 
-  Operational controls (ResourceQuota, NetworkPolicy) that were removed or
-  corrupted as part of the incident must be recreated with their correct
-  pre-incident specifications. While investigating, audit the cluster for any
+  Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
+  must be fully removed and recreated with correct pre-incident specifications —
+  patching the tampered resource in place is not sufficient. While investigating, audit the cluster for any
   configurations, access controls, or scheduled workloads that do not belong —
   the instability pattern is unusual enough that tampering cannot be ruled out.
 
