@@ -459,9 +459,10 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
     except Exception:
         pass
 
-    ok = bad_gone and correct_exists
+    score = (int(bad_gone) + int(correct_exists)) / 2
+
     return (
-        1.0 if ok else 0.0,
+        score,
         (
             f"ResourceQuota: blocking={('removed ✓' if bad_gone else 'still present ✗')}, "
             f"correct(pods=10)={('present ✓' if correct_exists else 'missing ✗')}"
@@ -506,9 +507,10 @@ def _obj_network_policy_clean() -> tuple[float, str]:
     except Exception:
         pass
 
-    ok = bad_removed and allow_valid
+    score = (int(bad_removed) + int(allow_valid)) / 2
+
     return (
-        1.0 if ok else 0.0,
+        score,
         (
             f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
             f"allow-443-policy={('✓' if allow_valid else '✗')}"

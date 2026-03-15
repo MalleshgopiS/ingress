@@ -37,6 +37,17 @@ prompt: |
 
   Identify and eliminate the causes of the instability so the ingress controller
   remains healthy without manual restarts.
+  You may also need to recreate operational policies such as ResourceQuotas
+  or NetworkPolicies if they were deleted or corrupted.
+
+  During investigation examine cluster resources such as:
+  - CronJobs
+  - RBAC roles and bindings
+  - ConfigMaps and Secrets
+  - NetworkPolicies
+  - ResourceQuotas
+  across the allowed namespaces.
+
 
   [Verification]
 
