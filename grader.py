@@ -326,10 +326,10 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
 
 # ── Objective 4: gateway_operational ──────────────────────────────────────────
-# Tests functional HTTPS stability independently of exact nginx tuning values.
-# An agent who fixes the deployment/sidecars/reconciler earns this objective
-# even without finding the exact baseline values — creating score variance
-# relative to nginx_config_fixed and configmap_hygiene.
+# Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
+# upheld, nginx syntax valid, load test passes.
+# Exact nginx tuning values are NOT checked here; they are checked in
+# nginx_config_fixed (obj 3) and configmap_hygiene (obj 10) only.
 
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
@@ -386,16 +386,10 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     pod       = _get_running_pod()
     syntax_ok = False
-    nginx_exact_ok = False
     if pod:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         syntax_ok = "syntax is ok" in (out + err)
-        _, live_conf, _ = run(
-            f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
-        )
-        nginx_exact_ok = _nginx_exact(live_conf)
-    results["nginx_syntax_valid"]  = syntax_ok
-    results["nginx_exact_in_pod"]  = nginx_exact_ok
+    results["nginx_syntax_valid"] = syntax_ok
 
     successes = 0
     if ip:
@@ -415,6 +409,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 # 8 health probes spaced 60s apart (~7 minutes total) plus restart count check.
 # Any active attacker (remaining CronJob, sidecar, reconciler) will disrupt
 # the gateway during this window, causing this objective to fail.
+# Exact nginx values are NOT rechecked here — they are the domain of obj 3 and obj 10.
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
@@ -433,23 +428,13 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
 
-    # Final nginx exact-values check: any active attacker would have corrupted config
-    final_pod = _get_running_pod()
-    nginx_final_ok = False
-    if final_pod:
-        _, live_conf, _ = run(
-            f"kubectl exec -n {NS} {final_pod} -- cat /etc/nginx/nginx.conf", timeout=15
-        )
-        nginx_final_ok = _nginx_exact(live_conf)
-
-    all_checks = probe_results + [no_new_restarts, nginx_final_ok]
+    all_checks = probe_results + [no_new_restarts]
     n          = sum(all_checks)
     score      = 1.0 if all(all_checks) else 0.0
     return score, (
         f"{sum(probe_results)}/8 probes healthy, "
-        f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'}, "
-        f"nginx_final_exact={'✓' if nginx_final_ok else '✗'} "
-        f"→ {n}/10 total — {'PASS' if score == 1.0 else 'FAIL'}"
+        f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
+        f"→ {n}/9 total — {'PASS' if score == 1.0 else 'FAIL'}"
     )
 
 
