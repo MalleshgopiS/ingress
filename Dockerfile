@@ -1,12 +1,12 @@
-FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.0
+FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.3
 
-ENV ALLOWED_NAMESPACES="ingress-system,kube-system"
+ENV ALLOWED_NAMESPACES="default,ingress-system"
 
 USER root
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    curl=7.81* \
+    curl \
     openssl \
     python3 && \
     rm -rf /var/lib/apt/lists/*
