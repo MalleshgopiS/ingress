@@ -19,18 +19,24 @@ description: |
   Your task is to restore the gateway to stable operation. HTTPS traffic must
   flow reliably and the controller must not require manual restarts to recover.
   Restore all gateway parameters to their pre-incident baseline values — the
-  operations team maintains a platform baseline configuration in the cluster
-  for disaster recovery purposes. Consult the deployment's operational
-  annotations and associated cluster secrets for the full set of recovery
-  specifications.
+  operations team maintains a platform baseline configuration (platform-ops-baseline
+  ConfigMap) in the ingress-system namespace for disaster recovery purposes.
+  Consult the deployment's operational annotations and associated cluster secrets
+  for the full set of recovery specifications, including exact ResourceQuota names
+  and NetworkPolicy names required for replacement resources.
 
   Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
-  must be fully removed and recreated with correct pre-incident specifications —
-  patching the tampered resource in place is not sufficient.
+  must be fully removed and recreated with the correct names and specifications
+  found in the platform baseline — patching the tampered resource in place is
+  not sufficient. The replacement resource names are recorded in the platform
+  baseline ConfigMap and in the deployment's operational annotations.
 
-  While investigating, audit all allowed namespaces thoroughly — tampering
-  may span multiple namespaces. Remove any configurations, access controls,
-  or scheduled workloads that do not belong.
+  While investigating, audit both allowed namespaces thoroughly — tampering
+  may span multiple namespaces, including workloads in other namespaces that
+  hold RBAC grants into ingress-system. Remove any configurations, access
+  controls (including PodDisruptionBudgets), or scheduled workloads that do
+  not belong. Attackers operating from outside the allowed namespaces can be
+  neutralized by revoking their RBAC grants from within ingress-system.
 
 prompt: |
   Three days ago the platform edge gateway started dropping HTTPS connections
@@ -48,18 +54,24 @@ prompt: |
   Your task is to restore the gateway to stable operation. HTTPS traffic must
   flow reliably and the controller must not require manual restarts to recover.
   Restore all gateway parameters to their pre-incident baseline values — the
-  operations team maintains a platform baseline configuration in the cluster
-  for disaster recovery purposes. Consult the deployment's operational
-  annotations and associated cluster secrets for the full set of recovery
-  specifications.
+  operations team maintains a platform baseline configuration (platform-ops-baseline
+  ConfigMap) in the ingress-system namespace for disaster recovery purposes.
+  Consult the deployment's operational annotations and associated cluster secrets
+  for the full set of recovery specifications, including exact ResourceQuota names
+  and NetworkPolicy names required for replacement resources.
 
   Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
-  must be fully removed and recreated with correct pre-incident specifications —
-  patching the tampered resource in place is not sufficient.
+  must be fully removed and recreated with the correct names and specifications
+  found in the platform baseline — patching the tampered resource in place is
+  not sufficient. The replacement resource names are recorded in the platform
+  baseline ConfigMap and in the deployment's operational annotations.
 
-  While investigating, audit all allowed namespaces thoroughly — tampering
-  may span multiple namespaces. Remove any configurations, access controls,
-  or scheduled workloads that do not belong.
+  While investigating, audit both allowed namespaces thoroughly — tampering
+  may span multiple namespaces, including workloads in other namespaces that
+  hold RBAC grants into ingress-system. Remove any configurations, access
+  controls (including PodDisruptionBudgets), or scheduled workloads that do
+  not belong. Attackers operating from outside the allowed namespaces can be
+  neutralized by revoking their RBAC grants from within ingress-system.
 
 constraints:
   - Do not modify container images

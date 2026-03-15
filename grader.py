@@ -649,9 +649,16 @@ def grade(transcript: str) -> GradingResult:
 
     score = sum(subscores[name] * WEIGHT for name in subscores)
 
+    passed_count = sum(1 for v in subscores.values() if v >= 1.0)
+    verdict = "PASS" if score >= 0.8 else "FAIL"
+    summary = (
+        f"VERDICT:{verdict} score={score:.4f} "
+        f"({passed_count}/{len(OBJECTIVES)} objectives fully passed)"
+    )
+
     return GradingResult(
         score=round(score, 6),
         subscores=subscores,
         weights=weights,
-        feedback=" | ".join(feedback_parts),
+        feedback=" | ".join([summary] + feedback_parts),
     )

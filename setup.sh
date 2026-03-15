@@ -84,6 +84,7 @@ sleep 3
 # NetworkPolicy spec and quota values are in deployment annotations.
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
+  --from-literal=quota_name=ingress-ops-quota \
   --from-literal=nginx_worker_config="see ingress-controller deployment annotations (ingress.ops/nginx-worker-connections, ingress.ops/nginx-keepalive-timeout)" \
   --from-literal=nginx_ssl_config="see ingress-ops-restore secret in ingress-system namespace" \
   --from-literal=description="Recovery pointers for ingress-controller. Full specs are in deployment annotations and cluster secrets." \
@@ -177,6 +178,7 @@ metadata:
     ingress.ops/nginx-ssl-source: "see ingress-ops-restore secret for ssl_session_cache and ssl_session_timeout"
     ingress.ops/expected-networkpolicy: "ingress-allow-https"
     ingress.ops/expected-quota-pods: "10"
+    ingress.ops/expected-quota-name: "ingress-ops-quota"
     ingress.ops/recovery-hint: "Inspect these annotations and ingress-ops-restore secret for recovery specifications"
 spec:
   replicas: 1
