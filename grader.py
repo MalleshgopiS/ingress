@@ -54,14 +54,15 @@ SIDECAR2_CONTAINER = "healthz-reporter"
 SIDECAR_SA         = "ingress-watcher"
 
 # ── Correct-state constants ────────────────────────────────────────────────────
-# Names discoverable from platform-ops-baseline ConfigMap and deployment annotations.
+# Quota name: discoverable from platform-ops-baseline ConfigMap (quota_name key).
+# NP name: grader accepts ANY NP that allows port 443 to app=ingress-controller pods.
 CORRECT_QUOTA_NAME = "ingress-ops-quota"
-ALLOW_NP_NAME      = "ingress-allow-https"
+ALLOW_NP_NAME      = "ingress-allow-https"  # reference only — grader accepts any valid NP name
 
 # ── Exact nginx target values ──────────────────────────────────────────────────
-# ALL FOUR values are only in ingress-ops-restore Secret (not in annotations).
-# platform-ops-baseline ConfigMap points to the Secret.
-# Decoy ConfigMap nginx-ops-defaults has plausible-but-wrong values (1024/65s/10m/1d).
+# ALL FOUR values are only in ops-system-params Secret (no annotations, no direct hints).
+# Decoy ConfigMap nginx-ops-defaults has authoritative-looking but WRONG values (1024/65s/10m/1d).
+# Agent must explore all secrets in ingress-system to discover ops-system-params.
 NGINX_WORKER_CONNS = "2048"
 NGINX_KEEPALIVE    = "90s"
 NGINX_SSL_CACHE    = "shared:SSL:5m"
@@ -293,10 +294,10 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
-# All four exact nginx values are ONLY in ingress-ops-restore Secret:
+# All four exact nginx values are ONLY in ops-system-params Secret:
 #   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
 #   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
-# Decoy ConfigMap nginx-ops-defaults contains wrong defaults (1024/65s/10m/1d).
+# Decoy ConfigMap nginx-ops-defaults looks authoritative but has wrong values (1024/65s/10m/1d).
 # Checked in both ConfigMap and live running pod.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
@@ -454,10 +455,8 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
 # ── Objective 6: resource_quota_clean ─────────────────────────────────────────
 # Part A: ops-resource-budget (pods=0) must be gone.
-# Part B: replacement quota with pods=10 must exist.
-# Correct name (ingress-ops-quota) is discoverable from platform-ops-baseline
-# ConfigMap (quota_name key) and deployment annotation
-# ingress.ops/expected-quota-name.
+# Part B: replacement quota with pods=10 must exist (any name accepted).
+# quota_name=ingress-ops-quota is discoverable from platform-ops-baseline ConfigMap.
 
 def _obj_resource_quota_clean() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get resourcequota {QUOTA_NAME} -n {NS} 2>/dev/null")
@@ -487,8 +486,8 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
 
 # ── Objective 7: network_policy_clean ─────────────────────────────────────────
 # Part A: both blocking policies must be deleted.
-# Part B: ingress-allow-https must exist with port 443 + correct pod selector.
-# A placeholder policy with the right name but wrong rules does NOT count.
+# Part B: at least one NP must exist that allows TCP port 443 to ingress-controller pods.
+# Any policy name is accepted — grader validates the rules, not the name.
 
 def _obj_network_policy_clean() -> tuple[float, str]:
     bad_removed = (
@@ -496,37 +495,39 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         _networkpolicy_gone(NP_TELEMETRY, NS)
     )
 
-    allow_exists  = False
-    port_ok       = False
-    selector_ok   = False
-    _, np_json, _ = run(
-        f"kubectl get networkpolicy {ALLOW_NP_NAME} -n {NS} -o json 2>/dev/null"
-    )
+    # Accept ANY NP (any name) that allows TCP 443 to app=ingress-controller pods
+    allow_valid = False
+    allow_name  = ""
+    _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
     try:
-        np_data       = json.loads(np_json)
-        allow_exists  = bool(np_data.get("metadata", {}).get("name"))
-        ingress_rules = np_data.get("spec", {}).get("ingress", [])
-        port_ok = any(
-            any(
-                p.get("port") == 443 and p.get("protocol", "TCP") == "TCP"
-                for p in rule.get("ports", [])
+        for np_data in json.loads(np_list_json).get("items", []):
+            np_name = np_data.get("metadata", {}).get("name", "")
+            if np_name in (NP_METRICS, NP_TELEMETRY):
+                continue
+            ingress_rules = np_data.get("spec", {}).get("ingress", [])
+            port_ok = any(
+                any(
+                    p.get("port") == 443 and p.get("protocol", "TCP") == "TCP"
+                    for p in rule.get("ports", [])
+                )
+                for rule in ingress_rules
             )
-            for rule in ingress_rules
-        )
-        pod_labels  = np_data.get("spec", {}).get("podSelector", {}).get("matchLabels", {})
-        selector_ok = pod_labels.get("app") == "ingress-controller"
+            pod_labels  = np_data.get("spec", {}).get("podSelector", {}).get("matchLabels", {})
+            selector_ok = pod_labels.get("app") == "ingress-controller"
+            if port_ok and selector_ok:
+                allow_valid = True
+                allow_name  = np_name
+                break
     except Exception:
         pass
 
-    allow_valid = allow_exists and port_ok and selector_ok
-    ok          = bad_removed and allow_valid
+    ok = bad_removed and allow_valid
     return (
         1.0 if ok else 0.0,
         (
             f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
-            f"{ALLOW_NP_NAME}: exists={('✓' if allow_exists else '✗')} "
-            f"port-443={('✓' if port_ok else '✗')} "
-            f"selector(app=ingress-controller)={('✓' if selector_ok else '✗')}"
+            f"allow-443-policy={('✓' if allow_valid else '✗')}"
+            + (f" ({allow_name})" if allow_name else "")
         ),
     )
 

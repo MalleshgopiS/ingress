@@ -26,8 +26,8 @@ kubectl delete role        log-monitor-ingress  -n $NS --ignore-not-found
 
 # ── Step 2: Remove blocking ResourceQuota then recreate correct one ───────────
 # ops-resource-budget has pods=0, blocking all pod creation.
-# Replacement name (ingress-ops-quota, pods=10) is in platform-ops-baseline
-# ConfigMap (quota_name key) and deployment annotation ingress.ops/expected-quota-name.
+# Replacement name (ingress-ops-quota, pods=10) discoverable from platform-ops-baseline
+# ConfigMap (quota_name key).
 echo "[Step 2] Removing blocking ResourceQuota and creating correct replacement..."
 kubectl delete resourcequota ops-resource-budget -n $NS --ignore-not-found
 
@@ -44,7 +44,7 @@ EOF
 
 # ── Step 3: Remove blocking NetworkPolicies then recreate allow-HTTPS ─────────
 # cluster-metrics-ingress blocks all ingress, telemetry-egress-filter blocks egress.
-# Replace with ingress-allow-https (name from ingress.ops/expected-networkpolicy annotation).
+# Grader accepts any NP allowing TCP 443 to app=ingress-controller pods.
 echo "[Step 3] Removing blocking NetworkPolicies and creating allow-HTTPS policy..."
 kubectl delete networkpolicy cluster-metrics-ingress  -n $NS --ignore-not-found
 kubectl delete networkpolicy telemetry-egress-filter  -n $NS --ignore-not-found
@@ -162,12 +162,11 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
 fi
 
 # ── Step 9: Write exact correct nginx ConfigMap ────────────────────────────────
-# ALL four nginx values are ONLY in ingress-ops-restore Secret (no annotation hints):
+# ALL four nginx values are ONLY in ops-system-params Secret (no hints anywhere):
 #   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
 #   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
-# Discovery: platform-ops-baseline hints "check operational secrets" → list secrets
-#   in ingress-system → kubectl get secret ingress-ops-restore -n ingress-system -o yaml
-# Ignore nginx-ops-defaults ConfigMap — it contains wrong defaults (1024/65s/10m/1d).
+# Discovery: kubectl get secrets -n ingress-system → find ops-system-params → decode values
+# IGNORE nginx-ops-defaults ConfigMap — authoritative-looking but WRONG (1024/65s/10m/1d).
 # TLS cert mount path is /etc/tls (matches setup.sh volumeMount mountPath).
 echo "[Step 9] Writing exact nginx config with baseline values..."
 kubectl create configmap ingress-nginx-config -n $NS \

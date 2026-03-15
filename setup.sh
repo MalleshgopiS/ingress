@@ -77,25 +77,20 @@ kubectl create secret tls ingress-controller-tls \
 echo "TLS secret created."
 sleep 3
 
-# ── Platform operational baseline ConfigMap (disaster-recovery reference) ──────
-# Stores top-level recovery pointers for the ingress controller.
-# nginx tuning values are split: worker/keepalive in deployment annotations,
-# ssl parameters in the ingress-ops-restore Secret.
-# NetworkPolicy spec and quota values are in deployment annotations.
+# ── Platform operational baseline ConfigMap ────────────────────────────────────
+# Contains quota recovery reference only. No nginx hints — nginx specs live in
+# ops-system-params Secret which agents must discover by auditing cluster secrets.
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
   --from-literal=quota_name=ingress-ops-quota \
-  --from-literal=nginx_config_recovery="consult operational secrets in this namespace for exact nginx baseline values" \
-  --from-literal=description="Disaster recovery reference for ingress-controller. Check cluster secrets for full nginx specifications." \
+  --from-literal=description="Platform operational baseline for ingress-controller" \
   2>/dev/null || true
 sleep 3
 
-# ── ingress-ops-restore Secret: ALL four nginx baseline values ─────────────────
-# Stores all nginx tuning values needed to restore the complete configuration.
-# Agents must read this Secret to obtain the exact baseline values.
-# NOTE: nginx-ops-defaults ConfigMap contains plausible-but-WRONG defaults —
-# using those values (1024/65s/10m/1d) instead of this Secret will cause failure.
-kubectl create secret generic ingress-ops-restore -n $NS \
+# ── ops-system-params Secret: ALL four nginx baseline values (hidden) ──────────
+# Real nginx recovery values. Name does not hint at nginx purpose.
+# Agent must list secrets and inspect this one to discover the values.
+kubectl create secret generic ops-system-params -n $NS \
   --from-literal=nginx_worker_connections="2048" \
   --from-literal=nginx_keepalive_timeout="90s" \
   --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
@@ -103,15 +98,15 @@ kubectl create secret generic ingress-ops-restore -n $NS \
   2>/dev/null || true
 sleep 3
 
-# ── Decoy ConfigMap: nginx-ops-defaults (plausible-but-WRONG nginx values) ────
-# Contains common nginx defaults that look reasonable but are NOT the baseline.
-# Agents who copy from here instead of the ingress-ops-restore Secret will fail.
+# ── Decoy ConfigMap: nginx-ops-defaults (authoritative-looking, WRONG values) ──
+# Looks like the canonical nginx config — values are standard defaults, NOT baseline.
+# Agent who reads this and uses these values fails all nginx-related objectives.
 kubectl create configmap nginx-ops-defaults -n $NS \
   --from-literal=worker_connections="1024" \
   --from-literal=keepalive_timeout="65s" \
   --from-literal=ssl_session_cache="shared:SSL:10m" \
   --from-literal=ssl_session_timeout="1d" \
-  --from-literal=note="these are default nginx values — check ingress-ops-restore secret for actual baseline" \
+  --from-literal=description="nginx operational defaults — production-tuned baseline configuration for ingress workloads" \
   2>/dev/null || true
 sleep 3
 
@@ -187,10 +182,7 @@ kind: Deployment
 metadata:
   name: ingress-controller
   annotations:
-    ingress.ops/expected-networkpolicy: "ingress-allow-https"
-    ingress.ops/expected-quota-pods: "10"
-    ingress.ops/expected-quota-name: "ingress-ops-quota"
-    ingress.ops/recovery-hint: "Consult platform-ops-baseline ConfigMap for recovery specifications"
+    app.kubernetes.io/managed-by: "platform-ops"
 spec:
   replicas: 1
   selector:
