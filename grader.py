@@ -61,31 +61,6 @@ NGINX_SSL_CACHE    = "shared:SSL:5m"
 NGINX_SSL_TIMEOUT  = "8h"
 
 
-# ── Partial-credit helper ──────────────────────────────────────────────────────
-# Applied selectively to objectives where near-complete remediation deserves
-# a small signal.  Partial value is intentionally low (0.1) so it creates
-# variance without inflating the mean score significantly.
-
-def _score_with_partial(results: dict, partial_value: float = 0.1,
-                        miss_allowance: int = 2) -> float:
-    """
-    Return 1.0 if all checks pass.
-    Return partial_value if (n - miss_allowance) or more checks pass.
-    Return 0.0 otherwise.
-    miss_allowance=2 (N-2): agents who complete all-but-two sub-checks earn
-    a small partial signal — this matches the observed pattern where agents
-    consistently miss 2 items (PDB + nginx-watcher RBAC; SA + SA ref cleanup).
-    partial_value=0.1 keeps the floor contribution per objective at 0.01,
-    so this contributes at most 0.02 to the total mean score.
-    """
-    n      = len(results)
-    passed = sum(results.values())
-    if passed == n:
-        return 1.0
-    if passed >= n - miss_allowance:
-        return partial_value
-    return 0.0
-
 
 # ── shell helper ───────────────────────────────────────────────────────────────
 
@@ -282,8 +257,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
-    score  = _score_with_partial(results, partial_value=0.1)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
@@ -583,8 +557,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
-    score  = _score_with_partial(checks, partial_value=0.1)
+    score  = 1.0 if all(checks.values()) else 0.0
     return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
 
 

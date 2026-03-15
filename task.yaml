@@ -1,77 +1,63 @@
 id: ingress-tls-memory-leak
-title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
+title: "Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes"
 difficulty: expert
-category: kubernetes
-
-description: |
-  Three days ago the platform edge gateway started dropping HTTPS connections
-  sporadically. On-call acknowledged the alert, restarted the pod, and traffic
-  came back. Six hours later the failures returned. The pattern has repeated
-  every few hours since: brief recovery, then degradation, then another restart.
-
-  The SRE team has confirmed that upstream services are healthy and node
-  resources are not saturated. All fingers point to the ingress layer itself.
-  A junior engineer noticed the nginx worker process logs mention SSL handshake
-  errors but could not trace the root cause before their shift ended.
-
-  The controller is deployed in the ingress-system namespace.
-
-  Your task is to restore the gateway to stable operation. HTTPS traffic must
-  flow reliably and the controller must not require manual restarts to recover.
-  Restore all gateway parameters to their pre-incident baseline values — the
-  operations team maintains a platform baseline configuration (platform-ops-baseline
-  ConfigMap) in the ingress-system namespace for disaster recovery purposes.
-  Consult the deployment's operational annotations and associated cluster secrets
-  for the full set of recovery specifications, including exact ResourceQuota names
-  and NetworkPolicy names required for replacement resources.
-
-  Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
-  must be fully removed and recreated with the correct names and specifications
-  found in the platform baseline — patching the tampered resource in place is
-  not sufficient. The replacement resource names are recorded in the platform
-  baseline ConfigMap and in the deployment's operational annotations.
-
-  While investigating, audit both allowed namespaces thoroughly — tampering
-  may span multiple namespaces, including workloads in other namespaces that
-  hold RBAC grants into ingress-system. Remove any configurations, access
-  controls (including PodDisruptionBudgets), or scheduled workloads that do
-  not belong. Attackers operating from outside the allowed namespaces can be
-  neutralized by revoking their RBAC grants from within ingress-system.
+category: kubernetes / ingress / incident-response
 
 prompt: |
-  Three days ago the platform edge gateway started dropping HTTPS connections
-  sporadically. On-call acknowledged the alert, restarted the pod, and traffic
-  came back. Six hours later the failures returned. The pattern has repeated
-  every few hours since: brief recovery, then degradation, then another restart.
+  [Context]
+  You are operating on a Kubernetes cluster. The ingress controller is deployed in the ingress-system namespace.
 
-  The SRE team has confirmed that upstream services are healthy and node
-  resources are not saturated. All fingers point to the ingress layer itself.
-  A junior engineer noticed the nginx worker process logs mention SSL handshake
-  errors but could not trace the root cause before their shift ended.
+  [Incident]
+  Three days ago the platform edge gateway started dropping HTTPS connections sporadically.
+  On-call acknowledged the alert, restarted the pod, and traffic recovered. Six hours later
+  the failures returned. The pattern has repeated every few hours: brief recovery, degradation,
+  then another forced restart. The SRE team confirmed upstream services are healthy and node
+  resources are not saturated. A junior engineer noticed nginx worker process logs mention SSL
+  handshake errors but could not trace the root cause before their shift ended.
 
-  The controller is deployed in the ingress-system namespace.
+  [Task]
+  Restore the gateway to stable, self-sustaining operation. HTTPS traffic must flow reliably
+  and the controller must not require manual restarts to recover.
 
-  Your task is to restore the gateway to stable operation. HTTPS traffic must
-  flow reliably and the controller must not require manual restarts to recover.
-  Restore all gateway parameters to their pre-incident baseline values — the
-  operations team maintains a platform baseline configuration (platform-ops-baseline
-  ConfigMap) in the ingress-system namespace for disaster recovery purposes.
-  Consult the deployment's operational annotations and associated cluster secrets
-  for the full set of recovery specifications, including exact ResourceQuota names
-  and NetworkPolicy names required for replacement resources.
+  Restore all gateway parameters to their pre-incident baseline values. The operations team
+  maintains a platform baseline configuration (platform-ops-baseline ConfigMap) in the
+  ingress-system namespace for disaster recovery purposes. Consult the deployment's
+  operational annotations and the associated cluster secrets for the full set of recovery
+  specifications, including exact resource names required for replacement resources.
 
-  Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
-  must be fully removed and recreated with the correct names and specifications
-  found in the platform baseline — patching the tampered resource in place is
-  not sufficient. The replacement resource names are recorded in the platform
-  baseline ConfigMap and in the deployment's operational annotations.
+  [Remediation requirements]
+  - nginx tuning: restore all four nginx directives to exact baseline values — consult the
+    deployment's ingress.ops/* annotations and the ingress-ops-restore Secret for the values
+  - ResourceQuota: the tampered quota must be fully deleted and recreated with the correct name
+    and pods limit found in the platform-ops-baseline ConfigMap and deployment annotations —
+    patching the tampered resource in place is not sufficient
+  - NetworkPolicy: tampered policies must be fully deleted and a correct allow-HTTPS policy
+    must be recreated using the name and port specification in the deployment annotations —
+    patching in place is not sufficient
+  - Sidecars and deployment spec: remove injected sidecar containers and restore the
+    deployment to a clean single-container spec with correct liveness probe and service account
+  - Scheduled workloads: identify and remove all rogue CronJobs across both allowed namespaces
+    that are sabotaging the configuration or certificates
+  - RBAC: remove all unauthorized roles, role bindings, and disruption policies (including
+    PodDisruptionBudgets) across both allowed namespaces — attackers operating from outside
+    the allowed namespaces can be neutralized by revoking their RBAC grants from within ingress-system
+  - ConfigMap hygiene: remove poisoned ConfigMap templates and restore the nginx config
+    ConfigMap to the exact baseline values
 
-  While investigating, audit both allowed namespaces thoroughly — tampering
-  may span multiple namespaces, including workloads in other namespaces that
-  hold RBAC grants into ingress-system. Remove any configurations, access
-  controls (including PodDisruptionBudgets), or scheduled workloads that do
-  not belong. Attackers operating from outside the allowed namespaces can be
-  neutralized by revoking their RBAC grants from within ingress-system.
+  [Discovery hints]
+  - platform-ops-baseline ConfigMap in ingress-system namespace contains recovery pointers
+  - ingress-controller deployment annotations (kubectl get deploy ingress-controller -n ingress-system -o yaml)
+    contain nginx tuning hints, expected quota name, expected NetworkPolicy name
+  - ingress-ops-restore Secret in ingress-system namespace contains the ssl-specific nginx parameters
+  - Tampering may span both allowed namespaces — audit both default and ingress-system thoroughly
+
+  [Verification]
+  The incident is considered resolved only when all of the following hold:
+  - HTTPS traffic flows reliably through the ingress controller without manual intervention
+  - The controller sustains stable operation across multiple health probes without restarting
+  - All nginx directives match the exact pre-incident baseline values
+  - ResourceQuota and NetworkPolicy are recreated with correct names and specifications
+  - All rogue CronJobs, unauthorized RBAC, and injected deployment components are removed
 
 constraints:
   - Do not modify container images
@@ -81,3 +67,16 @@ constraints:
 allowed_namespaces:
   - default
   - ingress-system
+
+metadata:
+  category: kubernetes
+  difficulty: expert
+  estimated_time: 4H
+  tags:
+    - kubernetes
+    - ingress
+    - nginx
+    - tls
+    - rbac
+    - networkpolicy
+    - incident-response
