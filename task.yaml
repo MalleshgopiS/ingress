@@ -20,13 +20,17 @@ description: |
   flow reliably and the controller must not require manual restarts to recover.
   Restore all gateway parameters to their pre-incident baseline values — the
   operations team maintains a platform baseline configuration in the cluster
-  for disaster recovery purposes.
+  for disaster recovery purposes. Consult the deployment's operational
+  annotations and associated cluster secrets for the full set of recovery
+  specifications.
 
   Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
   must be fully removed and recreated with correct pre-incident specifications —
-  patching the tampered resource in place is not sufficient. While investigating, audit the cluster for any
-  configurations, access controls, or scheduled workloads that do not belong —
-  the instability pattern is unusual enough that tampering cannot be ruled out.
+  patching the tampered resource in place is not sufficient.
+
+  While investigating, audit all allowed namespaces thoroughly — tampering
+  may span multiple namespaces. Remove any configurations, access controls,
+  or scheduled workloads that do not belong.
 
 prompt: |
   Three days ago the platform edge gateway started dropping HTTPS connections
@@ -45,13 +49,17 @@ prompt: |
   flow reliably and the controller must not require manual restarts to recover.
   Restore all gateway parameters to their pre-incident baseline values — the
   operations team maintains a platform baseline configuration in the cluster
-  for disaster recovery purposes.
+  for disaster recovery purposes. Consult the deployment's operational
+  annotations and associated cluster secrets for the full set of recovery
+  specifications.
 
   Operational controls (ResourceQuota, NetworkPolicy) that were tampered with
   must be fully removed and recreated with correct pre-incident specifications —
-  patching the tampered resource in place is not sufficient. While investigating, audit the cluster for any
-  configurations, access controls, or scheduled workloads that do not belong —
-  the instability pattern is unusual enough that tampering cannot be ruled out.
+  patching the tampered resource in place is not sufficient.
+
+  While investigating, audit all allowed namespaces thoroughly — tampering
+  may span multiple namespaces. Remove any configurations, access controls,
+  or scheduled workloads that do not belong.
 
 constraints:
   - Do not modify container images

@@ -62,19 +62,21 @@ NGINX_SSL_TIMEOUT  = "8h"
 
 
 # ── Partial-credit helper ──────────────────────────────────────────────────────
-# Applied selectively to objectives where near-complete remediation
-# deserves acknowledgement.  N-2 threshold rewards agents who complete
-# the majority of work, creating meaningful score variance across rollouts.
+# Applied selectively to objectives where near-complete remediation deserves
+# a small signal.  Partial value is intentionally low (0.1) so it creates
+# variance without inflating the mean score significantly.
 
-def _score_with_partial(results: dict, partial_value: float = 0.5,
+def _score_with_partial(results: dict, partial_value: float = 0.1,
                         miss_allowance: int = 2) -> float:
     """
     Return 1.0 if all checks pass.
     Return partial_value if (n - miss_allowance) or more checks pass.
     Return 0.0 otherwise.
     miss_allowance=2 (N-2): agents who complete all-but-two sub-checks earn
-    partial credit — this matches the observed pattern where agents consistently
-    miss 2 specific items (PDB + nginx-watcher RBAC; SA removal + SA ref cleanup).
+    a small partial signal — this matches the observed pattern where agents
+    consistently miss 2 items (PDB + nginx-watcher RBAC; SA + SA ref cleanup).
+    partial_value=0.1 keeps the floor contribution per objective at 0.01,
+    so this contributes at most 0.02 to the total mean score.
     """
     n      = len(results)
     passed = sum(results.values())
@@ -281,22 +283,26 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
-    score  = _score_with_partial(results, partial_value=0.5)
+    score  = _score_with_partial(results, partial_value=0.1)
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
-# NOTE: The exact nginx values (2048/90s/shared:SSL:5m/8h) are stored as
-# annotations on the ingress-controller deployment — agents performing a
-# thorough cluster audit can discover them via:
-#   kubectl get deployment ingress-controller -n ingress-system -o yaml
-# (look for ingress.ops/nginx-* annotation keys)
-# The platform-ops-baseline ConfigMap references these annotations:
-#   platform-ops-baseline.nginx_config_source = "ingress-controller deployment annotations"
-# Checking in both ConfigMap and live pod catches partial fixes where only
-# one side was updated.  Intentional design: overlapping checks with
-# gateway_operational (obj 4), sustained_stability (obj 5), and
-# configmap_hygiene (obj 10) ensure the correct config survives over time.
+# The exact nginx values are split across TWO discoverable sources:
+#   worker_connections=2048, keepalive_timeout=90s
+#     → ingress-controller deployment annotations (ingress.ops/nginx-worker-connections,
+#       ingress.ops/nginx-keepalive-timeout)
+#   ssl_session_cache=shared:SSL:5m, ssl_session_timeout=8h
+#     → ingress-ops-restore Secret in ingress-system namespace
+#       (kubectl get secret ingress-ops-restore -n ingress-system -o yaml)
+# The platform-ops-baseline ConfigMap points to both sources.
+# Agents must inspect BOTH the deployment annotations AND the secret to get
+# all four values.  Checking in both ConfigMap and live pod catches partial
+# fixes where only one side was updated.
+# NOTE: gateway_operational (obj 4) and sustained_stability (obj 5) are
+# intentionally DECOUPLED from exact nginx values — they test functional
+# stability independently.  Only nginx_config_fixed and configmap_hygiene
+# enforce the exact baseline values.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
@@ -396,9 +402,11 @@ def _obj_gateway_operational() -> tuple[float, str]:
                 successes += 1
     results["load_test_90pct"] = successes >= 18
 
-    # config_intact_post_load: ConfigMap must have ALL exact target values
-    cfg_post = _get_configmap()
-    results["config_intact_post_load"] = _nginx_exact(cfg_post)
+    # NOTE: exact nginx config values are intentionally NOT checked here —
+    # gateway_operational tests functional HTTPS stability, independent of
+    # the exact tuning values.  nginx_config_fixed (obj 3) and
+    # configmap_hygiene (obj 10) enforce the baseline values separately,
+    # allowing these two objectives to vary independently.
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
@@ -420,11 +428,13 @@ def _obj_sustained_stability() -> tuple[float, str]:
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         healthz_ok = "ok" in body.lower()
 
-        cfg = _get_configmap()
-        # config_ok requires ALL four exact values — standard defaults fail
-        config_ok = _nginx_exact(cfg)
-
-        probe_results.append(healthz_ok and config_ok)
+        # NOTE: exact nginx config values are NOT checked per-probe here —
+        # sustained_stability tests that the gateway remains UP without restarts,
+        # independent of nginx tuning values.  This decoupling means an agent
+        # who fixes the deployment/sidecars/reconciler earns this objective even
+        # without finding the exact baseline values, creating independent score
+        # variance relative to nginx_config_fixed and configmap_hygiene.
+        probe_results.append(healthz_ok)
         if i < 7:
             time.sleep(60)
 
@@ -435,7 +445,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
     n          = sum(all_checks)
     score      = 1.0 if all(all_checks) else 0.0
     return score, (
-        f"{sum(probe_results)}/8 probes healthy (healthz + exact-config), "
+        f"{sum(probe_results)}/8 probes healthy (healthz only — nginx values checked independently), "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
         f"→ {n}/9 total — {'PASS' if score == 1.0 else 'FAIL (all-or-nothing)'}"
     )
@@ -574,7 +584,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     # Near-complete partial credit: all-but-one → 0.5, else 0 or 1
-    score  = _score_with_partial(checks, partial_value=0.5)
+    score  = _score_with_partial(checks, partial_value=0.1)
     return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
 
 

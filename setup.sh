@@ -78,14 +78,25 @@ echo "TLS secret created."
 sleep 3
 
 # ── Platform operational baseline ConfigMap (disaster-recovery reference) ──────
-# Stores high-level operational parameters for the ingress controller.
-# nginx tuning values are stored directly on the deployment as annotations
-# (ingress.ops/* keys) — agents must inspect the deployment to find them.
+# Stores top-level recovery pointers for the ingress controller.
+# nginx tuning values are split: worker/keepalive in deployment annotations,
+# ssl parameters in the ingress-ops-restore Secret.
+# NetworkPolicy spec and quota values are in deployment annotations.
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
-  --from-literal=network_policy_name=ingress-allow-https \
-  --from-literal=nginx_config_source="ingress-controller deployment annotations (ingress.ops/nginx-* keys)" \
-  --from-literal=description="Operational parameters for ingress-controller recovery. nginx tuning values are in deployment annotations." \
+  --from-literal=nginx_worker_config="see ingress-controller deployment annotations (ingress.ops/nginx-worker-connections, ingress.ops/nginx-keepalive-timeout)" \
+  --from-literal=nginx_ssl_config="see ingress-ops-restore secret in ingress-system namespace" \
+  --from-literal=description="Recovery pointers for ingress-controller. Full specs are in deployment annotations and cluster secrets." \
+  2>/dev/null || true
+sleep 3
+
+# ── ingress-ops-restore Secret: ssl nginx parameters (disaster-recovery) ───────
+# Stores the ssl-specific nginx tuning values. Agents who investigate cluster
+# secrets will find these values needed to restore the complete nginx configuration.
+kubectl create secret generic ingress-ops-restore -n $NS \
+  --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
+  --from-literal=nginx_ssl_session_timeout="8h" \
+  --from-literal=description="nginx ssl parameters for ingress-controller recovery" \
   2>/dev/null || true
 sleep 3
 
@@ -163,9 +174,10 @@ metadata:
   annotations:
     ingress.ops/nginx-worker-connections: "2048"
     ingress.ops/nginx-keepalive-timeout: "90s"
-    ingress.ops/nginx-ssl-session-cache: "shared:SSL:5m"
-    ingress.ops/nginx-ssl-session-timeout: "8h"
-    ingress.ops/recovery-hint: "Use ingress.ops/nginx-* annotation values to restore nginx configuration to pre-incident baseline"
+    ingress.ops/nginx-ssl-source: "see ingress-ops-restore secret for ssl_session_cache and ssl_session_timeout"
+    ingress.ops/expected-networkpolicy: "ingress-allow-https"
+    ingress.ops/expected-quota-pods: "10"
+    ingress.ops/recovery-hint: "Inspect these annotations and ingress-ops-restore secret for recovery specifications"
 spec:
   replicas: 1
   selector:
