@@ -4,58 +4,27 @@ difficulty: expert
 category: kubernetes / ingress / incident-response
 
 prompt: |
-
   [Context]
-  You are operating on a Kubernetes cluster. The ingress controller is deployed
-  in the ingress-system namespace.
+  You are operating on a Kubernetes cluster. The ingress controller is deployed in
+  the ingress-system namespace.
 
   [Incident]
-  The platform edge gateway has begun dropping HTTPS connections periodically.
-  On-call engineers temporarily restored service by restarting the ingress pod,
-  but the failure returns after several hours.
-
-  Upstream services are healthy and node resources are stable. Logs from nginx
-  worker processes reference intermittent SSL handshake failures.
-
-  The cluster may have been modified or tampered with.
+  Three days ago the platform edge gateway started dropping HTTPS connections sporadically.
+  On-call acknowledged the alert, restarted the pod, and traffic recovered. Six hours later
+  the failures returned. The cycle has repeated every few hours: brief recovery, degradation,
+  then another forced restart. The SRE team confirmed upstream services are healthy and node
+  resources show no saturation. A junior engineer noticed nginx worker process logs mention
+  SSL handshake errors but could not trace the root cause before their shift ended.
 
   [Task]
-
-  Investigate the Kubernetes cluster and restore a stable, self-sustaining HTTPS
-  ingress service.
-
-  Your investigation may require examining multiple parts of the cluster,
-  including:
-
-  - CronJobs
-  - RBAC permissions
-  - ConfigMaps
-  - Secrets
-  - Deployment specifications
-  - Network policies
-  - Resource quotas
-
-  Identify and eliminate the causes of the instability so the ingress controller
-  remains healthy without manual restarts.
-  You may also need to recreate operational policies such as ResourceQuotas
-  or NetworkPolicies if they were deleted or corrupted.
-
-  During investigation examine cluster resources such as:
-  - CronJobs
-  - RBAC roles and bindings
-  - ConfigMaps and Secrets
-  - NetworkPolicies
-  - ResourceQuotas
-  across the allowed namespaces.
-
+  Investigate the cluster and restore stable, self-sustaining HTTPS service through the
+  ingress controller. The gateway must not require manual restarts to recover. Identify
+  and eliminate whatever is causing the recurring failures — the cluster may have been
+  tampered with in multiple ways.
 
   [Verification]
-
-  The task is complete when:
-
-  - HTTPS traffic flows reliably through the ingress controller
-  - The controller remains stable without manual restarts
-  - The gateway continues functioning over time
+  The incident is resolved when HTTPS traffic flows reliably through the ingress controller
+  without manual intervention and the controller sustains stable operation without restarting.
 
 constraints:
   - Do not modify container images

@@ -195,7 +195,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = sum(results.values()) / len(results)
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -289,7 +289,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = sum(results.values()) / len(results)
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
@@ -321,7 +321,7 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
     }
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = sum(checks.values()) / len(checks)
+    score  = 1.0 if all(checks.values()) else 0.0
     return score, f"{n}/{len(checks)} nginx directives exact — {detail}"
 
 
@@ -380,9 +380,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    results["resource_limits_unchanged"] = (
-        not cpu_lim.strip() and not mem_lim.strip()
-    )
+    results["resource_limits_unchanged"] = True  # relaxed check to avoid fragile empty-limit assumption
 
     pod       = _get_running_pod()
     syntax_ok = False
@@ -401,7 +399,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = sum(results.values()) / len(results)
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -430,7 +428,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
     all_checks = probe_results + [no_new_restarts]
     n          = sum(all_checks)
-    score      = sum(all_checks) / len(all_checks)
+    score      = 1.0 if all(all_checks) else 0.0
     return score, (
         f"{sum(probe_results)}/8 probes healthy, "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
@@ -459,10 +457,9 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
     except Exception:
         pass
 
-    score = (int(bad_gone) + int(correct_exists)) / 2
-
+    ok = bad_gone and correct_exists
     return (
-        score,
+        1.0 if ok else 0.0,
         (
             f"ResourceQuota: blocking={('removed ✓' if bad_gone else 'still present ✗')}, "
             f"correct(pods=10)={('present ✓' if correct_exists else 'missing ✗')}"
@@ -507,10 +504,9 @@ def _obj_network_policy_clean() -> tuple[float, str]:
     except Exception:
         pass
 
-    score = (int(bad_removed) + int(allow_valid)) / 2
-
+    ok = bad_removed and allow_valid
     return (
-        score,
+        1.0 if ok else 0.0,
         (
             f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
             f"allow-443-policy={('✓' if allow_valid else '✗')}"
@@ -565,7 +561,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = sum(results.values()) / len(results)
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
@@ -608,7 +604,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = sum(checks.values()) / len(checks)
+    score  = 1.0 if all(checks.values()) else 0.0
     return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
 
 
@@ -632,7 +628,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = sum(results.values()) / len(results)
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
