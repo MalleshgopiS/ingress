@@ -195,7 +195,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -289,7 +289,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
@@ -380,7 +380,9 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    results["resource_limits_unchanged"] = True  # relaxed check to avoid fragile empty-limit assumption
+    results["resource_limits_unchanged"] = (
+        not cpu_lim.strip() and not mem_lim.strip()
+    )
 
     pod       = _get_running_pod()
     syntax_ok = False
@@ -399,7 +401,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -561,7 +563,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
@@ -628,7 +630,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
@@ -674,99 +676,30 @@ def grade(_ = None) -> GradingResult:
     )
 
 
+# ================== NEBULA FINAL SAFE PATCH ==================
+# Appended patch. Does NOT delete any original grader code.
+# Prevents recursion and converts outputs to grouped binary objectives.
 
-# ================= NEBULA VARIANCE SAFE PATCH =================
-# Keeps binary scoring (0 or 1) while improving rollout variance.
-# Does NOT delete existing grader logic; wraps original grade().
-
-_original_grade = grade
-
-def grade(context=None):
-    res = _original_grade(context)
-    try:
-        original = dict(res.subscores)
-
-        def ok(v):
-            try:
-                return float(v) >= 1.0
-            except:
-                return False
-
-        grouped = {
-            # Allow either cronjob cleanup OR RBAC cleanup to count
-            "attackers_neutralized": 1.0 if (
-                ok(original.get("rogue_cronjobs_removed")) or
-                ok(original.get("unauthorized_rbac_removed"))
-            ) else 0.0,
-
-            # Allow either quota or network policy restoration
-            "network_access_restored": 1.0 if (
-                ok(original.get("resource_quota_clean")) or
-                ok(original.get("network_policy_clean"))
-            ) else 0.0,
-
-            # Deployment structure fixed
-            "deployment_fixed": 1.0 if ok(original.get("deployment_spec_integrity")) else 0.0,
-
-            # TLS certificate restored
-            "tls_restored": 1.0 if ok(original.get("tls_cert_valid")) else 0.0,
-
-            # Correct nginx configuration discovered
-            "nginx_config_correct": 1.0 if ok(original.get("nginx_config_fixed")) else 0.0,
-
-            # Service must both function AND remain stable
-            "stable_gateway": 1.0 if (
-                ok(original.get("gateway_operational")) and
-                ok(original.get("sustained_stability"))
-            ) else 0.0
-        }
-
-        res.subscores = grouped
-        res.weights = {k: 1.0/len(grouped) for k in grouped}
-        res.score = sum(grouped.values()) / len(grouped)
-
-    except Exception as e:
-        print("Nebula variance patch error:", e)
-
-    return res
-
-# ================= END VARIANCE PATCH =================
-
-# ================== NEBULA PRODUCTION GROUPED PATCH (APPENDED) ==================
-# This patch keeps original grader intact and only wraps the final grade() output
-# to ensure grouped binary objectives and include all critical checks.
-
-_original_grade = grade
+__nebula_original_grade = globals().get("grade")
 
 def grade(context=None):
-    result = _original_grade(context)
+    result = __nebula_original_grade(context)
     try:
         subs = dict(result.subscores)
 
-        def ok(name):
+        def ok(k):
             try:
-                return float(subs.get(name, 0)) >= 1.0
+                return float(subs.get(k,0)) >= 1.0
             except:
                 return False
 
         grouped = {
-            "attackers_neutralized": 1.0 if (
-                ok("rogue_cronjobs_removed") or ok("unauthorized_rbac_removed")
-            ) else 0.0,
-
-            "network_access_restored": 1.0 if (
-                ok("resource_quota_clean") or ok("network_policy_clean")
-            ) else 0.0,
-
-            "deployment_fixed": 1.0 if ok("deployment_spec_integrity") else 0.0,
-
-            "tls_restored": 1.0 if ok("tls_cert_valid") else 0.0,
-
-            "nginx_config_correct": 1.0 if ok("nginx_config_fixed") else 0.0,
-
-            "stable_gateway": 1.0 if (
-                ok("gateway_operational") and ok("sustained_stability")
-            ) else 0.0,
+            "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") or ok("unauthorized_rbac_removed")) else 0,
+            "network_access_restored": 1 if (ok("resource_quota_clean") or ok("network_policy_clean")) else 0,
+            "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
+            "tls_restored": 1 if ok("tls_cert_valid") else 0,
+            "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
+            "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
         }
 
         result.subscores = grouped
@@ -774,7 +707,7 @@ def grade(context=None):
         result.score = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
-        print("Nebula grouped scoring patch error:", e)
+        print("Nebula grouping patch error:", e)
 
     return result
 
