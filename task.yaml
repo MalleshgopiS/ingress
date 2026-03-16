@@ -22,6 +22,17 @@ prompt: |
   and eliminate whatever is causing the recurring failures — the cluster may have been
   tampered with in multiple ways.
 
+  
+  Note:
+  Some operational baseline configuration values used by the ingress platform
+  are stored in cluster configuration objects managed by the platform team.
+  Investigating ConfigMaps and Secrets in the ingress-system namespace may
+  reveal important recovery parameters.
+
+  After removing malicious resources, proper governance resources such as
+  NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
+
+
   [Verification]
   The incident is resolved when HTTPS traffic flows reliably through the ingress controller
   without manual intervention and the controller sustains stable operation without restarting.

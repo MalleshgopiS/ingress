@@ -727,8 +727,7 @@ except Exception as e:
 
 
 
-# ================= PRODUCTION NEBULA PATCH =================
-# Binary grouped objectives wrapper (reviewer-safe)
+# ================= PRODUCTION SAFE GRADER =================
 
 _original_grade = grade
 
@@ -761,16 +760,20 @@ def grade(context=None):
 
             "nginx_config_correct": 1.0 if ok(original.get("nginx_config_fixed")) else 0.0,
 
+            "gateway_operational": 1.0 if ok(original.get("gateway_operational")) else 0.0,
+
+            "configmap_clean": 1.0 if ok(original.get("configmap_hygiene")) else 0.0,
+
             "sustained_stability": 1.0 if ok(original.get("sustained_stability")) else 0.0
         }
 
         res.subscores = grouped
-        res.weights = {k:1/5 for k in grouped}
-        res.score = sum(grouped.values())/5
+        res.weights = {k:1/len(grouped) for k in grouped}
+        res.score = sum(grouped.values())/len(grouped)
 
     except Exception as e:
-        print("Grouped objective scoring error:", e)
+        print("Grader patch error:", e)
 
     return res
 
-# ================= END PATCH =================
+# ================= END PRODUCTION SAFE GRADER =================
