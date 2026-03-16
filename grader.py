@@ -731,3 +731,51 @@ def grade(context=None):
     return res
 
 # ================= END VARIANCE PATCH =================
+
+# ================== NEBULA PRODUCTION GROUPED PATCH (APPENDED) ==================
+# This patch keeps original grader intact and only wraps the final grade() output
+# to ensure grouped binary objectives and include all critical checks.
+
+_original_grade = grade
+
+def grade(context=None):
+    result = _original_grade(context)
+    try:
+        subs = dict(result.subscores)
+
+        def ok(name):
+            try:
+                return float(subs.get(name, 0)) >= 1.0
+            except:
+                return False
+
+        grouped = {
+            "attackers_neutralized": 1.0 if (
+                ok("rogue_cronjobs_removed") or ok("unauthorized_rbac_removed")
+            ) else 0.0,
+
+            "network_access_restored": 1.0 if (
+                ok("resource_quota_clean") or ok("network_policy_clean")
+            ) else 0.0,
+
+            "deployment_fixed": 1.0 if ok("deployment_spec_integrity") else 0.0,
+
+            "tls_restored": 1.0 if ok("tls_cert_valid") else 0.0,
+
+            "nginx_config_correct": 1.0 if ok("nginx_config_fixed") else 0.0,
+
+            "stable_gateway": 1.0 if (
+                ok("gateway_operational") and ok("sustained_stability")
+            ) else 0.0,
+        }
+
+        result.subscores = grouped
+        result.weights = {k: 1/len(grouped) for k in grouped}
+        result.score = sum(grouped.values()) / len(grouped)
+
+    except Exception as e:
+        print("Nebula grouped scoring patch error:", e)
+
+    return result
+
+# ================== END NEBULA PATCH ==================
