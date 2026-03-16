@@ -195,7 +195,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -289,7 +289,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
@@ -380,7 +380,9 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    results["resource_limits_unchanged"] = True  # relaxed check to avoid fragile empty-limit assumption
+    results["resource_limits_unchanged"] = (
+        not cpu_lim.strip() and not mem_lim.strip()
+    )
 
     pod       = _get_running_pod()
     syntax_ok = False
@@ -399,7 +401,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -561,7 +563,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
@@ -628,7 +630,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
@@ -672,3 +674,114 @@ def grade(_ = None) -> GradingResult:
         weights=weights,
         feedback=" | ".join([summary] + feedback_parts),
     )
+
+
+# ================= ADDED GROUPED OBJECTIVE SCORING (LEAD REVIEW FIX) =================
+# This section converts the original detailed subscores into grouped binary objectives.
+# IMPORTANT: No original grader logic is removed. We only aggregate results.
+
+try:
+    grouped_subscores = {}
+
+    # Group 1: Attack vectors neutralized
+    attack_keys = [
+        "rogue_cronjobs_removed",
+        "unauthorized_rbac_removed",
+        "tls_cert_valid"
+    ]
+    grouped_subscores["attack_vectors_neutralized"] = 1.0 if all(subscores.get(k,0)>=1 for k in attack_keys) else 0.0
+
+    # Group 2: Configuration integrity restored
+    config_keys = [
+        "nginx_config_fixed",
+        "configmap_hygiene",
+        "deployment_spec_integrity"
+    ]
+    grouped_subscores["configuration_integrity"] = 1.0 if all(subscores.get(k,0)>=1 for k in config_keys) else 0.0
+
+    # Group 3: Cluster policies restored
+    policy_keys = [
+        "resource_quota_clean",
+        "network_policy_clean"
+    ]
+    grouped_subscores["cluster_policies_restored"] = 1.0 if all(subscores.get(k,0)>=1 for k in policy_keys) else 0.0
+
+    # Group 4: Service functionality & stability
+    runtime_keys = [
+        "gateway_operational",
+        "sustained_stability"
+    ]
+    grouped_subscores["service_operational"] = 1.0 if all(subscores.get(k,0)>=1 for k in runtime_keys) else 0.0
+
+    # Replace original subscores with grouped ones (binary only)
+    subscores = grouped_subscores
+
+    # Equal weights for grouped objectives
+    weights = {k: 1.0/len(subscores) for k in subscores}
+
+except Exception as e:
+    print("Grouped objective scoring error:", e)
+
+# ================= END GROUPED OBJECTIVE SCORING =================
+
+
+# ================= NEW GROUPED BINARY OBJECTIVES (6 OBJECTIVES FIX) =================
+# This wrapper keeps original grader logic but converts final output
+# into 6 grouped binary objectives as required by lead review.
+
+_original_grade = grade
+
+def grade():
+    result = _original_grade()
+
+    s = result.subscores
+
+    grouped = {}
+
+    # 1 Attack vectors neutralized
+    grouped["attack_vectors_removed"] = 1.0 if (
+        s.get("rogue_cronjobs_removed",0)==1 and
+        s.get("unauthorized_rbac_removed",0)==1 and
+        s.get("tls_cert_valid",0)==1
+    ) else 0.0
+
+    # 2 nginx configuration fixed
+    grouped["nginx_configuration_restored"] = 1.0 if (
+        s.get("nginx_config_fixed",0)==1
+    ) else 0.0
+
+    # 3 deployment integrity restored
+    grouped["deployment_integrity_restored"] = 1.0 if (
+        s.get("deployment_spec_integrity",0)==1 and
+        s.get("configmap_hygiene",0)==1
+    ) else 0.0
+
+    # 4 cluster policy restored
+    grouped["cluster_policies_restored"] = 1.0 if (
+        s.get("resource_quota_clean",0)==1 and
+        s.get("network_policy_clean",0)==1
+    ) else 0.0
+
+    # 5 gateway operational
+    grouped["gateway_operational"] = 1.0 if (
+        s.get("gateway_operational",0)==1
+    ) else 0.0
+
+    # 6 sustained stability
+    grouped["sustained_stability"] = 1.0 if (
+        s.get("sustained_stability",0)==1
+    ) else 0.0
+
+    weights = {k: 1.0/len(grouped) for k in grouped}
+
+    score = sum(grouped[k]*weights[k] for k in grouped)
+
+    from apex_arena._types import GradingResult
+    return GradingResult(
+        score=round(score,6),
+        subscores=grouped,
+        weights=weights,
+        feedback=result.feedback
+    )
+
+# ================= END GROUPED OBJECTIVE FIX =================
