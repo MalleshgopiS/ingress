@@ -725,63 +725,66 @@ except Exception as e:
 # ================= END GROUPED OBJECTIVE SCORING =================
 
 
-# ================= NEW GROUPED BINARY OBJECTIVES (6 OBJECTIVES FIX) =================
-# This wrapper keeps original grader logic but converts final output
-# into 6 grouped binary objectives as required by lead review.
+
+# ================= BINARY GROUPED OBJECTIVES PATCH =================
+# This patch forces Nebula output to only show 6 binary objectives (0 or 1).
+# Original objectives remain in the file but are NOT returned to Nebula.
+
+def _group_binary_objectives(subscores):
+    def ok(v):
+        try:
+            return float(v) >= 1.0
+        except:
+            return False
+
+    grouped = {}
+
+    grouped["attack_vectors_removed"] = 1.0 if (
+        ok(subscores.get("rogue_cronjobs_removed",0)) and
+        ok(subscores.get("unauthorized_rbac_removed",0)) and
+        ok(subscores.get("tls_cert_valid",0))
+    ) else 0.0
+
+    grouped["nginx_configuration_restored"] = 1.0 if ok(subscores.get("nginx_config_fixed",0)) else 0.0
+
+    grouped["deployment_integrity_restored"] = 1.0 if (
+        ok(subscores.get("deployment_spec_integrity",0)) and
+        ok(subscores.get("configmap_hygiene",0))
+    ) else 0.0
+
+    grouped["cluster_policies_restored"] = 1.0 if (
+        ok(subscores.get("resource_quota_clean",0)) and
+        ok(subscores.get("network_policy_clean",0))
+    ) else 0.0
+
+    grouped["gateway_operational"] = 1.0 if ok(subscores.get("gateway_operational",0)) else 0.0
+
+    grouped["sustained_stability"] = 1.0 if ok(subscores.get("sustained_stability",0)) else 0.0
+
+    return grouped
+
 
 _original_grade = grade
 
 def grade():
     result = _original_grade()
 
-    s = result.subscores
+    try:
+        original = dict(result.subscores)
 
-    grouped = {}
+        grouped = _group_binary_objectives(original)
 
-    # 1 Attack vectors neutralized
-    grouped["attack_vectors_removed"] = 1.0 if (
-        s.get("rogue_cronjobs_removed",0)==1 and
-        s.get("unauthorized_rbac_removed",0)==1 and
-        s.get("tls_cert_valid",0)==1
-    ) else 0.0
+        # Replace subscores completely (remove old 10 objectives)
+        result.subscores = grouped
 
-    # 2 nginx configuration fixed
-    grouped["nginx_configuration_restored"] = 1.0 if (
-        s.get("nginx_config_fixed",0)==1
-    ) else 0.0
+        # Equal weights for 6 objectives
+        result.weights = {k: 1/6 for k in grouped}
 
-    # 3 deployment integrity restored
-    grouped["deployment_integrity_restored"] = 1.0 if (
-        s.get("deployment_spec_integrity",0)==1 and
-        s.get("configmap_hygiene",0)==1
-    ) else 0.0
+        # Compute final score
+        result.score = sum(grouped.values()) / 6
 
-    # 4 cluster policy restored
-    grouped["cluster_policies_restored"] = 1.0 if (
-        s.get("resource_quota_clean",0)==1 and
-        s.get("network_policy_clean",0)==1
-    ) else 0.0
+    except Exception as e:
+        print("Binary grouping patch error:", e)
 
-    # 5 gateway operational
-    grouped["gateway_operational"] = 1.0 if (
-        s.get("gateway_operational",0)==1
-    ) else 0.0
-
-    # 6 sustained stability
-    grouped["sustained_stability"] = 1.0 if (
-        s.get("sustained_stability",0)==1
-    ) else 0.0
-
-    weights = {k: 1.0/len(grouped) for k in grouped}
-
-    score = sum(grouped[k]*weights[k] for k in grouped)
-
-    from apex_arena._types import GradingResult
-    return GradingResult(
-        score=round(score,6),
-        subscores=grouped,
-        weights=weights,
-        feedback=result.feedback
-    )
-
-# ================= END GROUPED OBJECTIVE FIX =================
+    return result
+# ================= END PATCH =================
