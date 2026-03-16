@@ -727,52 +727,50 @@ except Exception as e:
 
 
 
-# ================= NEBULA REVIEW FIX PATCH =================
-# Added to satisfy reviewer requirements without deleting existing code.
-# 1) Convert proportional subscores to binary
-# 2) Group into 5 objectives
-# 3) Remove fractional outputs
+# ================= PRODUCTION NEBULA PATCH =================
+# Binary grouped objectives wrapper (reviewer-safe)
 
-def _binary(v):
+_original_grade = grade
+
+def grade(context=None):
+    res = _original_grade(context)
     try:
-        return 1.0 if float(v) >= 1.0 else 0.0
-    except:
-        return 0.0
+        original = dict(res.subscores)
 
-def _group_objectives(original):
-    return {
-        "attackers_neutralized": 1.0 if (
-            _binary(original.get("rogue_cronjobs_removed",0)) and
-            _binary(original.get("unauthorized_rbac_removed",0))
-        ) else 0.0,
+        def ok(v):
+            try:
+                return float(v) >= 1.0
+            except:
+                return False
 
-        "network_access_restored": 1.0 if (
-            _binary(original.get("resource_quota_clean",0)) and
-            _binary(original.get("network_policy_clean",0))
-        ) else 0.0,
+        grouped = {
+            "attackers_neutralized": 1.0 if (
+                ok(original.get("rogue_cronjobs_removed")) and
+                ok(original.get("unauthorized_rbac_removed"))
+            ) else 0.0,
 
-        "deployment_healthy": 1.0 if (
-            _binary(original.get("deployment_spec_integrity",0)) and
-            _binary(original.get("tls_cert_valid",0))
-        ) else 0.0,
+            "network_access_restored": 1.0 if (
+                ok(original.get("resource_quota_clean")) and
+                ok(original.get("network_policy_clean"))
+            ) else 0.0,
 
-        "nginx_config_correct": _binary(original.get("nginx_config_fixed",0)),
+            "deployment_healthy": 1.0 if (
+                ok(original.get("deployment_spec_integrity")) and
+                ok(original.get("tls_cert_valid"))
+            ) else 0.0,
 
-        "sustained_stability": _binary(original.get("sustained_stability",0))
-    }
+            "nginx_config_correct": 1.0 if ok(original.get("nginx_config_fixed")) else 0.0,
 
-_original_grade_fn = grade
+            "sustained_stability": 1.0 if ok(original.get("sustained_stability")) else 0.0
+        }
 
-def grade():
-    res = _original_grade_fn()
-    try:
-        original=dict(res.subscores)
-        grouped=_group_objectives(original)
-        res.subscores=grouped
-        res.weights={k:1/5 for k in grouped}
-        res.score=sum(grouped.values())/5
+        res.subscores = grouped
+        res.weights = {k:1/5 for k in grouped}
+        res.score = sum(grouped.values())/5
+
     except Exception as e:
-        print("nebula patch error:",e)
+        print("Grouped objective scoring error:", e)
+
     return res
 
 # ================= END PATCH =================
