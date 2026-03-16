@@ -694,8 +694,8 @@ def grade(context=None):
                 return False
 
         grouped = {
-            "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") or ok("unauthorized_rbac_removed")) else 0,
-            "network_access_restored": 1 if (ok("resource_quota_clean") or ok("network_policy_clean")) else 0,
+            "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") and ok("unauthorized_rbac_removed")) else 0,
+            "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
             "tls_restored": 1 if ok("tls_cert_valid") else 0,
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
