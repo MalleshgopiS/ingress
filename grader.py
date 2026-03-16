@@ -726,65 +726,53 @@ except Exception as e:
 
 
 
-# ================= BINARY GROUPED OBJECTIVES PATCH =================
-# This patch forces Nebula output to only show 6 binary objectives (0 or 1).
-# Original objectives remain in the file but are NOT returned to Nebula.
 
-def _group_binary_objectives(subscores):
-    def ok(v):
-        try:
-            return float(v) >= 1.0
-        except:
-            return False
+# ================= NEBULA REVIEW FIX PATCH =================
+# Added to satisfy reviewer requirements without deleting existing code.
+# 1) Convert proportional subscores to binary
+# 2) Group into 5 objectives
+# 3) Remove fractional outputs
 
-    grouped = {}
+def _binary(v):
+    try:
+        return 1.0 if float(v) >= 1.0 else 0.0
+    except:
+        return 0.0
 
-    grouped["attack_vectors_removed"] = 1.0 if (
-        ok(subscores.get("rogue_cronjobs_removed",0)) and
-        ok(subscores.get("unauthorized_rbac_removed",0)) and
-        ok(subscores.get("tls_cert_valid",0))
-    ) else 0.0
+def _group_objectives(original):
+    return {
+        "attackers_neutralized": 1.0 if (
+            _binary(original.get("rogue_cronjobs_removed",0)) and
+            _binary(original.get("unauthorized_rbac_removed",0))
+        ) else 0.0,
 
-    grouped["nginx_configuration_restored"] = 1.0 if ok(subscores.get("nginx_config_fixed",0)) else 0.0
+        "network_access_restored": 1.0 if (
+            _binary(original.get("resource_quota_clean",0)) and
+            _binary(original.get("network_policy_clean",0))
+        ) else 0.0,
 
-    grouped["deployment_integrity_restored"] = 1.0 if (
-        ok(subscores.get("deployment_spec_integrity",0)) and
-        ok(subscores.get("configmap_hygiene",0))
-    ) else 0.0
+        "deployment_healthy": 1.0 if (
+            _binary(original.get("deployment_spec_integrity",0)) and
+            _binary(original.get("tls_cert_valid",0))
+        ) else 0.0,
 
-    grouped["cluster_policies_restored"] = 1.0 if (
-        ok(subscores.get("resource_quota_clean",0)) and
-        ok(subscores.get("network_policy_clean",0))
-    ) else 0.0
+        "nginx_config_correct": _binary(original.get("nginx_config_fixed",0)),
 
-    grouped["gateway_operational"] = 1.0 if ok(subscores.get("gateway_operational",0)) else 0.0
+        "sustained_stability": _binary(original.get("sustained_stability",0))
+    }
 
-    grouped["sustained_stability"] = 1.0 if ok(subscores.get("sustained_stability",0)) else 0.0
-
-    return grouped
-
-
-_original_grade = grade
+_original_grade_fn = grade
 
 def grade():
-    result = _original_grade()
-
+    res = _original_grade_fn()
     try:
-        original = dict(result.subscores)
-
-        grouped = _group_binary_objectives(original)
-
-        # Replace subscores completely (remove old 10 objectives)
-        result.subscores = grouped
-
-        # Equal weights for 6 objectives
-        result.weights = {k: 1/6 for k in grouped}
-
-        # Compute final score
-        result.score = sum(grouped.values()) / 6
-
+        original=dict(res.subscores)
+        grouped=_group_objectives(original)
+        res.subscores=grouped
+        res.weights={k:1/5 for k in grouped}
+        res.score=sum(grouped.values())/5
     except Exception as e:
-        print("Binary grouping patch error:", e)
+        print("nebula patch error:",e)
+    return res
 
-    return result
 # ================= END PATCH =================

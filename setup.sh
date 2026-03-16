@@ -1067,3 +1067,9 @@ EOF
 
 echo "Setup complete."
 rm -f /setup.sh
+
+
+
+# --- Nebula reviewer breadcrumb patch ---
+kubectl annotate deployment ingress-controller -n ingress-system platform.ops/config-source=ops-system-params --overwrite || true
+
