@@ -13,12 +13,6 @@ echo "=== Applying ingress controller full remediation ==="
 echo "[Step 0] Killing self-healing reconciler..."
 kubectl delete cronjob infra-health-monitor -n default --ignore-not-found
 kubectl delete jobs --all -n default --ignore-not-found 2>/dev/null || true
-
-# --- NEW UPDATE: Force kill the underlying pods immediately ---
-# Prevents a lingering Reconciler pod from recreating the RBAC traps while the script is running.
-kubectl delete pods --all -n default --force --grace-period=0 2>/dev/null || true
-# --------------------------------------------------------------
-
 sleep 5
 
 # ── Step 1: Revoke kube-system attack permissions ─────────────────────────────
@@ -109,11 +103,6 @@ kubectl delete rolebinding event-handler-binding        -n $NS --ignore-not-foun
 kubectl delete role        metrics-aggregator           -n $NS --ignore-not-found
 kubectl delete rolebinding metrics-aggregator-binding   -n $NS --ignore-not-found
 
-# --- NEW UPDATE: Bulletproof RBAC removal fallback ---
-# Ensures all targeted RBAC rules are scrubbed just in case a typo existed above.
-kubectl delete role,rolebinding config-sync-handler config-sync-handler-binding resource-manager resource-manager-binding ops-monitoring-reader ops-monitoring-binding audit-log-reader audit-log-binding telemetry-stream-handler telemetry-stream-binding ops-state-controller ops-state-controller-binding nginx-watcher-config nginx-watcher-config-binding infra-bridge-controller infra-bridge-binding event-handler-rbac event-handler-binding metrics-aggregator metrics-aggregator-binding log-monitor-ingress log-monitor-binding -n $NS --ignore-not-found 2>/dev/null || true
-# -----------------------------------------------------
-
 echo "[Step 5] Removing PodDisruptionBudget (blocks pod rescheduling)..."
 kubectl delete pdb ingress-pdb -n $NS --ignore-not-found
 
@@ -143,52 +132,8 @@ kubectl patch deployment $DEPLOY -n $NS --type=json \
   -p '[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' \
   2>/dev/null || true
 
-# --- NEW UPDATE: BULLETPROOF DEPLOYMENT OVERWRITE ---
-# If the JSON patches failed due to array shifting (e.g., if you ran the script twice),
-# this explicitly enforces the 100% correct deployment spec and guarantees a pass.
-echo "[Step 7] Enforcing clean Deployment Spec..."
-kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ingress-controller
-  namespace: $NS
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ingress-controller
-  template:
-    metadata:
-      labels:
-        app: ingress-controller
-    spec:
-      serviceAccountName: default
-      containers:
-      - name: nginx
-        image: nginx:alpine
-        imagePullPolicy: Never
-        ports:
-        - containerPort: 443
-        volumeMounts:
-        - name: config
-          mountPath: /etc/nginx/nginx.conf
-          subPath: nginx.conf
-        - name: tls
-          mountPath: /etc/tls
-          readOnly: true
-      volumes:
-      - name: config
-        configMap:
-          name: ingress-nginx-config
-      - name: tls
-        secret:
-          secretName: ingress-controller-tls
-EOF
-# ----------------------------------------------------
-
 REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
-if [ "${REPLICAS}" = "0" ]; then
+if [ "$REPLICAS" = "0" ]; then
   echo "[Step 7] Deployment was scaled to 0 — restoring to 1..."
   kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
 fi
