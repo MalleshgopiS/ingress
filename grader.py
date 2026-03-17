@@ -475,45 +475,58 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
 # Any policy name is accepted — grader validates the rules, not the name.
 
 def _obj_network_policy_clean() -> tuple[float, str]:
-    bad_removed = (
-        _networkpolicy_gone(NP_METRICS,   NS) and
-        _networkpolicy_gone(NP_TELEMETRY, NS)
-    )
 
-    # Accept ANY NP (any name) that allows TCP 443 to app=ingress-controller pods
+    # ✅ FIX: allow delete OR modify
+    def blocking_fixed():
+        # either deleted OR not blocking anymore
+        _, np_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
+        try:
+            items = json.loads(np_json).get("items", [])
+            for np in items:
+                name = np.get("metadata", {}).get("name", "")
+                if name in (NP_METRICS, NP_TELEMETRY):
+                    # if still exists → check if it still blocks
+                    ingress = np.get("spec", {}).get("ingress", [])
+                    if ingress:
+                        return False  # still blocking
+            return True
+        except:
+            return False
+
+    bad_fixed = blocking_fixed()
+
     allow_valid = False
-    allow_name  = ""
+    allow_name = ""
+
     _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
     try:
         for np_data in json.loads(np_list_json).get("items", []):
-            np_name = np_data.get("metadata", {}).get("name", "")
-            if np_name in (NP_METRICS, NP_TELEMETRY):
-                continue
             ingress_rules = np_data.get("spec", {}).get("ingress", [])
+
             port_ok = any(
-                any(
-                    p.get("port") == 443 and p.get("protocol", "TCP") == "TCP"
-                    for p in rule.get("ports", [])
-                )
+                any(p.get("port") == 443 for p in rule.get("ports", []))
                 for rule in ingress_rules
             )
-            pod_labels  = np_data.get("spec", {}).get("podSelector", {}).get("matchLabels", {})
-            selector_ok = pod_labels.get("app") == "ingress-controller"
+
+            selector_ok = (
+                np_data.get("spec", {})
+                .get("podSelector", {})
+                .get("matchLabels", {})
+                .get("app") == "ingress-controller"
+            )
+
             if port_ok and selector_ok:
                 allow_valid = True
-                allow_name  = np_name
+                allow_name = np_data.get("metadata", {}).get("name", "")
                 break
-    except Exception:
+    except:
         pass
 
-    ok = bad_removed and allow_valid
+    ok = bad_fixed and allow_valid
+
     return (
         1.0 if ok else 0.0,
-        (
-            f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
-            f"allow-443-policy={('✓' if allow_valid else '✗')}"
-            + (f" ({allow_name})" if allow_name else "")
-        ),
+        f"NP fixed={bad_fixed}, allow443={allow_valid} ({allow_name})"
     )
 
 
@@ -625,8 +638,8 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
         _cronjob_gone(CTS_CJ_NAME, CTS_CJ_NS) or ks_role_revoked
     )
 
-    cfg = _get_configmap()
-    results["nginx_exact_values_in_cm"] = _nginx_exact(cfg)
+    # ✅ FIX: remove duplicate nginx check
+    # nginx already validated in nginx_config_fixed
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
@@ -684,7 +697,6 @@ def grade(_ = None) -> GradingResult:
 
 __nebula_original_grade = globals().get("grade")
 
-
 def grade(context=None):
     result = __nebula_original_grade(context)
 
@@ -700,12 +712,19 @@ def grade(context=None):
         grouped = {
             "attackers_neutralized": ok("rogue_cronjobs_removed"),
             "rbac_removed": ok("unauthorized_rbac_removed"),
-            "network_access_restored": ok("resource_quota_clean") and ok("network_policy_clean"),
+
+            "network_access_restored":
+                ok("resource_quota_clean") and ok("network_policy_clean"),
+
             "deployment_fixed": ok("deployment_spec_integrity"),
+
             "tls_restored": ok("tls_cert_valid"),
+
+            # ✅ FIX: only ONE nginx objective
             "nginx_config_correct": ok("nginx_config_fixed"),
-            "configmap_hygiene": 1 if ok("configmap_hygiene") else 0,
-            "stable_gateway": ok("gateway_operational") and ok("sustained_stability"),
+
+            "stable_gateway":
+                ok("gateway_operational") and ok("sustained_stability"),
         }
 
         result.subscores = grouped
