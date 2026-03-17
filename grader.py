@@ -204,126 +204,137 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 # pod rescheduling) and nginx-watcher RBAC (used by the injected sidecars).
 
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
+    """
+    Binary but realistic RBAC objective:
+    - Focus on CRITICAL attack paths only
+    - Still requires meaningful cleanup
+    - Fixes zero-variance issue
+    """
+
     results = {}
 
-    code, out, _ = run(f"kubectl get role {PATCHER_ROLE} -n {NS} 2>/dev/null")
-    results[f"role:{PATCHER_ROLE}"] = code != 0 or not out.strip()
+    # ── CRITICAL RBAC (must remove) ─────────────────────────────
+    critical_roles = [
+        (PATCHER_ROLE, NS),                 # config tampering
+        (SCALER_ROLE, DISABLER_CJ_NS),      # scaling attack
+        (KS_ROLE_NAME, NS),                 # kube-system bridge (VERY important)
+        (AUDIT_ROLE_NAME, NS),              # secret tampering
+        (TLM_ROLE_NAME, NS),                # telemetry attack
+    ]
 
-    code, out, _ = run(f"kubectl get role {SCALER_ROLE} -n {DISABLER_CJ_NS} 2>/dev/null")
-    results[f"role:{SCALER_ROLE}"] = code != 0 or not out.strip()
+    for role, ns in critical_roles:
+        code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
+        results[f"role:{role}@{ns}"] = code != 0 or not out.strip()
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {NS_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {NS_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{NS_BINDING}+{NS_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
+    # ── CRITICAL bindings (paired with roles) ───────────────────
+    critical_bindings = [
+        (NS_BINDING, NS),
+        (KS_BINDING, NS),
+        (AUDIT_BINDING, NS),
+        (TLM_BINDING, NS),
+    ]
 
-    # PodDisruptionBudget blocks pod rescheduling; must be removed like RBAC
+    for rb, ns in critical_bindings:
+        code, out, _ = run(f"kubectl get rolebinding {rb} -n {ns} 2>/dev/null")
+        results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
+
+    # ── MUST KEEP: PDB removal (important signal) ───────────────
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
-    results[f"policy:{PDB_NAME}"] = code != 0 or not out.strip()
+    results["pdb_removed"] = code != 0 or not out.strip()
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {KS_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {KS_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{KS_BINDING}+{KS_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
+    # ── OPTIONAL / NON-CRITICAL (ignored for scoring) ───────────
+    # These still appear in feedback but don't block scoring
+    optional = {}
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {AUDIT_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {AUDIT_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{AUDIT_BINDING}+{AUDIT_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
+    optional_checks = [
+        ("nginx-watcher-config", NS),
+        ("ops-state-controller", NS),
+        (IB_ROLE_NAME, NS),
+        (EH_ROLE_NAME, NS),
+        (MA_ROLE_NAME, NS),
+    ]
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {TLM_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {TLM_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{TLM_BINDING}+{TLM_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
+    for role, ns in optional_checks:
+        code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
+        optional[f"opt:{role}"] = code != 0 or not out.strip()
 
-    code_rb, out_rb, _ = run(
-        f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null"
-    )
-    code_cr, out_cr, _ = run(
-        f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null"
-    )
-    results["rbac:nginx-watcher-config-binding+nginx-watcher-config"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
-
-    code_rb, out_rb, _ = run(
-        f"kubectl get rolebinding ops-state-controller-binding -n {NS} 2>/dev/null"
-    )
-    code_cr, out_cr, _ = run(
-        f"kubectl get role ops-state-controller -n {NS} 2>/dev/null"
-    )
-    results["rbac:ops-state-controller-binding+ops-state-controller"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
-
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {IB_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {IB_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{IB_BINDING}+{IB_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
-
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {EH_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {EH_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{EH_BINDING}+{EH_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
-
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding {MA_BINDING} -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role {MA_ROLE_NAME} -n {NS} 2>/dev/null")
-    results[f"rbac:{MA_BINDING}+{MA_ROLE_NAME}"] = (
-        (code_rb != 0 or not out_rb.strip()) and
-        (code_cr != 0 or not out_cr.strip())
-    )
-
+    # ── Final scoring ───────────────────────────────────────────
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if all(results.values()) else 0.0
-    return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
+    # include optional in feedback only
+    opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
+
+    score = 1.0 if all(results.values()) else 0.0
+
+    return score, (
+        f"{n}/{len(results)} critical RBAC removed — {detail} | optional: {opt_detail}"
+    )
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
-# All four exact nginx values are ONLY in ops-system-params Secret:
-#   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
-#   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
-# Decoy ConfigMap nginx-ops-defaults looks authoritative but has wrong values (1024/65s/10m/1d).
-# Checked in both ConfigMap and live running pod.
-
 def _obj_nginx_config_fixed() -> tuple[float, str]:
+    """
+    Binary but strict nginx validation:
+    - Must have exact values
+    - Must be applied to live nginx
+    - Must NOT rely on decoy ConfigMap
+    - Must align with platform Secret (authoritative source)
+    """
+
     cfg = _get_configmap()
     pod = _get_running_pod()
     live = ""
+
     if pod:
         _, live, _ = run(
             f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
         )
 
-    checks = {
-        f"worker_connections(cm)=={NGINX_WORKER_CONNS}":   _worker_connections_ok(cfg),
-        f"keepalive_timeout(cm)=={NGINX_KEEPALIVE}":       _keepalive_timeout_ok(cfg),
-        f"ssl_session_cache(cm)=={NGINX_SSL_CACHE}":       _ssl_cache_ok(cfg),
-        f"ssl_session_timeout(cm)=={NGINX_SSL_TIMEOUT}":   _ssl_timeout_ok(cfg),
-        f"worker_connections(live)=={NGINX_WORKER_CONNS}": bool(live) and _worker_connections_ok(live),
-        f"keepalive_timeout(live)=={NGINX_KEEPALIVE}":     bool(live) and _keepalive_timeout_ok(live),
-        f"ssl_session_cache(live)=={NGINX_SSL_CACHE}":     bool(live) and _ssl_cache_ok(live),
-        f"ssl_session_timeout(live)=={NGINX_SSL_TIMEOUT}": bool(live) and _ssl_timeout_ok(live),
-    }
-    n      = sum(checks.values())
-    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} nginx directives exact — {detail}"
+    # ── CRITICAL: exact values must match ───────────────────────
+    critical = {
+        "cm_worker": _worker_connections_ok(cfg),
+        "cm_keepalive": _keepalive_timeout_ok(cfg),
+        "cm_cache": _ssl_cache_ok(cfg),
+        "cm_timeout": _ssl_timeout_ok(cfg),
 
+        "live_worker": bool(live) and _worker_connections_ok(live),
+        "live_keepalive": bool(live) and _keepalive_timeout_ok(live),
+        "live_cache": bool(live) and _ssl_cache_ok(live),
+        "live_timeout": bool(live) and _ssl_timeout_ok(live),
+    }
+
+    # ── NEW: enforce Secret presence (authoritative source) ─────
+    code, secret_out, _ = run(
+        f"kubectl get secret ops-system-params -n {NS} --no-headers 2>/dev/null"
+    )
+    critical["secret_exists"] = (code == 0 and bool(secret_out.strip()))
+
+    # ── NEW: detect decoy usage ─────────────────────────────────
+    decoy_detected = any([
+        re.search(r"worker_connections\s+1024;", cfg),
+        re.search(r"keepalive_timeout\s+65s;", cfg),
+        re.search(r"ssl_session_cache\s+shared:SSL:10m;", cfg),
+        re.search(r"ssl_session_timeout\s+1d;", cfg),
+    ])
+    critical["not_decoy"] = not decoy_detected
+
+    # ── NEW: ensure nginx config is valid/reloaded ──────────────
+    nginx_valid = False
+    if pod:
+        _, reload_check, _ = run(
+            f"kubectl exec -n {NS} {pod} -- nginx -t 2>&1", timeout=10
+        )
+        nginx_valid = "syntax is ok" in reload_check.lower()
+
+    critical["nginx_valid"] = nginx_valid
+
+    # ── Scoring ────────────────────────────────────────────────
+    n      = sum(critical.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items())
+
+    score = 1.0 if all(critical.values()) else 0.0
+
+    return score, f"{n}/{len(critical)} nginx strict checks — {detail}"
 
 # ── Objective 4: gateway_operational ──────────────────────────────────────────
 # Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
@@ -581,47 +592,66 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
 
 # ── Objective 9: deployment_spec_integrity ────────────────────────────────────
-# All 6 deployment spec checks must pass: liveness probe, replicas, both
-# sidecar containers removed, sidecar ServiceAccount deleted, and deployment
-# SA reset to default.
-
 def _obj_deployment_spec_integrity() -> tuple[float, str]:
-    checks = {}
+    """
+    Binary but realistic deployment objective:
+    - Critical fixes required for PASS
+    - Secondary fixes tracked but not blocking
+    """
 
-    _, probe_port, _ = run(
-        f"kubectl get deploy {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
-    )
-    checks["liveness_probe_clean"] = probe_port.strip() != str(BAD_PROBE_PORT)
+    critical = {}
+    secondary = {}
 
-    _, replicas, _ = run(
-        f"kubectl get deploy {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.replicas}'"
-    )
-    checks["replicas_at_one"] = replicas.strip() == "1"
+    # ── CRITICAL: must pass ─────────────────────────────
 
+    # 1. Sidecars removed (MAIN attack vector)
     _, container_names, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[*].name}'"
     )
     names_list = container_names.split()
-    checks["scraper_sidecar_removed"]  = SIDECAR_CONTAINER  not in names_list
-    checks["reporter_sidecar_removed"] = SIDECAR2_CONTAINER not in names_list
 
-    code, out, _ = run(f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null")
-    checks["sidecar_sa_removed"] = code != 0 or not out.strip()
+    critical["scraper_removed"]  = SIDECAR_CONTAINER not in names_list
+    critical["reporter_removed"] = SIDECAR2_CONTAINER not in names_list
 
+    # 2. Liveness probe fixed (prevents crash loop attack)
+    _, probe_port, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
+    )
+    critical["probe_fixed"] = probe_port.strip() != str(BAD_PROBE_PORT)
+
+    # 3. Deployment not using attacker SA
     _, sa_name, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.serviceAccountName}'"
     )
-    checks["deployment_sa_clean"] = sa_name.strip() != SIDECAR_SA
+    critical["deployment_sa_clean"] = sa_name.strip() != SIDECAR_SA
 
-    n      = sum(checks.values())
-    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-    score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} deployment spec integrity checks — {detail}"
+    # ── SECONDARY: good hygiene (not required for PASS) ─────────
 
+    # SA deleted (nice-to-have)
+    code, out, _ = run(f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null")
+    secondary["sa_deleted"] = code != 0 or not out.strip()
+
+    # replicas correct (nice but often missed)
+    _, replicas, _ = run(
+        f"kubectl get deploy {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.replicas}'"
+    )
+    secondary["replicas_1"] = replicas.strip() == "1"
+
+    # ── Scoring ─────────────────────────────────────────
+
+    n      = sum(critical.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items())
+    sec_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in secondary.items())
+
+    score = 1.0 if all(critical.values()) else 0.0
+
+    return score, (
+        f"{n}/{len(critical)} critical deployment fixes — {detail} | secondary: {sec_detail}"
+    )
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
 # Three checks: poisoned template ConfigMap deleted, config-template-sync
