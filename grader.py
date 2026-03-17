@@ -661,37 +661,32 @@ __nebula_original_grade = globals().get("grade")
 
 
 
+
+
 def grade() -> GradingResult:
     results = {}
 
-    results["rogue_cronjobs_removed"] = _obj_rogue_cronjobs_removed()
-    results["unauthorized_rbac_removed"] = _obj_unauthorized_rbac_removed()
-    results["nginx_config_fixed"] = _obj_nginx_config_fixed()
-    results["gateway_operational"] = _obj_gateway_operational()
-    results["sustained_stability"] = _obj_sustained_stability()
-    results["resource_quota_clean"] = _obj_resource_quota_clean()
-    results["network_policy_clean"] = _obj_network_policy_clean()
-    results["tls_cert_valid"] = _obj_tls_cert_valid()
-    results["deployment_spec_integrity"] = _obj_deployment_spec_integrity()
-    results["configmap_hygiene"] = _obj_configmap_hygiene()
+    # original objectives
+    results["cronjobs"] = _obj_rogue_cronjobs_removed()
+    results["rbac"] = _obj_unauthorized_rbac_removed()
+    results["nginx"] = _obj_nginx_config_fixed()
+    results["gateway"] = _obj_gateway_operational()
+    results["stability"] = _obj_sustained_stability()
+    results["quota"] = _obj_resource_quota_clean()
+    results["network"] = _obj_network_policy_clean()
+    results["tls"] = _obj_tls_cert_valid()
+    results["deploy"] = _obj_deployment_spec_integrity()
+    results["configmap"] = _obj_configmap_hygiene()
 
+    # balanced grouped signals (no mega groups)
     subscores = {
-        "cronjobs_clean": 1.0 if results["rogue_cronjobs_removed"][0] == 1.0 else 0.0,
-        "rbac_core": 1.0 if results["unauthorized_rbac_removed"][0] == 1.0 else 0.0,
-        "network_access_restored": 1.0 if (
-            results["resource_quota_clean"][0] == 1.0 and
-            results["network_policy_clean"][0] == 1.0
-        ) else 0.0,
-        "deployment_core": 1.0 if results["deployment_spec_integrity"][0] == 1.0 else 0.0,
-        "tls_restored": 1.0 if results["tls_cert_valid"][0] == 1.0 else 0.0,
-        "nginx_config_correct": 1.0 if (
-            results["nginx_config_fixed"][0] == 1.0 and
-            results["configmap_hygiene"][0] == 1.0
-        ) else 0.0,
-        "stable_gateway": 1.0 if (
-            results["gateway_operational"][0] == 1.0 and
-            results["sustained_stability"][0] == 1.0
-        ) else 0.0,
+        "cronjobs_clean": 1.0 if results["cronjobs"][0] == 1.0 else 0.0,
+        "rbac_removed": 1.0 if results["rbac"][0] == 1.0 else 0.0,
+        "network_restored": 1.0 if (results["quota"][0] == 1.0 and results["network"][0] == 1.0) else 0.0,
+        "deployment_fixed": 1.0 if results["deploy"][0] == 1.0 else 0.0,
+        "tls_restored": 1.0 if results["tls"][0] == 1.0 else 0.0,
+        "nginx_correct": 1.0 if (results["nginx"][0] == 1.0 and results["configmap"][0] == 1.0) else 0.0,
+        "stable_gateway": 1.0 if (results["gateway"][0] == 1.0 and results["stability"][0] == 1.0) else 0.0,
     }
 
     final_score = sum(subscores.values()) / len(subscores)
