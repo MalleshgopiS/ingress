@@ -651,8 +651,6 @@ OBJECTIVES = [
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
-
-
 # ================== NEBULA FINAL SAFE PATCH ==================
 # Appended patch. Does NOT delete any original grader code.
 # Prevents recursion and converts outputs to grouped binary objectives.
@@ -687,6 +685,5 @@ def grade(context=None) -> GradingResult:
     final_score = sum(subscores.values()) / len(subscores)
 
     return GradingResult(score=final_score, subscores=subscores, details={"raw_results": results})
-
 
 # AUTO FIX: add weights to grading result
