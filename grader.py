@@ -694,13 +694,25 @@ def grade(context=None):
                 return False
 
         grouped = {
-            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
-            "rbac removed": 1 if ok("unauthorized_rbac_removed") else 0,
+            # Split attackers → variance ↑
+            "cronjobs_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            "rbac_clean": 1 if ok("unauthorized_rbac_removed") else 0,
+
+            # Keep network grouped (good design)
             "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
+
+            # Keep deployment (still hard but OK)
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
+
+            # TLS independent → good variance
             "tls_restored": 1 if ok("tls_cert_valid") else 0,
+
+            # Always 1 (fine, acts as baseline signal)
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
-            "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
+
+            # 🔥 CRITICAL FIX: split stability
+            "gateway_operational": 1 if ok("gateway_operational") else 0,
+            "stability": 1 if ok("sustained_stability") else 0,
         }
 
         result.subscores = grouped
@@ -711,9 +723,3 @@ def grade(context=None):
         print("Nebula grouping patch error:", e)
 
     return result
-
-# ================== END NEBULA PATCH ==================
-
-
-# --- v29 NOTE ---
-# Duplicate nginx checks logically consolidated (single objective expectation)
