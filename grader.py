@@ -660,13 +660,9 @@ WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 __nebula_original_grade = globals().get("grade")
 
 
-
-
-
-def grade() -> GradingResult:
+def grade(context=None) -> GradingResult:
     results = {}
 
-    # original objectives
     results["cronjobs"] = _obj_rogue_cronjobs_removed()
     results["rbac"] = _obj_unauthorized_rbac_removed()
     results["nginx"] = _obj_nginx_config_fixed()
@@ -678,7 +674,6 @@ def grade() -> GradingResult:
     results["deploy"] = _obj_deployment_spec_integrity()
     results["configmap"] = _obj_configmap_hygiene()
 
-    # balanced grouped signals (no mega groups)
     subscores = {
         "cronjobs_clean": 1.0 if results["cronjobs"][0] == 1.0 else 0.0,
         "rbac_removed": 1.0 if results["rbac"][0] == 1.0 else 0.0,
