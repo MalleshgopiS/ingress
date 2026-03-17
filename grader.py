@@ -269,7 +269,8 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         f"{n}/{len(results)} critical RBAC removed — {detail} | optional: {opt_detail}"
     )
 
-# Objective : 4 :  obj_nginx_config_fixed
+# Objective - 3 :  obj_nginx_config_fixed
+
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     """
     FINAL FIX:
@@ -287,7 +288,6 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
             f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
         )
 
-    # ── CRITICAL checks ─────────────────────────────
     checks = {
         "cm_worker": _worker_connections_ok(cfg),
         "cm_keepalive": _keepalive_timeout_ok(cfg),
@@ -300,7 +300,7 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
         "live_timeout": bool(live) and _ssl_timeout_ok(live),
     }
 
-    # ── Detect WRONG (decoy) values ─────────────────
+    # detect decoy values
     decoy = any([
         re.search(r"worker_connections\s+1024;", cfg),
         re.search(r"keepalive_timeout\s+65s;", cfg),
@@ -310,7 +310,7 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
     checks["not_decoy"] = not decoy
 
-    # ── nginx syntax must be valid ──────────────────
+    # nginx syntax check
     syntax_ok = False
     if pod:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
@@ -318,14 +318,28 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
     checks["nginx_valid"] = syntax_ok
 
-    # ── FINAL scoring ───────────────────────────────
+    # ── scoring ──
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
 
-    score = 1.0 if all(checks.values()) else 0.0
+    # ✅ FIXED scoring (reduces variance)
+    critical_keys = [
+        "cm_worker", "cm_keepalive", "cm_cache", "cm_timeout",
+        "not_decoy", "nginx_valid"
+    ]
+
+    critical_pass = all(checks[k] for k in critical_keys)
+
+    live_pass = (
+        checks["live_worker"] and
+        checks["live_keepalive"] and
+        checks["live_cache"] and
+        checks["live_timeout"]
+    )
+
+    score = 1.0 if (critical_pass and live_pass) else 0.0
 
     return score, f"{n}/{len(checks)} nginx strict checks — {detail}"
-
 
 # ── Objective 4: gateway_operational ──────────────────────────────────────────
 # Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
