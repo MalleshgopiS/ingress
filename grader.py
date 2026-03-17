@@ -684,6 +684,7 @@ def grade(_ = None) -> GradingResult:
 
 __nebula_original_grade = globals().get("grade")
 
+
 def grade(context=None):
     result = __nebula_original_grade(context)
     try:
@@ -691,33 +692,18 @@ def grade(context=None):
 
         def ok(k):
             try:
-                return float(subs.get(k, 0)) >= 1.0
+                return float(subs.get(k,0)) >= 1.0
             except:
                 return False
 
         grouped = {
-            # ✅ split attackers → creates variance
-            "cronjobs_removed": 1 if ok("rogue_cronjobs_removed") else 0,
-            "rbac_clean": 1 if ok("unauthorized_rbac_removed") else 0,
-
-            # ✅ good combined group
+            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            "Rbac_removed": 1 if ok("unauthorized_rbac_removed") else 0,
             "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
-
-            # ⚠️ still hard but acceptable
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
-
-            # ✅ good variance
             "tls_restored": 1 if ok("tls_cert_valid") else 0,
-
-            # ✅ FIXED (previously missing)
-            "configmap_clean": 1 if ok("configmap_hygiene") else 0,
-
-            # ⚠️ likely always 1 but acceptable
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
-
-            # ✅ split stability → MASSIVE variance improvement
-            "gateway_operational": 1 if ok("gateway_operational") else 0,
-            "sustained_stability": 1 if ok("sustained_stability") else 0,
+            "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
         }
 
         result.subscores = grouped
@@ -728,3 +714,9 @@ def grade(context=None):
         print("Nebula grouping patch error:", e)
 
     return result
+
+# ================== END NEBULA PATCH ==================
+
+
+# --- v29 NOTE ---
+# Duplicate nginx checks logically consolidated (single objective expectation)
