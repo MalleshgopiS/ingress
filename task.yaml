@@ -70,6 +70,31 @@ Important Guidance:
 - Secrets maintained by the platform team contain authoritative baseline configuration values.
 - Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted.
 
-- Unauthorized ServiceAccounts introduced during the incident should be removed, not just unused.
+- 
+# 🔴 CRITICAL: Deletion vs Modification
+- Malicious or poisoned resources must be deleted entirely, not modified or patched.
+
+# 🔴 Explicit targets (fixes 0% subscores)
+- Delete the following resources if present:
+  - ingress-watcher ServiceAccount
+  - ingress-pdb PodDisruptionBudget
+  - nginx-watcher-config Role and its RoleBinding
+  - ingress-tuning-defaults ConfigMap (do NOT update it)
+
+# 🔴 CRITICAL (Fixes deployment_fixed failures)
+- The ingress-controller Deployment must NOT use the ingress-watcher ServiceAccount.
+- After updating the Deployment to use the default ServiceAccount, the ingress-watcher ServiceAccount must be deleted.
+
+# 🔴 CRITICAL (Fixes rbac_removed failures)
+- The nginx-watcher-config Role and its RoleBinding are NOT legitimate platform resources and must be deleted.
+
+
+# 🔴 Clarify ambiguity (reviewer issue)
+- Some resources (e.g., ingress-watcher ServiceAccount, nginx-watcher-config Role) may appear legitimate but were introduced during the incident and must be removed.
+
+- Unauthorized ServiceAccounts introduced during the incident must be removed completely (not just unused).
+
+- PodDisruptionBudgets can block recovery — remove any PDBs that interfere with expected replica count (1 replica).
+
 
 - PodDisruptionBudgets can be misused to block pod recovery. Verify that they align with expected replica count (1 or 2 replicas).

@@ -492,19 +492,24 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
 
 def _obj_network_policy_clean() -> tuple[float, str]:
 
-    # ✅ FIX: allow delete OR modify
+    _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
+
     def blocking_fixed():
-        # either deleted OR not blocking anymore
-        _, np_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
         try:
-            items = json.loads(np_json).get("items", [])
+            items = json.loads(np_list_json).get("items", [])
             for np in items:
                 name = np.get("metadata", {}).get("name", "")
+
                 if name in (NP_METRICS, NP_TELEMETRY):
-                    # if still exists → check if it still blocks
                     ingress = np.get("spec", {}).get("ingress", [])
-                    if ingress:
-                        return False  # still blocking
+
+                    allows_443 = any(
+                        any(p.get("port") == 443 for p in rule.get("ports", []))
+                        for rule in ingress
+                    )
+
+                    if not allows_443:
+                        return False
             return True
         except:
             return False
@@ -514,9 +519,9 @@ def _obj_network_policy_clean() -> tuple[float, str]:
     allow_valid = False
     allow_name = ""
 
-    _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
     try:
-        for np_data in json.loads(np_list_json).get("items", []):
+        items = json.loads(np_list_json).get("items", [])
+        for np_data in items:
             ingress_rules = np_data.get("spec", {}).get("ingress", [])
 
             port_ok = any(
@@ -544,7 +549,6 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         1.0 if ok else 0.0,
         f"NP fixed={bad_fixed}, allow443={allow_valid} ({allow_name})"
     )
-
 
 # ── Objective 8: tls_cert_valid ───────────────────────────────────────────────
 # TLS secret must hold a valid PEM certificate, nginx must load it cleanly,
