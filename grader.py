@@ -680,6 +680,8 @@ def grade(_ = None) -> GradingResult:
 # Appended patch. Does NOT delete any original grader code.
 # Prevents recursion and converts outputs to grouped binary objectives.
 
+# ================== FINAL NEBULA FIX ==================
+
 __nebula_original_grade = globals().get("grade")
 
 def grade(context=None):
@@ -689,30 +691,33 @@ def grade(context=None):
 
         def ok(k):
             try:
-                return float(subs.get(k,0)) >= 1.0
+                return float(subs.get(k, 0)) >= 1.0
             except:
                 return False
 
         grouped = {
-            # Split attackers → variance ↑
-            "cronjobs_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            # ✅ split attackers → creates variance
+            "cronjobs_removed": 1 if ok("rogue_cronjobs_removed") else 0,
             "rbac_clean": 1 if ok("unauthorized_rbac_removed") else 0,
 
-            # Keep network grouped (good design)
+            # ✅ good combined group
             "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
 
-            # Keep deployment (still hard but OK)
+            # ⚠️ still hard but acceptable
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
 
-            # TLS independent → good variance
+            # ✅ good variance
             "tls_restored": 1 if ok("tls_cert_valid") else 0,
 
-            # Always 1 (fine, acts as baseline signal)
+            # ✅ FIXED (previously missing)
+            "configmap_clean": 1 if ok("configmap_hygiene") else 0,
+
+            # ⚠️ likely always 1 but acceptable
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
 
-            # 🔥 CRITICAL FIX: split stability
+            # ✅ split stability → MASSIVE variance improvement
             "gateway_operational": 1 if ok("gateway_operational") else 0,
-            "stability": 1 if ok("sustained_stability") else 0,
+            "sustained_stability": 1 if ok("sustained_stability") else 0,
         }
 
         result.subscores = grouped
