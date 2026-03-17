@@ -54,10 +54,15 @@ SIDECAR2_CONTAINER = "healthz-reporter"
 SIDECAR_SA         = "ingress-watcher"
 
 # ── Correct-state constants ────────────────────────────────────────────────────
+# Quota name: discoverable from platform-ops-baseline ConfigMap (quota_name key).
+# NP name: grader accepts ANY NP that allows port 443 to app=ingress-controller pods.
 CORRECT_QUOTA_NAME = "ingress-ops-quota"
-ALLOW_NP_NAME      = "ingress-allow-https"
+ALLOW_NP_NAME      = "ingress-allow-https"  # reference only — grader accepts any valid NP name
 
 # ── Exact nginx target values ──────────────────────────────────────────────────
+# ALL FOUR values are only in ops-system-params Secret (no annotations, no direct hints).
+# Decoy ConfigMap nginx-ops-defaults has authoritative-looking but WRONG values (1024/65s/10m/1d).
+# Agent must explore all secrets in ingress-system to discover ops-system-params.
 NGINX_WORKER_CONNS = "2048"
 NGINX_KEEPALIVE    = "90s"
 NGINX_SSL_CACHE    = "shared:SSL:5m"
@@ -133,18 +138,27 @@ def _networkpolicy_gone(name: str, ns: str) -> bool:
 # ── Exact nginx value checkers ─────────────────────────────────────────────────
 
 def _keepalive_timeout_ok(text: str) -> bool:
+    """Accepts only 90s — agent default 65s fails."""
     return bool(re.search(r"keepalive_timeout\s+90s;", text))
 
+
 def _ssl_cache_ok(text: str) -> bool:
+    """Accepts only shared:SSL:5m — agent default shared:SSL:10m fails."""
     return bool(re.search(r"ssl_session_cache\s+shared:SSL:5m;", text))
 
+
 def _ssl_timeout_ok(text: str) -> bool:
+    """Accepts only 8h — agent defaults 1d / 10m fail."""
     return bool(re.search(r"ssl_session_timeout\s+8h;", text))
 
+
 def _worker_connections_ok(text: str) -> bool:
+    """Accepts only 2048 — agent default 1024 fails."""
     return bool(re.search(r"worker_connections\s+2048;", text))
 
+
 def _nginx_exact(text: str) -> bool:
+    """All four exact values must be present simultaneously."""
     return (
         _worker_connections_ok(text) and
         _keepalive_timeout_ok(text) and
@@ -152,7 +166,12 @@ def _nginx_exact(text: str) -> bool:
         _ssl_timeout_ok(text)
     )
 
+
 # ── Objective 1: rogue_cronjobs_removed ───────────────────────────────────────
+# Checks the 4 directly accessible CronJobs plus 4 kube-system attackers.
+# kube-system CronJobs pass when either deleted directly OR when their RBAC
+# grant (log-monitor-ingress) is revoked from ingress-system.
+
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     accessible = [
         (ROGUE_CJ_NAME,      ROGUE_CJ_NS),
@@ -181,7 +200,9 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
 
 # ── Objective 2: unauthorized_rbac_removed ────────────────────────────────────
-# FIX: Award partial credit proportional to the number of RBAC items removed.
+# All 8 RBAC/PDB items must be removed. Includes PodDisruptionBudget (blocks
+# pod rescheduling) and nginx-watcher RBAC (used by the injected sidecars).
+
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
 
@@ -198,6 +219,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
+    # PodDisruptionBudget blocks pod rescheduling; must be removed like RBAC
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
     results[f"policy:{PDB_NAME}"] = code != 0 or not out.strip()
 
@@ -222,15 +244,23 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (code_cr != 0 or not out_cr.strip())
     )
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null")
+    code_rb, out_rb, _ = run(
+        f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null"
+    )
+    code_cr, out_cr, _ = run(
+        f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null"
+    )
     results["rbac:nginx-watcher-config-binding+nginx-watcher-config"] = (
         (code_rb != 0 or not out_rb.strip()) and
         (code_cr != 0 or not out_cr.strip())
     )
 
-    code_rb, out_rb, _ = run(f"kubectl get rolebinding ops-state-controller-binding -n {NS} 2>/dev/null")
-    code_cr, out_cr, _ = run(f"kubectl get role ops-state-controller -n {NS} 2>/dev/null")
+    code_rb, out_rb, _ = run(
+        f"kubectl get rolebinding ops-state-controller-binding -n {NS} 2>/dev/null"
+    )
+    code_cr, out_cr, _ = run(
+        f"kubectl get role ops-state-controller -n {NS} 2>/dev/null"
+    )
     results["rbac:ops-state-controller-binding+ops-state-controller"] = (
         (code_rb != 0 or not out_rb.strip()) and
         (code_cr != 0 or not out_cr.strip())
@@ -259,12 +289,17 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # Award partial credit based on fraction completed
-    score  = float(n) / len(results) if len(results) > 0 else 0.0
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} RBAC/PDB items removed — {detail}"
 
 
 # ── Objective 3: nginx_config_fixed ───────────────────────────────────────────
+# All four exact nginx values are ONLY in ops-system-params Secret:
+#   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
+#   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
+# Decoy ConfigMap nginx-ops-defaults looks authoritative but has wrong values (1024/65s/10m/1d).
+# Checked in both ConfigMap and live running pod.
+
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     cfg = _get_configmap()
     pod = _get_running_pod()
@@ -291,6 +326,11 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
 
 
 # ── Objective 4: gateway_operational ──────────────────────────────────────────
+# Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
+# upheld, nginx syntax valid, load test passes.
+# Exact nginx tuning values are NOT checked here; they are checked in
+# nginx_config_fixed (obj 3) and configmap_hygiene (obj 10) only.
+
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
 
@@ -301,10 +341,10 @@ def _obj_gateway_operational() -> tuple[float, str]:
             f"kubectl get deploy {DEPLOY} -n {NS} "
             "-o jsonpath='{.status.readyReplicas}'"
         )
-        if ready in ("1", "2"):
+        if ready == "1":
             break
         time.sleep(3)
-    results["deployment_ready"] = ready in ("1", "2")
+    results["deployment_ready"] = ready == "1"
 
     ip       = _get_cluster_ip()
     https_ok = False
@@ -366,6 +406,11 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
 
 # ── Objective 5: sustained_stability ──────────────────────────────────────────
+# 8 health probes spaced 60s apart (~7 minutes total) plus restart count check.
+# Any active attacker (remaining CronJob, sidecar, reconciler) will disrupt
+# the gateway during this window, causing this objective to fail.
+# Exact nginx values are NOT rechecked here — they are the domain of obj 3 and obj 10.
+
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
     if not ip:
@@ -394,6 +439,10 @@ def _obj_sustained_stability() -> tuple[float, str]:
 
 
 # ── Objective 6: resource_quota_clean ─────────────────────────────────────────
+# Part A: ops-resource-budget (pods=0) must be gone.
+# Part B: replacement quota with pods=10 must exist (any name accepted).
+# quota_name=ingress-ops-quota is discoverable from platform-ops-baseline ConfigMap.
+
 def _obj_resource_quota_clean() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get resourcequota {QUOTA_NAME} -n {NS} 2>/dev/null")
     bad_gone = code != 0 or not out.strip()
@@ -421,15 +470,25 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
 
 
 # ── Objective 7: network_policy_clean ─────────────────────────────────────────
-# FIX: Accepts NetworkPolicy modification. Any policy allowing TCP 443 is valid,
-# regardless of original names. Evaluates NP rules instead of strictly requiring deletion.
+# Part A: both blocking policies must be deleted.
+# Part B: at least one NP must exist that allows TCP port 443 to ingress-controller pods.
+# Any policy name is accepted — grader validates the rules, not the name.
+
 def _obj_network_policy_clean() -> tuple[float, str]:
+    bad_removed = (
+        _networkpolicy_gone(NP_METRICS,   NS) and
+        _networkpolicy_gone(NP_TELEMETRY, NS)
+    )
+
+    # Accept ANY NP (any name) that allows TCP 443 to app=ingress-controller pods
     allow_valid = False
     allow_name  = ""
     _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
     try:
         for np_data in json.loads(np_list_json).get("items", []):
             np_name = np_data.get("metadata", {}).get("name", "")
+            if np_name in (NP_METRICS, NP_TELEMETRY):
+                continue
             ingress_rules = np_data.get("spec", {}).get("ingress", [])
             port_ok = any(
                 any(
@@ -447,17 +506,27 @@ def _obj_network_policy_clean() -> tuple[float, str]:
     except Exception:
         pass
 
-    ok = allow_valid
+    ok = bad_removed and allow_valid
     return (
         1.0 if ok else 0.0,
-        f"NetworkPolicy: allow-443-policy={('✓' if allow_valid else '✗')}" + (f" ({allow_name})" if allow_name else "")
+        (
+            f"NetworkPolicy: blocking removed={('✓' if bad_removed else '✗')}, "
+            f"allow-443-policy={('✓' if allow_valid else '✗')}"
+            + (f" ({allow_name})" if allow_name else "")
+        ),
     )
 
 
 # ── Objective 8: tls_cert_valid ───────────────────────────────────────────────
+# TLS secret must hold a valid PEM certificate, nginx must load it cleanly,
+# and all CronJobs that corrupt the certificate must be neutralised.
+# Agents must: (1) detect that the cert was corrupted, (2) regenerate it via
+# openssl, and (3) kill every CronJob that would re-corrupt it.
+
 def _obj_tls_cert_valid() -> tuple[float, str]:
     results = {}
 
+    # Check the TLS secret contains a valid PEM certificate
     _, tls_b64, _ = run(
         f"kubectl get secret ingress-controller-tls -n {NS} "
         "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null"
@@ -473,6 +542,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
             pass
     results["cert_is_valid_pem"] = cert_valid
 
+    # nginx must load the TLS cert without errors
     pod = _get_running_pod()
     nginx_ok = False
     if pod:
@@ -480,8 +550,10 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
         nginx_ok = "syntax is ok" in (out + err)
     results["nginx_loads_cert"] = nginx_ok
 
+    # node-cert-validator (default ns) must be gone — directly accessible
     results["tls_attacker_node_cert_validator"] = _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS)
 
+    # kube-system TLS-corrupting CronJobs must be neutralised (delete or RBAC revoke)
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
     results["tls_attackers_kube_system"] = all([
         _cronjob_gone(KS_TLS_CJ_NAME,  KS_TLS_CJ_NS)  or ks_role_revoked,
@@ -496,7 +568,10 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
 
 # ── Objective 9: deployment_spec_integrity ────────────────────────────────────
-# FIX: Adjusted to accept replicas = 1 OR replicas = 2
+# All 6 deployment spec checks must pass: liveness probe, replicas, both
+# sidecar containers removed, sidecar ServiceAccount deleted, and deployment
+# SA reset to default.
+
 def _obj_deployment_spec_integrity() -> tuple[float, str]:
     checks = {}
 
@@ -510,7 +585,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.replicas}'"
     )
-    checks["replicas_valid"] = replicas.strip() in ("1", "2")
+    checks["replicas_at_one"] = replicas.strip() == "1"
 
     _, container_names, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
@@ -536,6 +611,9 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
+# Three checks: poisoned template ConfigMap deleted, config-template-sync
+# CronJob neutralised, and ingress-nginx-config contains all four exact values.
+
 def _obj_configmap_hygiene() -> tuple[float, str]:
     results = {}
 
@@ -570,7 +648,7 @@ OBJECTIVES = [
     ("deployment_spec_integrity", _obj_deployment_spec_integrity),
     ("configmap_hygiene",         _obj_configmap_hygiene),
 ]
-WEIGHT = round(1.0 / len(OBJECTIVES), 6)
+WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
 def grade(_ = None) -> GradingResult:
@@ -598,30 +676,36 @@ def grade(_ = None) -> GradingResult:
     )
 
 
+# ================== NEBULA FINAL SAFE PATCH ==================
+# Appended patch. Does NOT delete any original grader code.
+# Prevents recursion and converts outputs to grouped binary objectives.
+
 # ================== FINAL NEBULA FIX ==================
 
 __nebula_original_grade = globals().get("grade")
 
+
 def grade(context=None):
     result = __nebula_original_grade(context)
+
     try:
         subs = dict(result.subscores)
 
         def ok(k):
             try:
-                return float(subs.get(k,0)) >= 1.0
+                return float(subs.get(k, 0)) >= 1.0
             except:
                 return False
 
-        # FIX: "Rbac_removed" now passes exactly the float fraction to award partial credit
         grouped = {
-            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
-            "Rbac_removed": float(subs.get("unauthorized_rbac_removed", 0)),
-            "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
-            "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
-            "tls_restored": 1 if ok("tls_cert_valid") else 0,
-            "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
-            "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
+            "attackers_neutralized": ok("rogue_cronjobs_removed"),
+            "rbac_removed": ok("unauthorized_rbac_removed"),
+            "network_access_restored": ok("resource_quota_clean") and ok("network_policy_clean"),
+            "deployment_fixed": ok("deployment_spec_integrity"),
+            "tls_restored": ok("tls_cert_valid"),
+            "nginx_config_correct": ok("nginx_config_fixed"),
+            "configmap_hygiene": 1 if ok("configmap_hygiene") else 0,
+            "stable_gateway": ok("gateway_operational") and ok("sustained_stability"),
         }
 
         result.subscores = grouped
@@ -629,6 +713,8 @@ def grade(context=None):
         result.score = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
-        print("Nebula grouping patch error:", e)
+        print("Final grouping error:", e)
 
     return result
+
+# Duplicate nginx checks logically consolidated (single objective expectation)
