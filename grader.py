@@ -657,35 +657,48 @@ WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 __nebula_original_grade = globals().get("grade")
 
+
+
 def grade(context=None):
-    results = {}
+    try:
+        # --- Raw checks ---
+        raw = {}
 
-    results["cronjobs_clean"], _ = _obj_rogue_cronjobs_removed()
-    results["rbac_removed"], _ = _obj_unauthorized_rbac_removed()
-    results["network_restored"], _ = _obj_network_policy_clean()
-    results["deployment_fixed"], _ = _obj_deployment_spec_integrity()
-    results["tls_restored"], _ = _obj_tls_cert_valid()
-    results["nginx_correct"], _ = _obj_nginx_config_fixed()
-    results["stable_gateway"], _ = _obj_gateway_operational()
+        raw["rogue_cronjobs_removed"], _ = _obj_rogue_cronjobs_removed()
+        raw["unauthorized_rbac_removed"], _ = _obj_unauthorized_rbac_removed()
+        raw["resource_quota_clean"], _ = _obj_resource_quota_clean()
+        raw["network_policy_clean"], _ = _obj_network_policy_clean()
+        raw["deployment_spec_integrity"], _ = _obj_deployment_spec_integrity()
+        raw["tls_cert_valid"], _ = _obj_tls_cert_valid()
+        raw["nginx_config_fixed"], _ = _obj_nginx_config_fixed()
+        raw["gateway_operational"], _ = _obj_gateway_operational()
+        raw["sustained_stability"], _ = _obj_sustained_stability()
 
-    # ✅ CRITICAL: weights MUST match keys exactly
-    weights = {
-        "cronjobs_clean": 1,
-        "rbac_removed": 1,
-        "network_restored": 1,
-        "deployment_fixed": 1,
-        "tls_restored": 1,
-        "nginx_correct": 1,
-        "stable_gateway": 1,
-    }
+        def ok(k):
+            return raw.get(k, 0) == 1
 
-    final_score = sum(results[k] * weights[k] for k in weights) / sum(weights.values())
+        grouped = {
+            "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") and ok("unauthorized_rbac_removed")) else 0,
+            "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
+            "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
+            "tls_restored": 1 if ok("tls_cert_valid") else 0,  
+            "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
+            "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
+        }
 
-    return GradingResult(
-        score=final_score,
-        subscores=results,
-        weights=weights,
-        feedback=None
-    )
-# AUTO FIX: add weights to grading result
+        # --- ✅ NORMALIZED WEIGHTS ---
+        weights = {k: 1/len(grouped) for k in grouped}
 
+        # --- ✅ FINAL SCORE (MEAN = 1.0 WHEN ALL PASS) ---
+        final_score = sum(grouped[k] * weights[k] for k in grouped)
+
+        return GradingResult(
+            score=final_score,
+            subscores=grouped,
+            weights=weights,
+            feedback=None
+        )
+
+    except Exception as e:
+        print("Nebula grouping patch error:", e)
+        return GradingResult(score=0.0, subscores={}, weights={}, feedback=str(e))
