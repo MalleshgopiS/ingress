@@ -733,30 +733,28 @@ def grade(context=None):
     result = __nebula_original_grade(context)
 
     try:
-        subs = dict(result.subscores)
+        original = result.subscores.copy()   # ✅ FIX: preserve original
 
         def ok(k):
-            try:
-                return float(subs.get(k, 0)) >= 1.0
-            except:
-                return False
+            return float(original.get(k, 0)) >= 1.0
 
         grouped = {
-            "attackers_neutralized": ok("rogue_cronjobs_removed"),
-            "rbac_removed": ok("unauthorized_rbac_removed"),
+            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            "rbac_removed": 1 if ok("unauthorized_rbac_removed") else 0,
 
-            "network_access_restored":
-                ok("resource_quota_clean") and ok("network_policy_clean"),
+            "network_access_restored": 1 if (
+                ok("resource_quota_clean") and ok("network_policy_clean")
+            ) else 0,
 
-            "deployment_fixed": ok("deployment_spec_integrity"),
+            "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
 
-            "tls_restored": ok("tls_cert_valid"),
+            "tls_restored": 1 if ok("tls_cert_valid") else 0,
 
-            # ✅ FIX: only ONE nginx objective
-            "nginx_config_correct": ok("nginx_config_fixed"),
+            "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
 
-            "stable_gateway":
-                ok("gateway_operational") and ok("sustained_stability"),
+            "stable_gateway": 1 if (
+                ok("gateway_operational") and ok("sustained_stability")
+            ) else 0,
         }
 
         result.subscores = grouped
@@ -764,7 +762,7 @@ def grade(context=None):
         result.score = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
-        print("Final grouping error:", e)
+        print("Grouping error:", e)
 
     return result
 
