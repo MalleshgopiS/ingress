@@ -651,6 +651,31 @@ OBJECTIVES = [
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
+def grade(_ = None) -> GradingResult:
+    subscores, weights, feedback_parts = {}, {}, []
+
+    for name, fn in OBJECTIVES:
+        score, message = fn()
+        subscores[name] = score
+        weights[name]   = WEIGHT
+        status = "PASS" if score >= 1.0 else "FAIL"
+        feedback_parts.append(f"{status} {name}: {message}")
+
+    total        = sum(subscores[name] * WEIGHT for name in subscores)
+    passed_count = sum(1 for v in subscores.values() if v >= 1.0)
+    summary      = (
+        f"score={total:.4f} "
+        f"({passed_count}/{len(OBJECTIVES)} objectives passed)"
+    )
+
+    return GradingResult(
+        score=round(total, 6),
+        subscores=subscores,
+        weights=weights,
+        feedback=" | ".join([summary] + feedback_parts),
+    )
+
+
 # ================== NEBULA FINAL SAFE PATCH ==================
 # Appended patch. Does NOT delete any original grader code.
 # Prevents recursion and converts outputs to grouped binary objectives.
@@ -659,35 +684,36 @@ __nebula_original_grade = globals().get("grade")
 
 def grade(context=None):
     result = __nebula_original_grade(context)
-
     try:
         subs = dict(result.subscores)
 
         def ok(k):
             try:
-                return float(subs.get(k, 0)) >= 1.0
+                return float(subs.get(k,0)) >= 1.0
             except:
                 return False
 
-        # --- ✅ 7 OBJECTIVES ---
         grouped = {
-            "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") and ok("unauthorized_rbac_removed")) else 0,
-            "resource_quota_fixed": 1 if ok("resource_quota_clean") else 0,
-            "network_policy_fixed": 1 if ok("network_policy_clean") else 0,
+            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            "rbac removed": 1 if ok("unauthorized_rbac_removed") else 0,
+            "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
             "tls_restored": 1 if ok("tls_cert_valid") else 0,
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
             "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
         }
 
-        # --- ✅ NORMALIZED WEIGHTS ---
         result.subscores = grouped
         result.weights = {k: 1/len(grouped) for k in grouped}
-
-        # --- ✅ FINAL SCORE = MEAN ---
         result.score = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
         print("Nebula grouping patch error:", e)
 
     return result
+
+# ================== END NEBULA PATCH ==================
+
+
+# --- v29 NOTE ---
+# Duplicate nginx checks logically consolidated (single objective expectation)
