@@ -22,24 +22,16 @@ prompt: |
   and eliminate whatever is causing the recurring failures — the cluster may have been
   tampered with in multiple ways.
 
-  The cluster may contain malicious or misconfigured resources across multiple namespaces.
-  Perform a thorough investigation to identify all sources of instability.
+  
+  Note:
+  Some operational baseline configuration values used by the ingress platform
+  are stored in cluster configuration objects managed by the platform team.
+  Investigating ConfigMaps and Secrets in the ingress-system namespace may
+  reveal important recovery parameters.
 
-  Some operational baseline configuration values used by the ingress platform are stored
-  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
-  and Secrets in the ingress-system namespace may reveal important recovery parameters.
+  After removing malicious resources, proper governance resources such as
+  NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
 
-  However, not all configuration sources are authoritative — some may contain outdated,
-  default, or misleading values. Ensure that the correct source of truth is used.
-
-  Additionally, review the deployment specification carefully, including identity and
-  access configurations, as they may have been modified or injected with unintended settings.
-
-  Some resources may interfere with normal pod scheduling, scaling, or lifecycle behavior.
-  Ensure no such constraints are preventing stable operation.
-
-  After removing malicious or incorrect resources, restore proper governance resources such
-  as NetworkPolicies and ResourceQuotas for stable operation.
 
   [Verification]
   The incident is resolved when HTTPS traffic flows reliably through the ingress controller
