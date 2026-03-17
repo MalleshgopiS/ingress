@@ -651,29 +651,6 @@ OBJECTIVES = [
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
-def grade(_ = None) -> GradingResult:
-    subscores, weights, feedback_parts = {}, {}, []
-
-    for name, fn in OBJECTIVES:
-        score, message = fn()
-        subscores[name] = score
-        weights[name]   = WEIGHT
-        status = "PASS" if score >= 1.0 else "FAIL"
-        feedback_parts.append(f"{status} {name}: {message}")
-
-    total        = sum(subscores[name] * WEIGHT for name in subscores)
-    passed_count = sum(1 for v in subscores.values() if v >= 1.0)
-    summary      = (
-        f"score={total:.4f} "
-        f"({passed_count}/{len(OBJECTIVES)} objectives passed)"
-    )
-
-    return GradingResult(
-        score=round(total, 6),
-        subscores=subscores,
-        weights=weights,
-        feedback=" | ".join([summary] + feedback_parts),
-    )
 
 
 # ================== NEBULA FINAL SAFE PATCH ==================
@@ -716,3 +693,55 @@ def grade(context=None):
 
 # --- v29 NOTE ---
 # Duplicate nginx checks logically consolidated (single objective expectation)
+
+
+# ================= v31 FIXED GRADE =================
+def grade() -> GradingResult:
+    results = {}
+
+    results["rogue_cronjobs_removed"] = _obj_rogue_cronjobs_removed()
+    results["unauthorized_rbac_removed"] = _obj_unauthorized_rbac_removed()
+    results["nginx_config_fixed"] = _obj_nginx_config_fixed()
+    results["gateway_operational"] = _obj_gateway_operational()
+    results["sustained_stability"] = _obj_sustained_stability()
+    results["resource_quota_clean"] = _obj_resource_quota_clean()
+    results["network_policy_clean"] = _obj_network_policy_clean()
+    results["tls_cert_valid"] = _obj_tls_cert_valid()
+    results["deployment_spec_integrity"] = _obj_deployment_spec_integrity()
+    results["configmap_hygiene"] = _obj_configmap_hygiene()
+
+    attackers_neutralized = (
+        results["rogue_cronjobs_removed"][0] == 1.0 and
+        results["unauthorized_rbac_removed"][0] == 1.0
+    )
+
+    network_access_restored = (
+        results["resource_quota_clean"][0] == 1.0 and
+        results["network_policy_clean"][0] == 1.0
+    )
+
+    deployment_fixed = results["deployment_spec_integrity"][0] == 1.0
+    tls_restored = results["tls_cert_valid"][0] == 1.0
+
+    nginx_config_correct = (
+        results["nginx_config_fixed"][0] == 1.0 and
+        results["configmap_hygiene"][0] == 1.0
+    )
+
+    stable_gateway = (
+        results["gateway_operational"][0] == 1.0 and
+        results["sustained_stability"][0] == 1.0
+    )
+
+    subscores = {
+        "attackers_neutralized": 1.0 if attackers_neutralized else 0.0,
+        "network_access_restored": 1.0 if network_access_restored else 0.0,
+        "deployment_fixed": 1.0 if deployment_fixed else 0.0,
+        "tls_restored": 1.0 if tls_restored else 0.0,
+        "nginx_config_correct": 1.0 if nginx_config_correct else 0.0,
+        "stable_gateway": 1.0 if stable_gateway else 0.0,
+    }
+
+    final_score = sum(subscores.values()) / 6.0
+
+    return GradingResult(score=final_score, subscores=subscores, details={"raw_results": results})

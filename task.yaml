@@ -60,7 +60,7 @@ metadata:
     - incident-response
 
 
-# --- v29 explicit guidance additions ---
+# --- explicit guidance additions ---
 # Secrets are authoritative for platform parameters.
 # Remove any unauthorized ServiceAccounts if not required.
 # PodDisruptionBudgets can block recovery if misconfigured.
@@ -73,3 +73,8 @@ Important Guidance:
 - Unauthorized ServiceAccounts introduced during the incident should be removed, not just unused.
 
 - PodDisruptionBudgets can be misused to block pod recovery. Verify that they align with expected replica count.
+
+
+# clarifications
+- Malicious NetworkPolicies should be deleted and replaced, not modified.
+- Some attack vectors may originate from system namespaces (e.g., kube-system). Use RBAC revocation within allowed namespaces.
