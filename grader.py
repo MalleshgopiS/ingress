@@ -657,33 +657,35 @@ WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 __nebula_original_grade = globals().get("grade")
 
-
-def grade(context=None) -> GradingResult:
+def grade(context=None):
     results = {}
 
-    results["cronjobs"] = _obj_rogue_cronjobs_removed()
-    results["rbac"] = _obj_unauthorized_rbac_removed()
-    results["nginx"] = _obj_nginx_config_fixed()
-    results["gateway"] = _obj_gateway_operational()
-    results["stability"] = _obj_sustained_stability()
-    results["quota"] = _obj_resource_quota_clean()
-    results["network"] = _obj_network_policy_clean()
-    results["tls"] = _obj_tls_cert_valid()
-    results["deploy"] = _obj_deployment_spec_integrity()
-    results["configmap"] = _obj_configmap_hygiene()
+    results["cronjobs_clean"], _ = _obj_rogue_cronjobs_removed()
+    results["rbac_removed"], _ = _obj_unauthorized_rbac_removed()
+    results["network_restored"], _ = _obj_network_policy_clean()
+    results["deployment_fixed"], _ = _obj_deployment_spec_integrity()
+    results["tls_restored"], _ = _obj_tls_cert_valid()
+    results["nginx_correct"], _ = _obj_nginx_config_fixed()
+    results["stable_gateway"], _ = _obj_gateway_operational()
 
-    subscores = {
-        "cronjobs_clean": 1.0 if results["cronjobs"][0] == 1.0 else 0.0,
-        "rbac_removed": 1.0 if results["rbac"][0] == 1.0 else 0.0,
-        "network_restored": 1.0 if (results["quota"][0] == 1.0 and results["network"][0] == 1.0) else 0.0,
-        "deployment_fixed": 1.0 if results["deploy"][0] == 1.0 else 0.0,
-        "tls_restored": 1.0 if results["tls"][0] == 1.0 else 0.0,
-        "nginx_correct": 1.0 if (results["nginx"][0] == 1.0 and results["configmap"][0] == 1.0) else 0.0,
-        "stable_gateway": 1.0 if (results["gateway"][0] == 1.0 and results["stability"][0] == 1.0) else 0.0,
+    # ✅ CRITICAL: weights MUST match keys exactly
+    weights = {
+        "cronjobs_clean": 1,
+        "rbac_removed": 1,
+        "network_restored": 1,
+        "deployment_fixed": 1,
+        "tls_restored": 1,
+        "nginx_correct": 1,
+        "stable_gateway": 1,
     }
 
-    final_score = sum(subscores.values()) / len(subscores)
+    final_score = sum(results[k] * weights[k] for k in weights) / sum(weights.values())
 
-    return GradingResult(score=final_score, subscores=subscores, details={"raw_results": results})
-
+    return GradingResult(
+        score=final_score,
+        subscores=results,
+        weights=weights,
+        feedback=None
+    )
 # AUTO FIX: add weights to grading result
+
