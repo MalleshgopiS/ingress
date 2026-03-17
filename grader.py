@@ -657,48 +657,37 @@ WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 __nebula_original_grade = globals().get("grade")
 
-
-
 def grade(context=None):
-    try:
-        # --- Raw checks ---
-        raw = {}
+    result = __nebula_original_grade(context)
 
-        raw["rogue_cronjobs_removed"], _ = _obj_rogue_cronjobs_removed()
-        raw["unauthorized_rbac_removed"], _ = _obj_unauthorized_rbac_removed()
-        raw["resource_quota_clean"], _ = _obj_resource_quota_clean()
-        raw["network_policy_clean"], _ = _obj_network_policy_clean()
-        raw["deployment_spec_integrity"], _ = _obj_deployment_spec_integrity()
-        raw["tls_cert_valid"], _ = _obj_tls_cert_valid()
-        raw["nginx_config_fixed"], _ = _obj_nginx_config_fixed()
-        raw["gateway_operational"], _ = _obj_gateway_operational()
-        raw["sustained_stability"], _ = _obj_sustained_stability()
+    try:
+        subs = dict(result.subscores)
 
         def ok(k):
-            return raw.get(k, 0) == 1
+            try:
+                return float(subs.get(k, 0)) >= 1.0
+            except:
+                return False
 
+        # --- ✅ 7 OBJECTIVES ---
         grouped = {
             "attackers_neutralized": 1 if (ok("rogue_cronjobs_removed") and ok("unauthorized_rbac_removed")) else 0,
-            "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
+            "resource_quota_fixed": 1 if ok("resource_quota_clean") else 0,
+            "network_policy_fixed": 1 if ok("network_policy_clean") else 0,
             "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
-            "tls_restored": 1 if ok("tls_cert_valid") else 0,  
+            "tls_restored": 1 if ok("tls_cert_valid") else 0,
             "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
             "stable_gateway": 1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
         }
 
         # --- ✅ NORMALIZED WEIGHTS ---
-        weights = {k: 1/len(grouped) for k in grouped}
+        result.subscores = grouped
+        result.weights = {k: 1/len(grouped) for k in grouped}
 
-        # --- ✅ FINAL SCORE (MEAN = 1.0 WHEN ALL PASS) ---
-        final_score = sum(grouped[k] * weights[k] for k in grouped)
-
-        return GradingResult(
-            score=final_score,
-            subscores=grouped,
-            weights=weights,
-            feedback=None
-        )
+        # --- ✅ FINAL SCORE = MEAN ---
+        result.score = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
         print("Nebula grouping patch error:", e)
-        return GradingResult(score=0.0, subscores={}, weights={}, feedback=str(e))
+
+    return result
