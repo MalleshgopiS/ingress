@@ -585,7 +585,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.replicas}'"
     )
-    checks["replicas_valid"] = replicas.strip() == "1"
+    checks["replicas_at_one"] = replicas.strip() == "1"
 
     _, container_names, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
@@ -712,3 +712,7 @@ def grade(context=None):
     return result
 
 # ================== END NEBULA PATCH ==================
+
+
+# --- v29 NOTE ---
+# Duplicate nginx checks logically consolidated (single objective expectation)
