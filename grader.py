@@ -687,3 +687,6 @@ def grade(context=None) -> GradingResult:
     final_score = sum(subscores.values()) / len(subscores)
 
     return GradingResult(score=final_score, subscores=subscores, details={"raw_results": results})
+
+
+# AUTO FIX: add weights to grading result
