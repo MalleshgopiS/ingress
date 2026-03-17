@@ -35,13 +35,17 @@ prompt: |
   and eliminate whatever is causing the recurring failures — the cluster may have been
   tampered with in multiple ways.
 
-  Note:
-  Some operational baseline configuration values used by the ingress platform
-  are stored in cluster configuration objects managed by the platform team.
-  Investigating ConfigMaps and Secrets in the ingress-system namespace may
-  reveal important recovery parameters.
+  During investigation, you may need to examine workloads, scheduled jobs, RBAC permissions,
+  configuration sources, and networking controls across allowed namespaces.
 
-  After removing malicious resources, proper governance resources such as
+  Note:
+  Some operational baseline configuration values used by the ingress platform are stored
+  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
+  and Secrets in the ingress-system namespace may reveal important recovery parameters.
+  Some resources may appear valid but could have been introduced or modified during the
+  incident. Validate their necessity carefully before retaining them.
+
+  After removing malicious or conflicting resources, proper governance resources such as
   NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
 
   [Verification]
