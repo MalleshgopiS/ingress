@@ -64,3 +64,12 @@ metadata:
 # Secrets are authoritative for platform parameters.
 # Remove any unauthorized ServiceAccounts if not required.
 # PodDisruptionBudgets can block recovery if misconfigured.
+
+
+Important Guidance:
+- Secrets maintained by the platform team contain authoritative baseline configuration values.
+- Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted.
+
+- Unauthorized ServiceAccounts introduced during the incident should be removed, not just unused.
+
+- PodDisruptionBudgets can be misused to block pod recovery. Verify that they align with expected replica count.
