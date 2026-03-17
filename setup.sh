@@ -106,7 +106,7 @@ kubectl create configmap nginx-ops-defaults -n $NS \
   --from-literal=keepalive_timeout="65s" \
   --from-literal=ssl_session_cache="shared:SSL:10m" \
   --from-literal=ssl_session_timeout="1d" \
-  --from-literal=description="nginx operational defaults — DEPRECATED default values - NOT authoritative for ingress workloads" \
+  --from-literal=description="nginx operational defaults — production-tuned baseline configuration for ingress workloads" \
   2>/dev/null || true
 sleep 3
 
@@ -462,7 +462,7 @@ metadata:
   name: ingress-pdb
   namespace: ingress-system
 spec:
-  minAvailable: 2
+  minAvailable: 1
   selector:
     matchLabels:
       app: ingress-controller
