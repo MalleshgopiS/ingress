@@ -65,7 +65,13 @@ guidance:
   - "Secrets maintained by the platform team contain authoritative baseline configuration values."
   - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
   - "Malicious or poisoned resources should be removed entirely rather than modified."
-  - "Unauthorized ServiceAccounts introduced during the incident should be fully removed, not just unused."
+
+  - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
+
+  - "RBAC resources associated with unauthorized ServiceAccounts (such as nginx-watcher-config) may also need to be removed if they are not part of baseline platform configuration."
+
+  - "PodDisruptionBudgets blocking recovery should be deleted rather than modified."
+
   - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
-  - "PodDisruptionBudgets can block recovery if misconfigured — ensure they align with the expected replica count."
+
   - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
