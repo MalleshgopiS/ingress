@@ -1,7 +1,7 @@
 id: ingress-tls-memory-leak
-title: "Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes"
+title: Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes
 difficulty: expert
-category: "kubernetes / ingress / incident-response"
+category: kubernetes / ingress / incident-response
 
 metadata:
   category: kubernetes
@@ -35,17 +35,13 @@ prompt: |
   and eliminate whatever is causing the recurring failures — the cluster may have been
   tampered with in multiple ways.
 
-  During investigation, you may need to examine workloads, scheduled jobs, RBAC permissions,
-  configuration sources, and networking controls across allowed namespaces.
-
   Note:
-  Some operational baseline configuration values used by the ingress platform are stored
-  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
-  and Secrets in the ingress-system namespace may reveal important recovery parameters.
-  Some resources may appear valid but could have been introduced or modified during the
-  incident. Validate their necessity carefully before retaining them.
+  Some operational baseline configuration values used by the ingress platform
+  are stored in cluster configuration objects managed by the platform team.
+  Investigating ConfigMaps and Secrets in the ingress-system namespace may
+  reveal important recovery parameters.
 
-  After removing malicious or conflicting resources, proper governance resources such as
+  After removing malicious resources, proper governance resources such as
   NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
 
   [Verification]
@@ -53,19 +49,20 @@ prompt: |
   without manual intervention and the controller sustains stable operation without restarting.
 
 constraints:
-  - "Do not modify container images"
-  - "Do not change resource limits"
-  - "Do not add or remove services"
+  - Do not modify container images
+  - Do not change resource limits
+  - Do not add or remove services
 
 allowed_namespaces:
   - default
   - ingress-system
 
 guidance:
-  - "Secrets maintained by the platform team contain authoritative baseline configuration values."
-  - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
-  - "Malicious or poisoned resources should be removed entirely rather than modified."
-  - "Unauthorized ServiceAccounts introduced during the incident should be fully removed, not just unused."
-  - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
-  - "PodDisruptionBudgets can block recovery if misconfigured — ensure they align with the expected replica count."
-  - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
+  - Secrets maintained by the platform team contain authoritative baseline configuration values.
+  - Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted.
+  - Malicious or poisoned resources should be removed entirely rather than modified.
+  - Unauthorized ServiceAccounts introduced during the incident should be fully removed, not just unused.
+  - Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully.
+  - PodDisruptionBudgets can block recovery if misconfigured — ensure they align with the expected replica count.
+  - Restoring stable operation may require correcting both access controls and configuration sources across namespaces.
+  - Some system-level components may operate across namespaces via granted permissions; revoking access may be sufficient to neutralize them.
