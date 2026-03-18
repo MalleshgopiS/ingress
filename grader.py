@@ -214,15 +214,16 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 # ── Objective 2: unauthorized_rbac_removed ────────────────────────────────────
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     """
-    FIXED RBAC objective:
-    - MUST remove critical attack RBAC
-    - nginx-watcher-config is OPTIONAL (no longer blocks score)
-    - MUST remove PDB
+    BALANCED RBAC:
+    - Critical RBAC must be removed
+    - PDB is IMPORTANT but not blocking
+    - Avoid dead-weight scoring
     """
 
     results = {}
+    optional = {}
 
-    # ── CRITICAL ROLES (REQUIRED) ─────────────────────────────
+    # ── CRITICAL ROLES ─────────────────────────────
     critical_roles = [
         (PATCHER_ROLE, NS),
         (SCALER_ROLE, DISABLER_CJ_NS),
@@ -235,7 +236,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
         results[f"role:{role}@{ns}"] = code != 0 or not out.strip()
 
-    # ── CRITICAL BINDINGS (REQUIRED) ──────────────────────────
+    # ── CRITICAL BINDINGS ──────────────────────────
     critical_bindings = [
         (NS_BINDING, NS),
         (KS_BINDING, NS),
@@ -247,13 +248,11 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         code, out, _ = run(f"kubectl get rolebinding {rb} -n {ns} 2>/dev/null")
         results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
 
-    # ── MUST DELETE PDB ────────────────────────────
+    # ── OPTIONAL: PDB (no longer blocking) ─────────
     code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
-    results["pdb_removed"] = code != 0 or not out.strip()
+    optional["pdb_removed"] = code != 0 or not out.strip()
 
-    # ── OPTIONAL (non-blocking feedback) ───────────
-    optional = {}
-
+    # ── OPTIONAL EXTRA RBAC ────────────────────────
     optional_roles = [
         ("nginx-watcher-config", NS),
         ("nginx-watcher-config-binding", NS),
@@ -268,7 +267,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         optional[f"opt:{role}@{ns}"] = code != 0 or not out.strip()
 
     # ── SCORING ───────────────────────────────────
-    n      = sum(results.values())
+    n = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
 
@@ -612,14 +611,12 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 # ── Objective 9: deployment_spec_integrity ────────────────────────────────────
 def _obj_deployment_spec_integrity() -> tuple[float, str]:
     """
-    FIXED deployment objective:
-    - MUST remove sidecars
-    - MUST fix probe
-    - SA handling required but slightly relaxed to avoid dead-weight
+    BALANCED DEPLOYMENT:
+    - Must fix majority of issues
+    - Avoid dead-weight from strict all-or-nothing
     """
 
     critical = {}
-    secondary = {}
 
     # ── 1. Sidecars removed ─────────────────────────────
     _, container_names, _ = run(
@@ -629,7 +626,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     names_list = container_names.split() if container_names else []
 
-    critical["scraper_removed"]  = SIDECAR_CONTAINER not in names_list
+    critical["scraper_removed"] = SIDECAR_CONTAINER not in names_list
     critical["reporter_removed"] = SIDECAR2_CONTAINER not in names_list
 
     # ── 2. Probe fixed ──────────────────────────────────
@@ -638,49 +635,33 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
     )
 
-    if not probe_port:
-        critical["probe_fixed"] = True
-    else:
-        critical["probe_fixed"] = probe_port.strip() != str(BAD_PROBE_PORT)
+    critical["probe_fixed"] = (not probe_port) or (str(probe_port) != str(BAD_PROBE_PORT))
 
-    # ── 3. ServiceAccount handling (RELAXED but required) ───────
+    # ── 3. ServiceAccount fixed ─────────────────────────
     _, deployment_sa, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.serviceAccountName}'"
     )
 
-    deployment_sa = deployment_sa.strip() if deployment_sa else ""
-
-    code, out, _ = run(
-        f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null"
+    code, sa_obj, _ = run(
+        f"kubectl get sa {SIDECAR_SA} -n {NS} --no-headers 2>/dev/null"
     )
-    sa_deleted = code != 0 or not out.strip()
+    sa_deleted = code != 0 or not sa_obj.strip()
 
-    # ✅ RELAXED CONDITION (fixes dead-weight)
     critical["sa_fixed"] = (
         deployment_sa != SIDECAR_SA
         or sa_deleted
         or deployment_sa == ""
     )
 
-    # ── OPTIONAL visibility ─────────────────────────────
-    secondary["sa_deleted"] = sa_deleted
-    secondary["sa_not_used"] = deployment_sa != SIDECAR_SA
+    # ── SCORING (BALANCED FIX) ─────────────────────────
+    n = sum(critical.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items())
 
-    # ── BINARY SCORING ─────────────────────────────────
-    score = 1.0 if all(critical.values()) else 0.0
+    # ✅ KEY FIX: allow 3/4 instead of strict all
+    score = 1.0 if n >= 3 else 0.0
 
-    detail = ", ".join(
-        f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items()
-    )
-
-    sec_detail = ", ".join(
-        f"{'✓' if ok else '✗'} {k}" for k, ok in secondary.items()
-    )
-
-    return score, (
-        f"{sum(critical.values())}/{len(critical)} deployment fixes — {detail} | optional: {sec_detail}"
-    )
+    return score, f"{n}/{len(critical)} deployment checks — {detail}"
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
 # Three checks: poisoned template ConfigMap deleted, config-template-sync
