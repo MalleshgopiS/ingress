@@ -615,10 +615,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     FIXED deployment objective:
     - MUST remove sidecars
     - MUST fix probe
-    - MUST NOT use attacker SA
-    - ACCEPT either:
-        (A) SA not used
-        (B) SA deleted
+    - SA handling required but slightly relaxed to avoid dead-weight
     """
 
     critical = {}
@@ -641,14 +638,12 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
     )
 
-    # Handle missing probe safely
     if not probe_port:
-        # If probe removed entirely, that's also acceptable
         critical["probe_fixed"] = True
     else:
         critical["probe_fixed"] = probe_port.strip() != str(BAD_PROBE_PORT)
 
-    # ── 3. ServiceAccount handling (FIXED) ──────────────
+    # ── 3. ServiceAccount handling (RELAXED but required) ───────
     _, deployment_sa, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.serviceAccountName}'"
@@ -659,18 +654,21 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     code, out, _ = run(
         f"kubectl get serviceaccount {SIDECAR_SA} -n {NS} 2>/dev/null"
     )
-
     sa_deleted = code != 0 or not out.strip()
 
-    # ✅ FINAL FIX: flexible acceptance
-    critical["sa_fixed"] = _patched_sa_check(deployment_sa, sa_deleted)
+    # ✅ RELAXED CONDITION (fixes dead-weight)
+    critical["sa_fixed"] = (
+        deployment_sa != SIDECAR_SA
+        or sa_deleted
+        or deployment_sa == ""
+    )
 
-    # ── OPTIONAL checks (non-blocking, for debug visibility) ─────────────
+    # ── OPTIONAL visibility ─────────────────────────────
     secondary["sa_deleted"] = sa_deleted
     secondary["sa_not_used"] = deployment_sa != SIDECAR_SA
 
-    # ── SCORING ───────────────────────────────────────
-    n = sum(critical.values())
+    # ── BINARY SCORING ─────────────────────────────────
+    score = 1.0 if all(critical.values()) else 0.0
 
     detail = ", ".join(
         f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items()
@@ -680,10 +678,8 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         f"{'✓' if ok else '✗'} {k}" for k, ok in secondary.items()
     )
 
-    score = 1.0 if all(critical.values()) else 0.0
-
     return score, (
-        f"{n}/{len(critical)} deployment fixes — {detail} | optional: {sec_detail}"
+        f"{sum(critical.values())}/{len(critical)} deployment fixes — {detail} | optional: {sec_detail}"
     )
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
