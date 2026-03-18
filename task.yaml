@@ -56,18 +56,30 @@ constraints:
   - "Do not modify container images"
   - "Do not change resource limits"
   - "Do not add or remove services"
+  - "Do not change the number of replicas"
 
 allowed_namespaces:
   - default
   - ingress-system
 
 guidance:
+  # Base Platform Guidance
   - "Secrets maintained by the platform team contain authoritative baseline configuration values."
   - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
   - "Malicious or poisoned resources should be removed entirely rather than modified."
+  
+  # SA + Deployment Fixes
   - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
   - "Verify that workloads are not configured to use unauthorized ServiceAccounts introduced during the incident."
+  - "The ingress controller deployment may have been modified to use a non-default ServiceAccount that was not part of the original platform configuration."
+  - "Inspect the deployment specification for unexpected containers, probes, or ServiceAccount changes introduced during the incident."
+  
+  # RBAC / Control Plane
   - "RBAC resources associated with unauthorized ServiceAccounts (such as nginx-watcher-config) may also need to be removed if they are not part of baseline platform configuration."
-  - "PodDisruptionBudgets blocking recovery should be deleted rather than modified."
   - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
+  
+  # Recovery Blockers
+  - "PodDisruptionBudgets blocking recovery should be deleted rather than modified."
+  
+  # Final System Restoration
   - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
