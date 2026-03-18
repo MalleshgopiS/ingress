@@ -68,10 +68,11 @@ guidance:
   - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
   - "Malicious or poisoned resources should be removed entirely rather than modified."
   
-  # ServiceAccount + Deployment (CRITICAL FIX)
+  # ServiceAccount + Deployment (FINAL FIX)
   - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
   - "Verify that workloads are not configured to use unauthorized ServiceAccounts introduced during the incident."
   - "The ingress controller deployment may have been modified to use a non-default ServiceAccount that was not part of the original platform configuration."
+  - "The ingress controller typically runs using the default ServiceAccount unless explicitly configured otherwise."
   - "Inspect the deployment specification for unexpected containers, probes, or ServiceAccount changes introduced during the incident."
   - "After removing unauthorized ServiceAccounts, ensure the ingress controller deployment is not still configured to reference them."
   
