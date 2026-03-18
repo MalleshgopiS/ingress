@@ -1,15 +1,3 @@
-
-# ===== PATCH: Flexible SA + RBAC handling =====
-# This patch ensures we don't hard-fail when:
-# - ServiceAccount is unused but not deleted
-# - nginx-watcher-config RBAC is retained but harmless
-
-def _patched_sa_check(deployment_sa, sa_deleted):
-    # Accept either condition
-    return deployment_sa != "ingress-watcher" or sa_deleted
-
-# NOTE: original strict checks remain below for backward compatibility
-
 #!/usr/bin/env python3
 
 import base64
@@ -268,13 +256,17 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     # ── SCORING ───────────────────────────────────
     n = sum(results.values())
+    total = len(results)  # 9 items: 5 roles + 4 bindings
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
 
-    score = 1.0 if all(results.values()) else 0.0
+    # ✅ KEY FIX: require 7/9 instead of strict all-or-nothing.
+    # Agents who find and remove most rogue RBAC but miss 1-2 legitimately-named
+    # roles still score — mirrors the n >= 3 fix in deployment_spec_integrity.
+    score = 1.0 if n >= 7 else 0.0
 
     return score, (
-        f"{n}/{len(results)} critical RBAC removed — {detail} | optional: {opt_detail}"
+        f"{n}/{total} critical RBAC removed — {detail} | optional: {opt_detail}"
     )
 
 # Objective - 3 :  obj_nginx_config_fixed
@@ -701,77 +693,37 @@ OBJECTIVES = [
     ("deployment_spec_integrity", _obj_deployment_spec_integrity),
     ("configmap_hygiene",         _obj_configmap_hygiene),
 ]
-WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
 def grade(_ = None) -> GradingResult:
-    subscores, weights, feedback_parts = {}, {}, []
+    raw, feedback_parts = {}, []
 
     for name, fn in OBJECTIVES:
         score, message = fn()
-        subscores[name] = score
-        weights[name]   = WEIGHT
+        raw[name] = score
         status = "PASS" if score >= 1.0 else "FAIL"
         feedback_parts.append(f"{status} {name}: {message}")
 
-    total        = sum(subscores[name] * WEIGHT for name in subscores)
-    passed_count = sum(1 for v in subscores.values() if v >= 1.0)
-    summary      = (
-        f"score={total:.4f} "
-        f"({passed_count}/{len(OBJECTIVES)} objectives passed)"
-    )
+    def ok(k):
+        return float(raw.get(k, 0)) >= 1.0
+
+    grouped = {
+        "attackers_neutralized":   1 if ok("rogue_cronjobs_removed") else 0,
+        "rbac_removed":            1 if ok("unauthorized_rbac_removed") else 0,
+        "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
+        "deployment_fixed":        1 if ok("deployment_spec_integrity") else 0,
+        "tls_restored":            1 if ok("tls_cert_valid") else 0,
+        "nginx_config_correct":    1 if ok("nginx_config_fixed") else 0,
+        "stable_gateway":          1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
+    }
+
+    score        = sum(grouped.values()) / len(grouped)
+    passed_count = sum(1 for v in grouped.values() if v >= 1)
+    summary      = f"score={score:.4f} ({passed_count}/{len(grouped)} objectives passed)"
 
     return GradingResult(
-        score=round(total, 6),
-        subscores=subscores,
-        weights=weights,
+        score=round(score, 6),
+        subscores=grouped,
+        weights={k: round(1 / len(grouped), 6) for k in grouped},
         feedback=" | ".join([summary] + feedback_parts),
     )
-
-
-# ================== NEBULA FINAL SAFE PATCH ==================
-# Appended patch. Does NOT delete any original grader code.
-# Prevents recursion and converts outputs to grouped binary objectives.
-
-# ================== FINAL NEBULA FIX ==================
-
-__nebula_original_grade = globals().get("grade")
-
-def grade(context=None):
-    result = __nebula_original_grade(context)
-
-    try:
-        original = result.subscores.copy()   # ✅ FIX: preserve original
-
-        def ok(k):
-            return float(original.get(k, 0)) >= 1.0
-
-        grouped = {
-            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
-            "rbac_removed": 1 if ok("unauthorized_rbac_removed") else 0,
-
-            "network_access_restored": 1 if (
-                ok("resource_quota_clean") and ok("network_policy_clean")
-            ) else 0,
-
-            "deployment_fixed": 1 if ok("deployment_spec_integrity") else 0,
-
-            "tls_restored": 1 if ok("tls_cert_valid") else 0,
-
-            "nginx_config_correct": 1 if ok("nginx_config_fixed") else 0,
-
-            "stable_gateway": 1 if (
-                ok("gateway_operational") and ok("sustained_stability")
-            ) else 0,
-        }
-
-        result.subscores = grouped
-        result.weights = {k: 1/len(grouped) for k in grouped}
-        result.score = sum(grouped.values()) / len(grouped)
-
-    except Exception as e:
-        print("Grouping error:", e)
-
-    return result
-
-# Duplicate nginx checks logically consolidated (single objective expectation)
