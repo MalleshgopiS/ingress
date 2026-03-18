@@ -212,8 +212,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     # ── CRITICAL ROLES ─────────────────────────────
     critical_roles = [
-        # reduced strict set for variance
-
         (PATCHER_ROLE, NS),
         (SCALER_ROLE, DISABLER_CJ_NS),
         (KS_ROLE_NAME, NS),
@@ -221,8 +219,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (TLM_ROLE_NAME, NS),
 
         # 🔥 REVIEW FIX
-        # moved to deployment objective
-
+        ("nginx-watcher-config", NS),
     ]
 
     for role, ns in critical_roles:
@@ -400,7 +397,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
     results["resource_limits_unchanged"] = (
-        True  # baseline has no limits
+        not cpu_lim.strip() and not mem_lim.strip()
     )
 
     pod       = _get_running_pod()
