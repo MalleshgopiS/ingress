@@ -721,9 +721,17 @@ def grade(_ = None) -> GradingResult:
     passed_count = sum(1 for v in grouped.values() if v >= 1)
     summary      = f"score={score:.4f} ({passed_count}/{len(grouped)} objectives passed)"
 
+    # Build weights that sum to EXACTLY 1.0 — avoids floating-point drift
+    # (e.g. round(1/7,6)*7 = 0.999999, causing the platform to report 0.9999990…)
+    n          = len(grouped)
+    base_w     = round(1 / n, 6)
+    keys       = list(grouped.keys())
+    weights    = {k: base_w for k in keys}
+    weights[keys[-1]] = round(1.0 - base_w * (n - 1), 6)   # absorb rounding remainder
+
     return GradingResult(
         score=round(score, 6),
         subscores=grouped,
-        weights={k: round(1 / len(grouped), 6) for k in grouped},
+        weights=weights,
         feedback=" | ".join([summary] + feedback_parts),
     )

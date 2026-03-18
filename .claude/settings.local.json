@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \":*)",
+      "Bash(python3.exe -c \"n=7; base_w=round\\(1/n,6\\); keys=[''a'',''b'',''c'',''d'',''e'',''f'',''g'']; weights={k:base_w for k in keys}; weights[keys[-1]]=round\\(1.0-base_w*\\(n-1\\),6\\); print\\(''weights:'',list\\(weights.values\\(\\)\\)\\); print\\(''sum:'',sum\\(weights.values\\(\\)\\)\\); print\\(''all-pass score:'',sum\\(1*w for w in weights.values\\(\\)\\)\\)\")",
+      "Bash(python -c \"n=7; base_w=round\\(1/n,6\\); keys=[''a'',''b'',''c'',''d'',''e'',''f'',''g'']; weights={k:base_w for k in keys}; weights[keys[-1]]=round\\(1.0-base_w*\\(n-1\\),6\\); print\\(''weights:'',list\\(weights.values\\(\\)\\)\\); print\\(''sum:'',sum\\(weights.values\\(\\)\\)\\); print\\(''all-pass score:'',sum\\(1*w for w in weights.values\\(\\)\\)\\)\")"
+    ]
+  }
+}
