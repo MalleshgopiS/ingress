@@ -411,11 +411,11 @@ def _obj_gateway_operational() -> tuple[float, str]:
             _, body, _ = run(f"curl -k -s --max-time 3 https://{ip}")
             if "Ingress Controller Running" in body:
                 successes += 1
-    results["load_test_90pct"] = successes >= 19
+    results["load_test_90pct"] = successes >= 20
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if sum(results.values()) >= (len(results)-1) else 0.0
+    score = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
