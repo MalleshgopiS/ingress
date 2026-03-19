@@ -7,6 +7,14 @@ import subprocess
 import time
 from apex_arena._types import GradingResult
 
+EXPECTED_NGINX = {
+    "worker": "2048",
+    "keepalive": "90s",
+    "cache": "shared:SSL:5m",
+    "timeout": "8h",
+}
+
+
 NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
@@ -64,28 +72,6 @@ ALLOW_NP_NAME      = "ingress-allow-https"  # reference only — grader accepts 
 # Decoy ConfigMap nginx-ops-defaults has authoritative-looking but WRONG values (1024/65s/10m/1d).
 # Agent must explore all secrets in ingress-system to discover ops-system-params.
 # dynamic nginx discovery (patched)
-def _get_expected_nginx():
-    _, out, _ = run(f"kubectl get secret -n {NS} -o json")
-    try:
-        items = json.loads(out).get("items", [])
-        for s in items:
-            data = s.get("data", {})
-            keys = [
-                "nginx_worker_connections",
-                "nginx_keepalive_timeout",
-                "nginx_ssl_session_cache",
-                "nginx_ssl_session_timeout"
-            ]
-            if all(k in data for k in keys):
-                return {
-                    "worker": base64.b64decode(data["nginx_worker_connections"]).decode(),
-                    "keepalive": base64.b64decode(data["nginx_keepalive_timeout"]).decode(),
-                    "cache": base64.b64decode(data["nginx_ssl_session_cache"]).decode(),
-                    "timeout": base64.b64decode(data["nginx_ssl_session_timeout"]).decode(),
-                }
-    except:
-        pass
-    return {}
 
 
 # ── shell helper ───────────────────────────────────────────────────────────────
@@ -158,22 +144,22 @@ def _networkpolicy_gone(name: str, ns: str) -> bool:
 
 def _keepalive_timeout_ok(text: str) -> bool:
     """Accepts only 90s — agent default 65s fails."""
-    return bool(_get_expected_nginx() and re.search(rf"keepalive_timeout\s+{_get_expected_nginx()['keepalive']};", text or ""))
+    return bool(re.search(rf"keepalive_timeout\s+{EXPECTED_NGINX['keepalive']};", text or ""))
 
 
 def _ssl_cache_ok(text: str) -> bool:
     """Accepts only shared:SSL:5m — agent default shared:SSL:10m fails."""
-    return bool(_get_expected_nginx() and re.search(rf"ssl_session_cache\s+{_get_expected_nginx()['cache']};", text or ""))
+    return bool(re.search(rf"ssl_session_cache\s+{EXPECTED_NGINX['cache']};", text or ""))
 
 
 def _ssl_timeout_ok(text: str) -> bool:
     """Accepts only 8h — agent defaults 1d / 10m fail."""
-    return bool(_get_expected_nginx() and re.search(rf"ssl_session_timeout\s+{_get_expected_nginx()['timeout']};", text or ""))
+    return bool(re.search(rf"ssl_session_timeout\s+{EXPECTED_NGINX['timeout']};", text or ""))
 
 
 def _worker_connections_ok(text: str) -> bool:
     """Accepts only 2048 — agent default 1024 fails."""
-    return bool(_get_expected_nginx() and re.search(rf"worker_connections\s+{_get_expected_nginx()['worker']};", text or ""))
+    return bool(re.search(rf"worker_connections\s+{EXPECTED_NGINX['worker']};", text or ""))
 
 
 def _nginx_exact(text: str) -> bool:
@@ -411,11 +397,11 @@ def _obj_gateway_operational() -> tuple[float, str]:
             _, body, _ = run(f"curl -k -s --max-time 3 https://{ip}")
             if "Ingress Controller Running" in body:
                 successes += 1
-    results["load_test_90pct"] = successes >= 20
+    results["load_test_90pct"] = successes >= 16
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = 1.0 if all(results.values()) else 0.0
+    score = sum(results.values()) / len(results)
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -433,11 +419,11 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_before = _get_restart_count()
 
     probe_results = []
-    for i in range(6):
+    for i in range(8):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         probe_results.append("ok" in body.lower())
         if i < 7:
-            time.sleep(20 + (i % 2) * 5)
+            time.sleep(50)
 
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before

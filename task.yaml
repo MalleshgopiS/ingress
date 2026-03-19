@@ -3,54 +3,31 @@ title: "Ingress Controller Recurring HTTPS Gateway Failures with Inconsistent Re
 difficulty: expert
 category: "kubernetes / ingress / incident-response"
 
-metadata:
-  category: kubernetes
-  difficulty: expert
-  estimated_time: 4H
-  tags:
-    - kubernetes
-    - ingress
-    - nginx
-    - tls
-    - rbac
-    - networkpolicy
-    - incident-response
-
 prompt: |
-  [Context]
   You are operating on a Kubernetes cluster. The ingress controller is deployed in
   the ingress-system namespace.
 
-  [Incident]
-  Over the past several days, the platform edge gateway has exhibited recurring HTTPS
-  instability. Traffic intermittently fails, then temporarily recovers after manual
-  intervention, only to degrade again after some time.
+  The platform edge gateway has been experiencing recurring HTTPS instability.
+  Traffic intermittently fails and temporarily recovers after manual fixes, but
+  the issue keeps returning.
 
-  Prior responders confirmed that upstream services remain healthy and node-level
-  resources are not exhausted. However, repeated recovery attempts have not resulted
-  in a lasting fix.
+  Your goal is to restore a stable and self-sustaining HTTPS ingress system.
 
-  [Task]
-  Investigate the cluster and restore stable, self-sustaining HTTPS service through
-  the ingress controller. The system must remain stable over time without requiring
-  repeated manual intervention.
-
-  The current cluster state may not accurately reflect its intended configuration.
-  Multiple independent factors may be contributing to the observed behaviour, and
-  some may not be immediately visible from the ingress controller itself.
-
-  [Environment]
-  You may investigate resources across the allowed namespaces. Be aware that:
-  - Not all issues necessarily originate from the ingress-system namespace
-  - Some components may behave correctly in isolation but interact incorrectly over time
-  - Certain cluster resources may have been introduced or modified during the incident
-
-  [Verification]
-  The incident is considered resolved when HTTPS traffic flows reliably through the
-  ingress controller and remains stable over time without requiring manual restarts.
+  Important notes:
+  - Multiple cluster components may be interfering with system stability.
+  - Some configuration objects may contain outdated or misleading defaults.
+  - The correct operational configuration exists in the cluster but may not be
+    located in the most obvious place.
+  - Some automation may continuously revert your fixes if not handled properly.
+  
+  Success criteria:
+  - HTTPS traffic works reliably through the ingress controller
+  - System remains stable across repeated checks
+  - No recurring configuration corruption occurs
+  - You may investigate any namespace and resource necessary.
 
 guidance:
-  - "The observed behaviour may have more than one contributing cause."
-  - "Cluster state should not be assumed to be correct or complete."
-  - "Investigate both direct and indirect interactions between components."
-  - "Focus on restoring stable long-term behaviour, not just temporary recovery."
+  - Investigate both direct and indirect causes
+  - Identify which configuration sources are authoritative
+  - Ensure long-term stability, not temporary fixes
+  - Avoid relying on deprecated or default configuration values
