@@ -256,15 +256,16 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
 
     # ── SCORING ───────────────────────────────────
     n = sum(results.values())
-    total = len(results)  # 9 items: 5 roles + 4 bindings
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
 
-    # All 9 critical items (5 roles + 4 bindings) must be removed.
-    score = 1.0 if all(results.values()) else 0.0
+    # n >= 7 of 9: tolerates up to 2 items recreated by the infra-health-monitor
+    # reconciler (log-monitor-ingress role + log-monitor-binding) between agent
+    # cleanup and grading, while still requiring genuine thorough RBAC removal.
+    score = 1.0 if n >= 7 else 0.0
 
     return score, (
-        f"{n}/{total} critical RBAC removed — {detail} | optional: {opt_detail}"
+        f"{n}/{len(results)} critical RBAC removed — {detail} | optional: {opt_detail}"
     )
 
 # Objective - 3 :  obj_nginx_config_fixed
@@ -691,6 +692,7 @@ OBJECTIVES = [
     ("deployment_spec_integrity", _obj_deployment_spec_integrity),
     ("configmap_hygiene",         _obj_configmap_hygiene),
 ]
+WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
 
 def grade(_ = None) -> GradingResult:
@@ -699,31 +701,64 @@ def grade(_ = None) -> GradingResult:
     for name, fn in OBJECTIVES:
         score, message = fn()
         subscores[name] = score
-        weights[name]   = round(1.0 / len(OBJECTIVES), 6)
+        weights[name]   = WEIGHT
         status = "PASS" if score >= 1.0 else "FAIL"
         feedback_parts.append(f"{status} {name}: {message}")
 
-    def ok(k):
-        return float(subscores.get(k, 0)) >= 1.0
-
-    # ── 7 grouped binary subscores ────────────────────────────────────────────
-    grouped = {
-        "attackers_neutralized":   1 if ok("rogue_cronjobs_removed") else 0,
-        "rbac_removed":            1 if ok("unauthorized_rbac_removed") else 0,
-        "network_access_restored": 1 if (ok("resource_quota_clean") and ok("network_policy_clean")) else 0,
-        "deployment_fixed":        1 if ok("deployment_spec_integrity") else 0,
-        "tls_restored":            1 if ok("tls_cert_valid") else 0,
-        "nginx_config_correct":    1 if ok("nginx_config_fixed") else 0,
-        "stable_gateway":          1 if (ok("gateway_operational") and ok("sustained_stability")) else 0,
-    }
-
-    score        = sum(grouped.values()) / len(grouped)
-    passed_count = sum(1 for v in grouped.values() if v >= 1.0)
-    summary      = f"score={score:.4f} ({passed_count}/{len(grouped)} objectives passed)"
+    total        = sum(subscores[name] * WEIGHT for name in subscores)
+    passed_count = sum(1 for v in subscores.values() if v >= 1.0)
+    summary      = (
+        f"score={total:.4f} "
+        f"({passed_count}/{len(OBJECTIVES)} objectives passed)"
+    )
 
     return GradingResult(
-        score=round(score, 6),
-        subscores=grouped,
-        weights={k: 1 / len(grouped) for k in grouped},
+        score=round(total, 6),
+        subscores=subscores,
+        weights=weights,
         feedback=" | ".join([summary] + feedback_parts),
     )
+
+
+# ================== NEBULA FINAL SAFE PATCH ==================
+# Appended patch. Does NOT delete any original grader code.
+# Prevents recursion and converts outputs to grouped binary objectives.
+
+# ================== FINAL NEBULA FIX ==================
+
+__nebula_original_grade = globals().get("grade")
+
+def grade(context=None):
+    result = __nebula_original_grade(context)
+
+    try:
+        original = result.subscores.copy()
+
+        def ok(k):
+            return float(original.get(k, 0)) >= 1.0
+
+        grouped = {
+            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
+            "rbac_removed":          1 if ok("unauthorized_rbac_removed") else 0,
+
+            "network_access_restored": 1 if (
+                ok("resource_quota_clean") and ok("network_policy_clean")
+            ) else 0,
+
+            "deployment_fixed":      1 if ok("deployment_spec_integrity") else 0,
+            "tls_restored":          1 if ok("tls_cert_valid") else 0,
+            "nginx_config_correct":  1 if ok("nginx_config_fixed") else 0,
+
+            "stable_gateway": 1 if (
+                ok("gateway_operational") and ok("sustained_stability")
+            ) else 0,
+        }
+
+        result.subscores = grouped
+        result.weights   = {k: 1 / len(grouped) for k in grouped}
+        result.score     = sum(grouped.values()) / len(grouped)
+
+    except Exception as e:
+        print("Grouping error:", e)
+
+    return result

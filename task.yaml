@@ -67,7 +67,7 @@ guidance:
   - "Secrets maintained by the platform team contain authoritative baseline configuration values."
   - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
   - "Malicious or poisoned resources should be removed entirely rather than modified."
-
+  
   # ServiceAccount + Deployment (CRITICAL)
   - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
   - "Verify that workloads are not configured to use unauthorized ServiceAccounts introduced during the incident."
@@ -75,16 +75,23 @@ guidance:
   - "The ingress controller typically runs using the default ServiceAccount unless explicitly configured otherwise."
   - "Ensure the deployment does not continue referencing a removed or unauthorized ServiceAccount."
   - "Inspect the deployment specification for unexpected containers, probes, or ServiceAccount changes introduced during the incident."
-
-  # Deployment Probe Clarity
+  
+  # Deployment Probe Clarity (NEW FIX)
   - "The ingress controller serves HTTPS traffic on port 443 — verify that health probes target the correct port and path and are not misconfigured."
-
+  
   # RBAC / Control Plane
   - "RBAC resources associated with unauthorized ServiceAccounts (such as nginx-watcher-config) may also need to be removed if they are not part of baseline platform configuration."
   - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
-
-  # Recovery Blockers
+  
+  # Recovery Blockers (IMPROVED)
   - "Ensure all PodDisruptionBudgets that may block pod scheduling or recovery are identified and removed if unnecessary."
+  
+  # Governance Resource Restoration (CRITICAL)
+  - "After removing blocking ResourceQuotas, a replacement ResourceQuota must be created — the platform-ops-baseline ConfigMap in the ingress-system namespace contains the authoritative pod limit and quota name to use."
+  - "After removing blocking NetworkPolicies, a replacement NetworkPolicy that explicitly allows inbound traffic on port 443 to ingress-controller pods must be created — removing the blocking policies alone is not sufficient to restore network access."
+
+  # nginx Configuration Source
+  - "The ingress-nginx-config ConfigMap must reflect the exact tuning values from the authoritative platform Secret in ingress-system — ConfigMaps in this namespace may contain deprecated or incorrect defaults and should not be used as the source."
 
   # Final System Restoration
   - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
