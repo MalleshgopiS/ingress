@@ -66,9 +66,10 @@ allowed_namespaces:
   - kube-system
 
 guidance:
+  - "Operational baseline values may be stored in cluster configuration objects and should be discovered during investigation."
   # Investigation Approach
   - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
-  - "Platform Secrets in the ingress-system namespace contain authoritative baseline values; not all ConfigMaps in the namespace can be trusted as the source of truth."
+  - "
 
   # Deployment Integrity
   - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."
@@ -80,7 +81,7 @@ guidance:
   - "Removing a blocking access-control resource is not always sufficient — the platform may require a correctly configured replacement to maintain stable network access."
 
   # Configuration Source
-  - "Verify that ingress controller configuration reflects current platform values rather than deprecated defaults that may have been present before the incident."
+  -  "Some configuration sources may contain outdated or misleading values. Validate carefully."
 
   # Final Check
   - "Stable recovery requires that no remaining scheduled process can re-introduce failures after remediation is complete."

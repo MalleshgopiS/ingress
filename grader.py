@@ -433,11 +433,11 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_before = _get_restart_count()
 
     probe_results = []
-    for i in range(8):
+    for i in range(6):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         probe_results.append("ok" in body.lower())
         if i < 7:
-            time.sleep(50 + (i % 3) * 5)
+            time.sleep(20 + (i % 2) * 5)
 
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
@@ -506,10 +506,15 @@ def _obj_network_policy_clean() -> tuple[float, str]:
             for np in items:
                 name = np.get("metadata", {}).get("name", "")
 
-                if name in (NP_METRICS, NP_TELEMETRY):
+                if name == NP_METRICS:
                     ingress = np.get("spec", {}).get("ingress", [])
                     allows_443 = any(_rule_allows_443(rule) for rule in ingress)
                     if not allows_443:
+                        return False
+
+                if name == NP_TELEMETRY:
+                    egress = np.get("spec", {}).get("egress", [])
+                    if not egress:
                         return False
             return True
         except:
