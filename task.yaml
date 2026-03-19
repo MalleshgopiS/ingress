@@ -14,12 +14,22 @@ prompt: |
   Your task is to diagnose the full cause of the instability and restore the HTTPS
   gateway to a stable, self-sustaining operational state.
 
-  You may investigate any resource in the cluster.
+  You may investigate any resource in the cluster. The problem has multiple
+  interacting causes spanning several areas:
+
+  - Unauthorized workloads may be actively interfering with cluster state
+  - RBAC permissions may have been tampered with
+  - The ingress-controller Deployment may have been modified
+  - Scheduling or networking constraints may be blocking pod recovery
+  - nginx configuration values may be incorrect or getting overwritten
+  - TLS certificates may be invalid or getting corrupted
+  - Secondary ConfigMaps may be sourcing corrupted configuration
 
   Success criteria:
   - HTTPS traffic is served reliably
   - The system remains healthy without further intervention
 
 guidance:
-  - A fix that holds temporarily but then reverts is not a complete fix
+  - A fix that holds temporarily but then reverts is not a complete fix —
+    understand why it reverts before applying it
   - Ensure nothing remains that could re-compromise the system after you finish

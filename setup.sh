@@ -218,7 +218,7 @@ spec:
       serviceAccountName: ingress-watcher
       containers:
       - name: nginx
-        image: nginx:alpine
+        image: nginx:1.27-alpine
         imagePullPolicy: Never
         ports:
         - containerPort: 443
@@ -237,7 +237,7 @@ spec:
           mountPath: /etc/tls
           readOnly: true
       - name: nginx-metrics-scraper
-        image: bitnami/kubectl:latest
+        image: bitnami/kubectl:1.31
         imagePullPolicy: Never
         command:
         - /bin/sh
@@ -252,7 +252,7 @@ spec:
             sleep 60
           done
       - name: healthz-reporter
-        image: bitnami/kubectl:latest
+        image: bitnami/kubectl:1.31
         imagePullPolicy: Never
         command:
         - /bin/sh
@@ -367,7 +367,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: warmer
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -403,7 +403,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: exporter
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -463,7 +463,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: validator
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -669,7 +669,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: aggregator
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -702,7 +702,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: worker
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -738,7 +738,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: scraper
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -773,7 +773,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: forwarder
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -807,7 +807,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: collector
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -844,7 +844,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: flush
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -878,7 +878,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: sync
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
@@ -1029,7 +1029,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: monitor
-            image: bitnami/kubectl:latest
+            image: bitnami/kubectl:1.31
             imagePullPolicy: Never
             command:
             - /bin/sh
