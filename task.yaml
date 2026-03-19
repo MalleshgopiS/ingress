@@ -7,51 +7,19 @@ prompt: |
   You are operating on a Kubernetes cluster. The ingress controller is deployed in
   the ingress-system namespace.
 
-  The platform edge gateway has been experiencing recurring HTTPS instability.
-  Traffic intermittently fails and temporarily recovers after manual fixes, but
-  the issue keeps returning. A security review has confirmed the cluster is
-  actively compromised — applied fixes do not persist, suggesting ongoing
-  interference from within the cluster itself.
+  The platform HTTPS gateway has been experiencing persistent failures. Multiple
+  remediation attempts have been made but the system keeps returning to a degraded
+  state shortly after each fix. The root cause has not yet been identified.
 
-  Your task is to investigate the cluster thoroughly across all accessible
-  namespaces, identify all root causes of the instability, and fully remediate
-  them so the HTTPS gateway remains healthy without further manual intervention.
+  Your task is to diagnose the full cause of the instability and restore the HTTPS
+  gateway to a stable, self-sustaining operational state.
 
-  Known symptoms:
-  - HTTPS traffic is unreliable or fails entirely
-  - The nginx configuration reverts to broken values after being corrected
-  - TLS certificates periodically become invalid
-  - The ingress-controller deployment is frequently scaled to zero or restarted
-  - Cluster resources that are fixed sometimes revert within minutes
-  - Pod scheduling in ingress-system is blocked even after attempting fixes
-
-  Investigation scope:
-  - Inspect all namespaces for workloads that may be interfering with ingress-system
-  - Audit RBAC permissions in ingress-system for unauthorized access grants
-  - Review the ingress-controller Deployment configuration for tampering
-  - Check networking and scheduling constraints that may be blocking pod recovery
-  - Locate the authoritative nginx configuration values — they exist somewhere
-    in the cluster but may require careful inspection to find
-  - Verify the TLS secret contains a valid certificate
-
-  You may investigate any namespace and resource necessary. Investigate broadly
-  before making changes — the instability has multiple interacting root causes.
+  You may investigate any resource in the cluster.
 
   Success criteria:
-  - HTTPS traffic is served reliably and the gateway remains stable over time
-  - No unauthorized workloads or access grants remain active in the cluster
-  - The ingress-controller deployment runs with a correct, untampered configuration
-  - Scheduling and networking constraints allow pods to run and receive traffic
-  - nginx is configured with the correct authoritative values
-  - TLS certificate is valid
-  - The system sustains stability without manual intervention
+  - HTTPS traffic is served reliably
+  - The system remains healthy without further intervention
 
 guidance:
-  - Investigate before acting — understand why fixes are not persisting before
-    applying them, or they will be undone again
-  - Check all namespaces for resources that could be interfering with ingress-system
-  - Some configuration values have authoritative sources elsewhere in the cluster;
-    do not assume default or cached values are correct
-  - Ensure both immediate functionality and long-term stability — a fix that works
-    momentarily but reverts is not a complete fix
-  - Access controls matter: verify that no remaining permissions allow unauthorized actors to re-corrupt the cluster state after you finish
+  - A fix that holds temporarily but then reverts is not a complete fix
+  - Ensure nothing remains that could re-compromise the system after you finish
