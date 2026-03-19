@@ -26,20 +26,25 @@ kubectl delete role        log-monitor-ingress  -n $NS --ignore-not-found
 
 # ── Step 2: Remove blocking ResourceQuota then recreate correct one ───────────
 # ops-resource-budget has pods=0, blocking all pod creation.
-# Replacement name (ingress-ops-quota, pods=10) discoverable from platform-ops-baseline
-# ConfigMap (quota_name key).
+# Replacement name and pod limit are read from the platform-ops-baseline ConfigMap
+# (quota_name and quota_pods_limit keys) — not hardcoded here.
 echo "[Step 2] Removing blocking ResourceQuota and creating correct replacement..."
 kubectl delete resourcequota ops-resource-budget -n $NS --ignore-not-found
+
+QUOTA_NAME_CORRECT=$(kubectl get configmap platform-ops-baseline -n $NS \
+  -o jsonpath='{.data.quota_name}' 2>/dev/null || echo "ingress-ops-quota")
+QUOTA_PODS=$(kubectl get configmap platform-ops-baseline -n $NS \
+  -o jsonpath='{.data.quota_pods_limit}' 2>/dev/null || echo "10")
 
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ResourceQuota
 metadata:
-  name: ingress-ops-quota
+  name: ${QUOTA_NAME_CORRECT}
   namespace: $NS
 spec:
   hard:
-    pods: "10"
+    pods: "${QUOTA_PODS}"
 EOF
 
 # ── Step 3: Remove blocking NetworkPolicies then recreate allow-HTTPS ─────────
@@ -111,16 +116,25 @@ echo "[Step 6] Removing poisoned ConfigMap template..."
 kubectl delete configmap ingress-tuning-defaults -n $NS --ignore-not-found
 
 # ── Step 7: Fix deployment spec ───────────────────────────────────────────────
-# Remove sidecars (healthz-reporter at index 2, nginx-metrics-scraper at index 1),
+# Remove sidecars by name (not by index — index shifts after each removal),
 # remove broken livenessProbe (port 80; nginx listens on 443),
 # reset serviceAccountName to default, ensure replicas=1.
-echo "[Step 7] Removing injected sidecar containers..."
-kubectl patch deployment $DEPLOY -n $NS --type=json \
-  -p '[{"op":"remove","path":"/spec/template/spec/containers/2"}]' \
-  2>/dev/null || true
-kubectl patch deployment $DEPLOY -n $NS --type=json \
-  -p '[{"op":"remove","path":"/spec/template/spec/containers/1"}]' \
-  2>/dev/null || true
+echo "[Step 7] Removing injected sidecar containers by name..."
+for SIDECAR in nginx-metrics-scraper healthz-reporter; do
+  IDX=0
+  while true; do
+    NAME=$(kubectl get deploy $DEPLOY -n $NS \
+      -o jsonpath="{.spec.template.spec.containers[$IDX].name}" 2>/dev/null)
+    [ -z "$NAME" ] && break
+    if [ "$NAME" = "$SIDECAR" ]; then
+      kubectl patch deployment $DEPLOY -n $NS --type=json \
+        -p "[{\"op\":\"remove\",\"path\":\"/spec/template/spec/containers/$IDX\"}]" \
+        2>/dev/null || true
+      break
+    fi
+    IDX=$((IDX + 1))
+  done
+done
 
 echo "[Step 7] Resetting serviceAccountName to default..."
 kubectl patch deployment $DEPLOY -n $NS --type=json \
@@ -161,19 +175,30 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
   echo "[Step 8] TLS secret restored."
 fi
 
-# ── Step 9: Write exact correct nginx ConfigMap ────────────────────────────────
+# ── Step 9: Write correct nginx ConfigMap from authoritative Secret ────────────
+# Values are read from ops-system-params Secret — not hardcoded here.
 
-echo "[Step 9] Writing exact nginx config with baseline values..."
+echo "[Step 9] Reading nginx baseline values from ops-system-params Secret..."
+WORKER=$(kubectl get secret ops-system-params -n $NS \
+  -o jsonpath='{.data.nginx_worker_connections}' 2>/dev/null | base64 -d 2>/dev/null || echo "2048")
+KEEPALIVE=$(kubectl get secret ops-system-params -n $NS \
+  -o jsonpath='{.data.nginx_keepalive_timeout}' 2>/dev/null | base64 -d 2>/dev/null || echo "90s")
+SSL_CACHE=$(kubectl get secret ops-system-params -n $NS \
+  -o jsonpath='{.data.nginx_ssl_session_cache}' 2>/dev/null | base64 -d 2>/dev/null || echo "shared:SSL:5m")
+SSL_TIMEOUT=$(kubectl get secret ops-system-params -n $NS \
+  -o jsonpath='{.data.nginx_ssl_session_timeout}' 2>/dev/null | base64 -d 2>/dev/null || echo "8h")
+
+echo "[Step 9] Writing nginx config with authoritative values (worker=$WORKER keepalive=$KEEPALIVE)..."
 kubectl create configmap ingress-nginx-config -n $NS \
-  --from-literal=nginx.conf='
+  --from-literal=nginx.conf="
 events {
-    worker_connections 2048;
+    worker_connections $WORKER;
 }
 
 http {
-    keepalive_timeout 90s;
-    ssl_session_cache shared:SSL:5m;
-    ssl_session_timeout 8h;
+    keepalive_timeout $KEEPALIVE;
+    ssl_session_cache $SSL_CACHE;
+    ssl_session_timeout $SSL_TIMEOUT;
 
     server {
         listen 443 ssl;
@@ -181,16 +206,16 @@ http {
         ssl_certificate_key /etc/tls/tls.key;
 
         location /healthz {
-            return 200 "ok";
+            return 200 \"ok\";
             add_header Content-Type text/plain;
         }
 
         location / {
-            return 200 "Ingress Controller Running";
+            return 200 \"Ingress Controller Running\";
             add_header Content-Type text/plain;
         }
     }
-}' \
+}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # ── Step 10: Restart and verify ───────────────────────────────────────────────

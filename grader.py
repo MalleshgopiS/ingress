@@ -34,19 +34,12 @@ PATCHER_ROLE    = "config-sync-handler"
 SCALER_ROLE     = "resource-manager"
 NS_ROLE_NAME    = "ops-monitoring-reader"
 NS_BINDING      = "ops-monitoring-binding"
-PDB_NAME        = "ingress-pdb"
 KS_ROLE_NAME    = "log-monitor-ingress"
 KS_BINDING      = "log-monitor-binding"
 AUDIT_ROLE_NAME  = "audit-log-reader"
 AUDIT_BINDING    = "audit-log-binding"
 TLM_ROLE_NAME    = "telemetry-stream-handler"
 TLM_BINDING      = "telemetry-stream-binding"
-IB_ROLE_NAME     = "infra-bridge-controller"
-IB_BINDING       = "infra-bridge-binding"
-EH_ROLE_NAME     = "event-handler-rbac"
-EH_BINDING       = "event-handler-binding"
-MA_ROLE_NAME     = "metrics-aggregator"
-MA_BINDING       = "metrics-aggregator-binding"
 
 # ── Trap / sidecar constants ───────────────────────────────────────────────────
 QUOTA_NAME         = "ops-resource-budget"
@@ -248,6 +241,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (PATCHER_ROLE, NS),
         (SCALER_ROLE, DISABLER_CJ_NS),
         (KS_ROLE_NAME, NS),
+        (NS_ROLE_NAME, NS),
         (AUDIT_ROLE_NAME, NS),
         (TLM_ROLE_NAME, NS),
         # ops-state-controller grants infra-health-monitor (the reconciler) the ability
