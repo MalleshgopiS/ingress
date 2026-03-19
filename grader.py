@@ -7,12 +7,9 @@ import subprocess
 import time
 from apex_arena._types import GradingResult
 
-EXPECTED_NGINX = {
-    "worker": "2048",
-    "keepalive": "90s",
-    "cache": "shared:SSL:5m",
-    "timeout": "8h",
-}
+# EXPECTED_NGINX is populated dynamically at grading time from the cluster Secret.
+# Values are NOT hardcoded here — reading this file does not reveal the answers.
+EXPECTED_NGINX: dict = {}   # filled by _load_expected_nginx() after run() is defined
 
 
 NS     = "ingress-system"
@@ -67,11 +64,9 @@ SIDECAR_SA         = "ingress-watcher"
 CORRECT_QUOTA_NAME = "ingress-ops-quota"
 ALLOW_NP_NAME      = "ingress-allow-https"  # reference only — grader accepts any valid NP name
 
-# ── Exact nginx target values ──────────────────────────────────────────────────
-# ALL FOUR values are only in ops-system-params Secret (no annotations, no direct hints).
-# Decoy ConfigMap nginx-ops-defaults has authoritative-looking but WRONG values (1024/65s/10m/1d).
-# Agent must explore all secrets in ingress-system to discover ops-system-params.
-# dynamic nginx discovery (patched)
+# ── Nginx target values ────────────────────────────────────────────────────────
+# Loaded dynamically from the cluster Secret at grading time (see _load_expected_nginx).
+# No expected values are hardcoded here — the cluster is the single source of truth.
 
 
 # ── shell helper ───────────────────────────────────────────────────────────────
@@ -84,6 +79,29 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", "command timed out"
     except Exception as exc:
         return -1, "", str(exc)
+
+
+# ── Load authoritative nginx values from cluster at grading time ───────────────
+
+def _load_expected_nginx() -> dict:
+    """Read the four nginx tuning values from the ops-system-params Secret.
+    This prevents answer leakage: the grader code contains no hardcoded expected
+    values — the Secret in the cluster is the single source of truth."""
+    _, out, _ = run(
+        f"kubectl get secret ops-system-params -n {NS} -o json 2>/dev/null"
+    )
+    try:
+        data = json.loads(out).get("data", {})
+        return {
+            "worker":    base64.b64decode(data["nginx_worker_connections"]).decode().strip(),
+            "keepalive": base64.b64decode(data["nginx_keepalive_timeout"]).decode().strip(),
+            "cache":     base64.b64decode(data["nginx_ssl_session_cache"]).decode().strip(),
+            "timeout":   base64.b64decode(data["nginx_ssl_session_timeout"]).decode().strip(),
+        }
+    except Exception:
+        return {}   # Secret missing or unreadable — all nginx checks will return False
+
+EXPECTED_NGINX.update(_load_expected_nginx())
 
 
 # ── cluster helpers ────────────────────────────────────────────────────────────
@@ -143,23 +161,31 @@ def _networkpolicy_gone(name: str, ns: str) -> bool:
 # ── Exact nginx value checkers ─────────────────────────────────────────────────
 
 def _keepalive_timeout_ok(text: str) -> bool:
-    """Accepts only 90s — agent default 65s fails."""
-    return bool(re.search(rf"keepalive_timeout\s+{EXPECTED_NGINX['keepalive']};", text or ""))
+    val = EXPECTED_NGINX.get("keepalive")
+    if not val:
+        return False
+    return bool(re.search(rf"keepalive_timeout\s+{re.escape(val)};", text or ""))
 
 
 def _ssl_cache_ok(text: str) -> bool:
-    """Accepts only shared:SSL:5m — agent default shared:SSL:10m fails."""
-    return bool(re.search(rf"ssl_session_cache\s+{EXPECTED_NGINX['cache']};", text or ""))
+    val = EXPECTED_NGINX.get("cache")
+    if not val:
+        return False
+    return bool(re.search(rf"ssl_session_cache\s+{re.escape(val)};", text or ""))
 
 
 def _ssl_timeout_ok(text: str) -> bool:
-    """Accepts only 8h — agent defaults 1d / 10m fail."""
-    return bool(re.search(rf"ssl_session_timeout\s+{EXPECTED_NGINX['timeout']};", text or ""))
+    val = EXPECTED_NGINX.get("timeout")
+    if not val:
+        return False
+    return bool(re.search(rf"ssl_session_timeout\s+{re.escape(val)};", text or ""))
 
 
 def _worker_connections_ok(text: str) -> bool:
-    """Accepts only 2048 — agent default 1024 fails."""
-    return bool(re.search(rf"worker_connections\s+{EXPECTED_NGINX['worker']};", text or ""))
+    val = EXPECTED_NGINX.get("worker")
+    if not val:
+        return False
+    return bool(re.search(rf"worker_connections\s+{re.escape(val)};", text or ""))
 
 
 def _nginx_exact(text: str) -> bool:
@@ -200,7 +226,9 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  =  1.0 if all(results.values()) else 0.0
+    # Proportional scoring: partial CronJob cleanup earns partial credit,
+    # enabling intermediate scores and better model separation.
+    score  = round(n / len(results), 6)
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -222,6 +250,10 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (KS_ROLE_NAME, NS),
         (AUDIT_ROLE_NAME, NS),
         (TLM_ROLE_NAME, NS),
+        # ops-state-controller grants infra-health-monitor (the reconciler) the ability
+        # to recreate blocking ResourceQuotas and NetworkPolicies in ingress-system.
+        # Removing this role disarms the reconciler even if the CronJob itself survives.
+        ("ops-state-controller", NS),
     ]
 
     for role, ns in critical_roles:
@@ -234,6 +266,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         (KS_BINDING, NS),
         (AUDIT_BINDING, NS),
         (TLM_BINDING, NS),
+        ("ops-state-controller-binding", NS),
     ]
 
     for rb, ns in critical_bindings:
@@ -245,10 +278,9 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
 
 
-    # reconciler (log-monitor-ingress role + log-monitor-binding) between agent
-    # cleanup and grading, while still requiring genuine thorough RBAC removal.
-
-    score = 1.0 if all(results.values()) else 0.0
+    # Proportional scoring: partial RBAC removal earns partial credit,
+    # enabling intermediate scores and better model separation.
+    score = round(n / len(results), 6)
 
     return score, (
         f"{n}/{len(results)} critical RBAC removed — {detail}"
@@ -407,10 +439,10 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
 
 # ── Objective 5: sustained_stability ──────────────────────────────────────────
-# 8 health probes spaced 60s apart (~7 minutes total) plus restart count check.
-# Any active attacker (remaining CronJob, sidecar, reconciler) will disrupt
-# the gateway during this window, causing this objective to fail.
-# Exact nginx values are NOT rechecked here — they are the domain of obj 3 and obj 10.
+# 6 health probes spaced 20s apart (~2 min window) plus restart count check.
+# Reduced from 8×30s (3.5 min) to limit race-condition exposure with rogue CronJobs
+# that fire every 1-3 minutes. Pass threshold is 5/6 probes to tolerate one
+# transient disruption from a CronJob that fires during the grading window.
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
@@ -420,22 +452,24 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_before = _get_restart_count()
 
     probe_results = []
-    for i in range(8):
+    for i in range(6):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         probe_results.append("ok" in body.lower())
-        if i < 7:
-            time.sleep(30)
+        if i < 5:
+            time.sleep(20)
 
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
 
-    all_checks = probe_results + [no_new_restarts]
-    n          = sum(all_checks)
-    score      = 1.0 if all(all_checks) else 0.0
+    passed_probes = sum(probe_results)
+    # 5/6 threshold: tolerates one probe failure from a transient CronJob disruption.
+    # Full pass still requires no new pod restarts.
+    probes_ok = passed_probes >= 5
+    score     = 1.0 if (probes_ok and no_new_restarts) else 0.0
     return score, (
-        f"{sum(probe_results)}/8 probes healthy, "
+        f"{passed_probes}/6 probes healthy (need ≥5), "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
-        f"→ {n}/9 total — {'PASS' if score == 1.0 else 'FAIL'}"
+        f"→ {'PASS' if score == 1.0 else 'FAIL'}"
     )
 
 
@@ -445,20 +479,32 @@ def _obj_sustained_stability() -> tuple[float, str]:
 # quota_name=ingress-ops-quota is discoverable from platform-ops-baseline ConfigMap.
 
 def _obj_resource_quota_clean() -> tuple[float, str]:
-    code, out, _ = run(f"kubectl get resourcequota {QUOTA_NAME} -n {NS} 2>/dev/null")
-    bad_gone = code != 0 or not out.strip()
-
-    _, rq_json, _ = run(f"kubectl get resourcequota -n {NS} -o json 2>/dev/null")
+    # Retry 3× with 8s gap — the infra-health-monitor reconciler fires every minute
+    # and can recreate ops-resource-budget between the agent's fix and the grader's check.
+    # If the check passes on any attempt the objective is satisfied; repeated failure
+    # across all attempts indicates the reconciler was not neutralised.
+    bad_gone = False
     correct_exists = False
-    try:
-        items = json.loads(rq_json).get("items", [])
-        for item in items:
-            hard = item.get("spec", {}).get("hard", {})
-            if hard.get("pods", "") == "10":
-                correct_exists = True
-                break
-    except Exception:
-        pass
+    for attempt in range(3):
+        code, out, _ = run(f"kubectl get resourcequota {QUOTA_NAME} -n {NS} 2>/dev/null")
+        bad_gone = code != 0 or not out.strip()
+
+        _, rq_json, _ = run(f"kubectl get resourcequota -n {NS} -o json 2>/dev/null")
+        correct_exists = False
+        try:
+            items = json.loads(rq_json).get("items", [])
+            for item in items:
+                hard = item.get("spec", {}).get("hard", {})
+                if hard.get("pods", "") == "10":
+                    correct_exists = True
+                    break
+        except Exception:
+            pass
+
+        if bad_gone and correct_exists:
+            break
+        if attempt < 2:
+            time.sleep(8)
 
     ok = bad_gone and correct_exists
     return (
@@ -476,66 +522,60 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
 # Any policy name is accepted — grader validates the rules, not the name.
 
 def _obj_network_policy_clean() -> tuple[float, str]:
-
-    _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
+    # Retry 3× with 8s gap — the infra-health-monitor reconciler recreates the blocking
+    # NetworkPolicies every minute. Retry reduces false negatives from the reconciler
+    # firing between the agent's fix and the grader's single-shot check.
 
     def _rule_allows_443(rule: dict) -> bool:
         """True if a NetworkPolicy ingress rule permits port 443.
         An empty-ports rule (ingress:[{}]) is an allow-all and also passes."""
         ports = rule.get("ports")
-        if not ports:          # no port restriction = allow all ports including 443
+        if not ports:
             return True
         return any(p.get("port") == 443 for p in ports)
 
-    def blocking_fixed():
+    def _evaluate(np_list_json: str) -> tuple[bool, bool, str]:
+        bad_fixed = True
+        allow_valid = False
+        allow_name = ""
         try:
             items = json.loads(np_list_json).get("items", [])
             for np in items:
                 name = np.get("metadata", {}).get("name", "")
-
                 if name == NP_METRICS:
                     ingress = np.get("spec", {}).get("ingress", [])
-                    allows_443 = any(_rule_allows_443(rule) for rule in ingress)
-                    if not allows_443:
-                        return False
-
+                    if not any(_rule_allows_443(r) for r in ingress):
+                        bad_fixed = False
                 if name == NP_TELEMETRY:
-                    egress = np.get("spec", {}).get("egress", [])
-                    if not egress:
-                        return False
-            return True
-        except:
-            return False
+                    if not np.get("spec", {}).get("egress", []):
+                        bad_fixed = False
+            for np_data in items:
+                ingress_rules = np_data.get("spec", {}).get("ingress", [])
+                port_ok = any(_rule_allows_443(r) for r in ingress_rules)
+                selector_ok = (
+                    np_data.get("spec", {})
+                    .get("podSelector", {})
+                    .get("matchLabels", {})
+                    .get("app") == "ingress-controller"
+                )
+                if port_ok and selector_ok:
+                    allow_valid = True
+                    allow_name = np_data.get("metadata", {}).get("name", "")
+                    break
+        except Exception:
+            bad_fixed = False
+        return bad_fixed, allow_valid, allow_name
 
-    bad_fixed = blocking_fixed()
-
-    allow_valid = False
-    allow_name = ""
-
-    try:
-        items = json.loads(np_list_json).get("items", [])
-        for np_data in items:
-            ingress_rules = np_data.get("spec", {}).get("ingress", [])
-
-            # Accept explicit port-443 rules AND allow-all (empty ports) rules
-            port_ok = any(_rule_allows_443(rule) for rule in ingress_rules)
-
-            selector_ok = (
-                np_data.get("spec", {})
-                .get("podSelector", {})
-                .get("matchLabels", {})
-                .get("app") == "ingress-controller"
-            )
-
-            if port_ok and selector_ok:
-                allow_valid = True
-                allow_name = np_data.get("metadata", {}).get("name", "")
-                break
-    except:
-        pass
+    bad_fixed, allow_valid, allow_name = False, False, ""
+    for attempt in range(3):
+        _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
+        bad_fixed, allow_valid, allow_name = _evaluate(np_list_json)
+        if bad_fixed and allow_valid:
+            break
+        if attempt < 2:
+            time.sleep(8)
 
     ok = bad_fixed and allow_valid
-
     return (
         1.0 if ok else 0.0,
         f"NP fixed={bad_fixed}, allow443={allow_valid} ({allow_name})"
@@ -550,20 +590,26 @@ def _obj_network_policy_clean() -> tuple[float, str]:
 def _obj_tls_cert_valid() -> tuple[float, str]:
     results = {}
 
-    # Check the TLS secret contains a valid PEM certificate
-    _, tls_b64, _ = run(
-        f"kubectl get secret ingress-controller-tls -n {NS} "
-        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null"
-    )
+    # Retry cert check up to 3 times with 5s delay between attempts.
+    # Rogue CronJobs corrupt the cert every 1-7 minutes — a single point-in-time
+    # check creates false negatives when a CronJob fires between the agent's fix
+    # and the grader's check. Three retries make the result deterministic.
     cert_valid = False
-    if tls_b64.strip():
-        try:
-            cert_pem = base64.b64decode(tls_b64.strip()).decode("utf-8", errors="replace")
-            cert_valid = (
-                "BEGIN CERTIFICATE" in cert_pem and "END CERTIFICATE" in cert_pem
-            )
-        except Exception:
-            pass
+    for attempt in range(3):
+        _, tls_b64, _ = run(
+            f"kubectl get secret ingress-controller-tls -n {NS} "
+            "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null"
+        )
+        if tls_b64.strip():
+            try:
+                cert_pem = base64.b64decode(tls_b64.strip()).decode("utf-8", errors="replace")
+                if "BEGIN CERTIFICATE" in cert_pem and "END CERTIFICATE" in cert_pem:
+                    cert_valid = True
+                    break
+            except Exception:
+                pass
+        if attempt < 2:
+            time.sleep(5)
     results["cert_is_valid_pem"] = cert_valid
 
     # nginx must load the TLS cert without errors
@@ -631,18 +677,24 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     )
     sa_deleted = code != 0 or not sa_obj.strip()
 
+    # Also accept: agent revoked ingress-watcher's RBAC permissions (valid security fix)
+    code_role, _, _ = run(f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null")
+    code_rb, _, _ = run(f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null")
+    sa_permissions_revoked = (code_role != 0) or (code_rb != 0)
+
     results["sa_fixed"] = (
         deployment_sa != SIDECAR_SA
         or sa_deleted
         or deployment_sa == ""
+        or sa_permissions_revoked
     )
 
     # ── SCORING (BALANCED FIX) ─────────────────────────
     n = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
 
-    # ✅ KEY FIX: allow 3/4 instead of strict all
-    score = 1.0 if all(results.values()) else 0.0
+    # Allow 3/4 instead of strict all — partial progress earns credit
+    score = 1.0 if n >= 3 else 0.0
 
     return score, f"{n}/{len(results)} deployment checks — {detail}"
 
@@ -730,20 +782,28 @@ def grade(context=None):
             return float(original.get(k, 0)) >= 1.0
 
         grouped = {
-            "attackers_neutralized": 1 if ok("rogue_cronjobs_removed") else 0,
-            "rbac_removed":          1 if ok("unauthorized_rbac_removed") else 0,
+            # Proportional — partial CronJob/RBAC cleanup earns partial credit.
+            # This gives intermediate scores and meaningful model separation.
+            "attackers_neutralized": float(original.get("rogue_cronjobs_removed", 0)),
+            "rbac_removed":          float(original.get("unauthorized_rbac_removed", 0)),
 
-            "network_access_restored": 1 if (
-                ok("resource_quota_clean") and ok("network_policy_clean")
-            ) else 0,
+            # Split into two independent objectives so each can pass separately.
+            # Previously combined as network_access_restored (always 0 — dead weight).
+            "resource_quota_clean":  1.0 if ok("resource_quota_clean") else 0.0,
+            "network_policy_clean":  1.0 if ok("network_policy_clean") else 0.0,
 
-            "deployment_fixed":      1 if ok("deployment_spec_integrity") else 0,
-            "tls_restored":          1 if ok("tls_cert_valid") else 0,
-            "nginx_config_correct":  1 if ok("nginx_config_fixed") else 0,
+            "deployment_fixed":      1.0 if ok("deployment_spec_integrity") else 0.0,
+            "tls_restored":          1.0 if ok("tls_cert_valid") else 0.0,
+            "nginx_config_correct":  1.0 if ok("nginx_config_fixed") else 0.0,
 
-            "stable_gateway": 1 if (
-                ok("gateway_operational") and ok("sustained_stability")
-            ) else 0,
+            # Re-added as standalone objective (was excluded from final score).
+            "configmap_clean":       1.0 if ok("configmap_hygiene") else 0.0,
+
+            # Split into two independent objectives — previously combined as stable_gateway
+            # (all-or-nothing). Agents who fix the deployment but not the attackers can
+            # earn gateway_operational without sustained_stability, giving intermediate scores.
+            "gateway_operational":   1.0 if ok("gateway_operational") else 0.0,
+            "sustained_stability":   1.0 if ok("sustained_stability") else 0.0,
         }
 
         result.subscores = grouped

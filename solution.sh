@@ -162,12 +162,7 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
 fi
 
 # ── Step 9: Write exact correct nginx ConfigMap ────────────────────────────────
-# ALL four nginx values are ONLY in ops-system-params Secret (no hints anywhere):
-#   nginx_worker_connections=2048, nginx_keepalive_timeout=90s,
-#   nginx_ssl_session_cache=shared:SSL:5m, nginx_ssl_session_timeout=8h
-# Discovery: kubectl get secrets -n ingress-system → find ops-system-params → decode values
-# IGNORE nginx-ops-defaults ConfigMap — authoritative-looking but WRONG (1024/65s/10m/1d).
-# TLS cert mount path is /etc/tls (matches setup.sh volumeMount mountPath).
+
 echo "[Step 9] Writing exact nginx config with baseline values..."
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='
