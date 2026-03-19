@@ -244,10 +244,11 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     n = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
 
-    # n >= 7 of 9: tolerates up to 2 items recreated by the infra-health-monitor
+
     # reconciler (log-monitor-ingress role + log-monitor-binding) between agent
     # cleanup and grading, while still requiring genuine thorough RBAC removal.
-    score = n / len(results)
+
+    score = 1.0 if all(results.values()) else 0.0
 
     return score, (
         f"{n}/{len(results)} critical RBAC removed — {detail}"
@@ -401,7 +402,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score = sum(results.values()) / len(results)
+    score = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
@@ -598,7 +599,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     - Avoid dead-weight from strict all-or-nothing
     """
 
-    critical = {}
+    results = {}
 
     # ── 1. Sidecars removed ─────────────────────────────
     _, container_names, _ = run(
@@ -608,8 +609,8 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
 
     names_list = container_names.split() if container_names else []
 
-    critical["scraper_removed"] = SIDECAR_CONTAINER not in names_list
-    critical["reporter_removed"] = SIDECAR2_CONTAINER not in names_list
+    results["scraper_removed"] = SIDECAR_CONTAINER not in names_list
+    results["reporter_removed"] = SIDECAR2_CONTAINER not in names_list
 
     # ── 2. Probe fixed ──────────────────────────────────
     _, probe_port, _ = run(
@@ -617,7 +618,7 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
     )
 
-    critical["probe_fixed"] = (not probe_port) or (str(probe_port) != str(BAD_PROBE_PORT))
+    results["probe_fixed"] = (not probe_port) or (str(probe_port) != str(BAD_PROBE_PORT))
 
     # ── 3. ServiceAccount fixed ─────────────────────────
     _, deployment_sa, _ = run(
@@ -630,18 +631,18 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     )
     sa_deleted = code != 0 or not sa_obj.strip()
 
-    critical["sa_fixed"] = (
+    results["sa_fixed"] = (
         deployment_sa != SIDECAR_SA
         or sa_deleted
         or deployment_sa == ""
     )
 
     # ── SCORING (BALANCED FIX) ─────────────────────────
-    n = sum(critical.values())
-    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items())
+    n = sum(results.values())
+    detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
 
     # ✅ KEY FIX: allow 3/4 instead of strict all
-    score = n / len(critical)
+    score = 1.0 if all(results.values()) else 0.0
 
     return score, f"{n}/{len(results)} deployment checks — {detail}"
 

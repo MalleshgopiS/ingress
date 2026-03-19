@@ -14,11 +14,11 @@ prompt: |
   Your goal is to restore a stable and self-sustaining HTTPS ingress system.
 
   Important notes:
-  - Multiple cluster components may be interfering with system stability.
-  - Some configuration objects may contain outdated or misleading defaults.
-  - The correct operational configuration exists in the cluster but may not be
-    located in the most obvious place.
-  - Some automation may continuously revert your fixes if not handled properly.
+  - Multiple automated processes (including scheduled jobs and controllers) may continuously modify cluster state.
+  - Some configuration sources may appear valid but are actually outdated or overridden elsewhere.
+  - The correct configuration values are present in the cluster, but not necessarily in the most obvious resource.
+  - Some components may indirectly affect the ingress controller through permissions or shared infrastructure.
+  - You may need to inspect both configuration resources and access control relationships.
   
   Success criteria:
   - HTTPS traffic works reliably through the ingress controller
@@ -31,3 +31,4 @@ guidance:
   - Identify which configuration sources are authoritative
   - Ensure long-term stability, not temporary fixes
   - Avoid relying on deprecated or default configuration values
+  - Identify which configuration sources are authoritative versus misleading
