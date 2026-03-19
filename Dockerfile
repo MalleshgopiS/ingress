@@ -14,10 +14,6 @@ RUN apt-get update && \
 RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz" \
     | tar xz -C /usr/local/bin crane && chmod +x /usr/local/bin/crane
 
-RUN crane pull --platform linux/amd64 nginx:1.27-alpine /nginx.tar
-
-RUN crane pull --platform linux/amd64 bitnami/kubectl:1.31 /kubectl.tar
-
 RUN mkdir -p /grader
 RUN mkdir -p /mcp_server/tests
 
