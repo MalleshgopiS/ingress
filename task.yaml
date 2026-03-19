@@ -63,21 +63,8 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  # Investigation Approach
-  - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
-  - "Platform Secrets in the ingress-system namespace contain authoritative baseline values; not all ConfigMaps in the namespace can be trusted as the source of truth."
-
-  # Deployment Integrity
-  - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."
-
-  # RBAC and Scheduled Workloads
-  - "Recurring failures often indicate an active scheduled process still running. Revoking RBAC permissions that grant access to the ingress-system namespace can neutralise scheduled attackers that cannot be directly deleted."
-
-  # Governance Restoration
-  - "Removing a blocking access-control resource is not always sufficient — the platform may require a correctly configured replacement to maintain stable network access."
-
-  # Configuration Source
-  - "Verify that ingress controller configuration reflects current platform values rather than deprecated defaults that may have been present before the incident."
-
-  # Final Check
-  - "Stable recovery requires that no remaining scheduled process can re-introduce failures after remediation is complete."
+  - "Not all resources currently running in the cluster are legitimate — some may have been introduced during or before the incident window and should be scrutinised."
+  - "Recurring failures that briefly recover after a manual restart often indicate a continuous automated process is actively causing disruption."
+  - "Platform configuration authority is not always obvious — the intended values for a service may differ from what the most visible configuration object contains."
+  - "Removing a conflicting resource may not restore correct behaviour if the platform's intended state also requires specific replacement resources to be present."
+  - "Stable self-sustaining recovery requires eliminating every root cause — any remaining automated process may reintroduce failures after remediation."
