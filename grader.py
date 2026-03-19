@@ -735,20 +735,9 @@ def grade(context=None):
             ) else 0,
         }
 
-        _w = {
-            "attackers_neutralized":   1,
-            "rbac_removed":            1,
-            "network_access_restored": 1,
-            "deployment_fixed":        1,
-            "tls_restored":            1,
-            "nginx_config_correct":    1,
-            "stable_gateway":          1,
-        }
-        _total = sum(_w.values())  # 7 — equal weights
-
         result.subscores = grouped
-        result.weights   = {k: _w[k] / _total for k in grouped}
-        result.score     = sum(grouped[k] * _w[k] / _total for k in grouped)
+        result.weights   = {k: 1 / len(grouped) for k in grouped}
+        result.score     = sum(grouped.values()) / len(grouped)
 
     except Exception as e:
         print("Grouping error:", e)
