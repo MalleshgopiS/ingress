@@ -1070,5 +1070,5 @@ rm -f /setup.sh
 
 
 # --- v29 FIXES ---
-kubectl label configmap nginx-ops-defaults -n ing5ress-system status=deprecated --overwrite
+kubectl label configmap nginx-ops-defaults -n ingress-system status=deprecated --overwrite
 kubectl patch pdb ingress-pdb -n ingress-system -p '{"spec":{"minAvailable":2}}'
