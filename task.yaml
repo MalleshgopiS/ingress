@@ -9,88 +9,49 @@ prompt: |
 
   The platform edge gateway has been experiencing recurring HTTPS instability.
   Traffic intermittently fails and temporarily recovers after manual fixes, but
-  the issue keeps returning. An incident investigation has identified the following
-  active attack surface — all of these categories have been confirmed compromised
-  and must be fully remediated:
+  the issue keeps returning. A security review has confirmed the cluster is
+  actively compromised — applied fixes do not persist, suggesting ongoing
+  interference from within the cluster itself.
 
-  CONFIRMED ATTACK VECTORS (investigate and fix all of them):
+  Your task is to investigate the cluster thoroughly across all accessible
+  namespaces, identify all root causes of the instability, and fully remediate
+  them so the HTTPS gateway remains healthy without further manual intervention.
 
-  1. Rogue CronJobs — approximately 10-11 CronJobs spread across the default,
-     ingress-system, and kube-system namespaces are continuously corrupting cluster
-     state (overwriting nginx config, corrupting TLS certificates, scaling the
-     deployment to zero). CronJobs in kube-system cannot be deleted directly —
-     they operate via an RBAC grant into ingress-system that must be revoked instead.
-     One CronJob in the default namespace acts as a self-healing reconciler that
-     recreates traps after they are removed — neutralize it first or all other
-     fixes will be undone within minutes.
+  Known symptoms:
+  - HTTPS traffic is unreliable or fails entirely
+  - The nginx configuration reverts to broken values after being corrected
+  - TLS certificates periodically become invalid
+  - The ingress-controller deployment is frequently scaled to zero or restarted
+  - Cluster resources that are fixed sometimes revert within minutes
+  - Pod scheduling in ingress-system is blocked even after attempting fixes
 
-  2. Unauthorized RBAC — approximately 10 Roles and RoleBindings exist in
-     ingress-system that grant unauthorized write access to service accounts from
-     the default and kube-system namespaces. All must be removed to prevent
-     attackers from regaining access. Audit all Roles and RoleBindings in
-     ingress-system and remove any that are not required for normal operation.
+  Investigation scope:
+  - Inspect all namespaces for workloads that may be interfering with ingress-system
+  - Audit RBAC permissions in ingress-system for unauthorized access grants
+  - Review the ingress-controller Deployment configuration for tampering
+  - Check networking and scheduling constraints that may be blocking pod recovery
+  - Locate the authoritative nginx configuration values — they exist somewhere
+    in the cluster but may require careful inspection to find
+  - Verify the TLS secret contains a valid certificate
 
-  3. Deployment corruption — the ingress-controller Deployment has been modified:
-     - Two sidecar containers have been injected (one corrupts nginx config every
-       60 seconds, one scales replicas to zero every 90 seconds). Remove them.
-     - The liveness probe is misconfigured (checking the wrong port), causing
-       continuous pod restarts. Fix or remove it.
-     - An unauthorized ServiceAccount is attached. Replace it with the default
-       service account or remove the SA and its associated RBAC permissions.
-     - A PodDisruptionBudget (minAvailable=2) blocks pod rescheduling since only
-       one replica exists. Delete it.
-
-  4. Blocking ResourceQuota — a ResourceQuota with pods=0 prevents any pods from
-     being scheduled in ingress-system. Delete it and create a correct replacement
-     quota. The authoritative replacement name and pod limit are stored in a
-     ConfigMap in the ingress-system namespace (look for a platform baseline ConfigMap).
-
-  5. Blocking NetworkPolicies — two NetworkPolicies block all ingress and all egress
-     for the ingress-controller pods. Fix or delete both, then create a replacement
-     NetworkPolicy that explicitly allows TCP port 443 ingress to the
-     ingress-controller pods (matched by label app=ingress-controller).
-
-  6. Corrupted TLS certificate — the TLS Secret used by the ingress controller has
-     been replaced with invalid data by rogue CronJobs. Verify the certificate is
-     valid PEM; regenerate it with openssl if corrupted.
-
-  7. Wrong nginx configuration — the live nginx ConfigMap contains zeroed-out values.
-     There is also a decoy ConfigMap with authoritative-looking but incorrect nginx
-     defaults — do not use it. The correct values (worker_connections, keepalive_timeout,
-     ssl_session_cache, ssl_session_timeout) are stored in a Secret in the
-     ingress-system namespace. List all Secrets and inspect them to find the
-     authoritative values, then apply them to the nginx ConfigMap.
-
-  8. Poisoned ConfigMap template — a secondary ConfigMap in ingress-system contains
-     a broken nginx config that a kube-system CronJob syncs into the live config.
-     Delete the poisoned template ConfigMap.
-
-  Your goal is to remediate all of the above attack vectors and restore a stable,
-  self-sustaining HTTPS ingress system that remains healthy across repeated checks.
-
-  You may investigate any namespace and resource necessary.
+  You may investigate any namespace and resource necessary. Investigate broadly
+  before making changes — the instability has multiple interacting root causes.
 
   Success criteria:
-  - All rogue CronJobs are deleted or suspended (kube-system ones: RBAC revoked)
-  - All unauthorized RBAC Roles and RoleBindings in ingress-system are removed
-  - Deployment has only the core nginx container, correct probe, and safe ServiceAccount;
-    PodDisruptionBudget removed
-  - Blocking ResourceQuota is removed and correct replacement exists (pods limit from ConfigMap)
-  - Blocking NetworkPolicies are fixed and a replacement allow-443 NetworkPolicy exists
-  - TLS Secret contains a valid PEM certificate
-  - nginx ConfigMap contains correct values sourced from the authoritative Secret
-  - Poisoned template ConfigMap is deleted
-  - HTTPS traffic works reliably and system remains stable across repeated checks
-  - Do not modify the existing nginx image, service port (443), or container resource limits
+  - HTTPS traffic is served reliably and the gateway remains stable over time
+  - No unauthorized workloads or access grants remain active in the cluster
+  - The ingress-controller deployment runs with a correct, untampered configuration
+  - Scheduling and networking constraints allow pods to run and receive traffic
+  - nginx is configured with the correct authoritative values
+  - TLS certificate is valid
+  - The system sustains stability without manual intervention
 
 guidance:
-  - Neutralize the self-healing reconciler CronJob (default namespace) first — it
-    recreates traps every minute and will undo everything else if left running
-  - Revoking the RBAC role in ingress-system that grants kube-system CronJobs their
-    access is equivalent to deleting those CronJobs (and is the only way to stop them)
-  - After removing blocking ResourceQuotas and NetworkPolicies, always create the
-    correct replacement resources — removal alone is not sufficient
-  - Do not trust ConfigMaps with nginx values that look like standard defaults;
-    check the Secret store in ingress-system for the authoritative values
-  - Ensure long-term stability by removing all RBAC grants before finishing —
-    any remaining grant will allow attackers to resume corruption
+  - Investigate before acting — understand why fixes are not persisting before
+    applying them, or they will be undone again
+  - Check all namespaces for resources that could be interfering with ingress-system
+  - Some configuration values have authoritative sources elsewhere in the cluster;
+    do not assume default or cached values are correct
+  - Ensure both immediate functionality and long-term stability — a fix that works
+    momentarily but reverts is not a complete fix
+  - Access controls matter: verify that no remaining permissions allow unauthorized actors to re-corrupt the cluster state after you finish

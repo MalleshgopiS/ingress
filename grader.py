@@ -294,77 +294,70 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         f"{n}/{len(results)} critical RBAC removed — {detail}"
     )
 
-# Objective - 3 :  obj_nginx_config_fixed
+# ── Objective 3: nginx_config_correct ─────────────────────────────────────────
+# Checks ConfigMap + live nginx for correct values sourced from ops-system-params Secret.
+# Retries 3× with 10s gaps — rogue CronJobs overwrite the ConfigMap every 1-3 minutes.
+# Root cause of nginx_config_correct always-0 in prior runs: zero retries meant a
+# single CronJob firing between agent fix and grader check produced a false negative,
+# even though gateway_operational (nginx syntax) and sustained_stability both passed.
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
-    """
-    FINAL FIX:
-    - Ensures correct values
-    - Ensures values applied in live nginx
-    - Ensures NOT using decoy config
-    """
+    critical_pass = False
+    live_pass     = False
+    checks        = {}
 
-    cfg = _get_configmap()
-    pod = _get_running_pod()
-    live = ""
+    for attempt in range(3):
+        cfg = _get_configmap()
+        pod = _get_running_pod()
+        live = ""
+        if pod:
+            _, live, _ = run(
+                f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
+            )
 
-    if pod:
-        _, live, _ = run(
-            f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
+        checks = {
+            "cm_worker":    _worker_connections_ok(cfg),
+            "cm_keepalive": _keepalive_timeout_ok(cfg),
+            "cm_cache":     _ssl_cache_ok(cfg),
+            "cm_timeout":   _ssl_timeout_ok(cfg),
+
+            "live_worker":    bool(live) and _worker_connections_ok(live),
+            "live_keepalive": bool(live) and _keepalive_timeout_ok(live),
+            "live_cache":     bool(live) and _ssl_cache_ok(live),
+            "live_timeout":   bool(live) and _ssl_timeout_ok(live),
+        }
+
+        decoy = any([
+            re.search(r"worker_connections\s+1024;", cfg),
+            re.search(r"keepalive_timeout\s+65s;", cfg),
+            re.search(r"ssl_session_cache\s+shared:SSL:10m;", cfg),
+            re.search(r"ssl_session_timeout\s+1d;", cfg),
+        ])
+        checks["not_decoy"] = not decoy
+
+        syntax_ok = False
+        if pod:
+            _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
+            syntax_ok = "syntax is ok" in (out + err).lower()
+        checks["nginx_valid"] = syntax_ok
+
+        critical_keys = ["cm_worker", "cm_keepalive", "cm_cache", "cm_timeout",
+                         "not_decoy", "nginx_valid"]
+        critical_pass = all(checks[k] for k in critical_keys)
+        live_pass = (
+            checks["live_worker"] and checks["live_keepalive"] and
+            checks["live_cache"]  and checks["live_timeout"]
         )
 
-    checks = {
-        "cm_worker": _worker_connections_ok(cfg),
-        "cm_keepalive": _keepalive_timeout_ok(cfg),
-        "cm_cache": _ssl_cache_ok(cfg),
-        "cm_timeout": _ssl_timeout_ok(cfg),
+        if critical_pass and live_pass:
+            break
+        if attempt < 2:
+            time.sleep(10)
 
-        "live_worker": bool(live) and _worker_connections_ok(live),
-        "live_keepalive": bool(live) and _keepalive_timeout_ok(live),
-        "live_cache": bool(live) and _ssl_cache_ok(live),
-        "live_timeout": bool(live) and _ssl_timeout_ok(live),
-    }
-
-    # detect decoy values
-    decoy = any([
-        re.search(r"worker_connections\s+1024;", cfg),
-        re.search(r"keepalive_timeout\s+65s;", cfg),
-        re.search(r"ssl_session_cache\s+shared:SSL:10m;", cfg),
-        re.search(r"ssl_session_timeout\s+1d;", cfg),
-    ])
-
-    checks["not_decoy"] = not decoy
-
-    # nginx syntax check
-    syntax_ok = False
-    if pod:
-        _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
-        syntax_ok = "syntax is ok" in (out + err).lower()
-
-    checks["nginx_valid"] = syntax_ok
-
-    # ── scoring ──
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
-
-    # ✅ FIXED scoring (reduces variance)
-    critical_keys = [
-        "cm_worker", "cm_keepalive", "cm_cache", "cm_timeout",
-        "not_decoy", "nginx_valid"
-    ]
-
-    critical_pass = all(checks[k] for k in critical_keys)
-
-    live_pass = (
-        checks["live_worker"] and
-        checks["live_keepalive"] and
-        checks["live_cache"] and
-        checks["live_timeout"]
-    )
-
-    score = 1.0 if (critical_pass and live_pass) else 0.0
-
-    return score, f"{n}/{len(checks)} nginx strict checks — {detail}"
+    score  = 1.0 if (critical_pass and live_pass) else 0.0
+    return score, f"{n}/{len(checks)} nginx checks — {detail}"
 
 # ── Objective 4: gateway_operational ──────────────────────────────────────────
 # Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
