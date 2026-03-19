@@ -247,7 +247,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     # n >= 7 of 9: tolerates up to 2 items recreated by the infra-health-monitor
     # reconciler (log-monitor-ingress role + log-monitor-binding) between agent
     # cleanup and grading, while still requiring genuine thorough RBAC removal.
-    score = 1.0 if n >= 7 else 0.0
+    score = n / len(results)
 
     return score, (
         f"{n}/{len(results)} critical RBAC removed — {detail}"
@@ -397,7 +397,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
             _, body, _ = run(f"curl -k -s --max-time 3 https://{ip}")
             if "Ingress Controller Running" in body:
                 successes += 1
-    results["load_test_90pct"] = successes >= 16
+    results["load_test_90pct"] = successes >= 18
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
@@ -423,7 +423,7 @@ def _obj_sustained_stability() -> tuple[float, str]:
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         probe_results.append("ok" in body.lower())
         if i < 7:
-            time.sleep(50)
+            time.sleep(30)
 
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
@@ -641,9 +641,9 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in critical.items())
 
     # ✅ KEY FIX: allow 3/4 instead of strict all
-    score = 1.0 if n >= 3 else 0.0
+    score = n / len(critical)
 
-    return score, f"{n}/{len(critical)} deployment checks — {detail}"
+    return score, f"{n}/{len(results)} deployment checks — {detail}"
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
 # Three checks: poisoned template ConfigMap deleted, config-template-sync
