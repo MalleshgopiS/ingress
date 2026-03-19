@@ -1,5 +1,5 @@
 id: ingress-tls-memory-leak
-title: "Ingress Controller TLS Termination Memory Leak Causing Periodic Gateway Crashes"
+title: "Ingress Controller Recurring HTTPS Gateway Failures with Inconsistent Recovery"
 difficulty: expert
 category: "kubernetes / ingress / incident-response"
 
@@ -63,35 +63,21 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  # Base Platform Guidance
-  - "Secrets maintained by the platform team contain authoritative baseline configuration values."
-  - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
-  - "Malicious or poisoned resources should be removed entirely rather than modified."
-  
-  # ServiceAccount + Deployment (CRITICAL)
-  - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
-  - "Verify that workloads are not configured to use unauthorized ServiceAccounts introduced during the incident."
-  - "The ingress controller deployment may have been modified to use a non-default ServiceAccount that was not part of the original platform configuration."
-  - "The ingress controller typically runs using the default ServiceAccount unless explicitly configured otherwise."
-  - "Ensure the deployment does not continue referencing a removed or unauthorized ServiceAccount."
-  - "Inspect the deployment specification for unexpected containers, probes, or ServiceAccount changes introduced during the incident."
-  
-  # Deployment Probe Clarity (NEW FIX)
-  - "The ingress controller serves HTTPS traffic on port 443 — verify that health probes target the correct port and path and are not misconfigured."
-  
-  # RBAC / Control Plane
-  - "RBAC resources associated with unauthorized ServiceAccounts (such as nginx-watcher-config) may also need to be removed if they are not part of baseline platform configuration."
-  - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
-  
-  # Recovery Blockers (IMPROVED)
-  - "Ensure all PodDisruptionBudgets that may block pod scheduling or recovery are identified and removed if unnecessary."
-  
-  # Governance Resource Restoration (CRITICAL)
-  - "After removing blocking ResourceQuotas, a replacement ResourceQuota must be created — the platform-ops-baseline ConfigMap in the ingress-system namespace contains the authoritative pod limit and quota name to use."
-  - "After removing blocking NetworkPolicies, a replacement NetworkPolicy that explicitly allows inbound traffic on port 443 to ingress-controller pods must be created — removing the blocking policies alone is not sufficient to restore network access."
+  # Investigation Approach
+  - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
+  - "Platform Secrets in the ingress-system namespace contain authoritative baseline values; not all ConfigMaps in the namespace can be trusted as the source of truth."
 
-  # nginx Configuration Source
-  - "The ingress-nginx-config ConfigMap must reflect the exact tuning values from the authoritative platform Secret in ingress-system — ConfigMaps in this namespace may contain deprecated or incorrect defaults and should not be used as the source."
+  # Deployment Integrity
+  - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."
 
-  # Final System Restoration
-  - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
+  # RBAC and Scheduled Workloads
+  - "Recurring failures often indicate an active scheduled process still running. Revoking RBAC permissions that grant access to the ingress-system namespace can neutralise scheduled attackers that cannot be directly deleted."
+
+  # Governance Restoration
+  - "Removing a blocking access-control resource is not always sufficient — the platform may require a correctly configured replacement to maintain stable network access."
+
+  # Configuration Source
+  - "Verify that ingress controller configuration reflects current platform values rather than deprecated defaults that may have been present before the incident."
+
+  # Final Check
+  - "Stable recovery requires that no remaining scheduled process can re-introduce failures after remediation is complete."

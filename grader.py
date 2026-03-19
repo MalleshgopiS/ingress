@@ -209,7 +209,6 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     """
 
     results = {}
-    optional = {}
 
     # ── CRITICAL ROLES ─────────────────────────────
     critical_roles = [
@@ -236,28 +235,9 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         code, out, _ = run(f"kubectl get rolebinding {rb} -n {ns} 2>/dev/null")
         results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
 
-    # ── OPTIONAL: PDB (no longer blocking) ─────────
-    code, out, _ = run(f"kubectl get pdb {PDB_NAME} -n {NS} --no-headers 2>/dev/null")
-    optional["pdb_removed"] = code != 0 or not out.strip()
-
-    # ── OPTIONAL EXTRA RBAC ────────────────────────
-    optional_roles = [
-        ("nginx-watcher-config", NS),
-        ("nginx-watcher-config-binding", NS),
-        ("ops-state-controller", NS),
-        (IB_ROLE_NAME, NS),
-        (EH_ROLE_NAME, NS),
-        (MA_ROLE_NAME, NS),
-    ]
-
-    for role, ns in optional_roles:
-        code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
-        optional[f"opt:{role}@{ns}"] = code != 0 or not out.strip()
-
     # ── SCORING ───────────────────────────────────
     n = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
 
     # n >= 7 of 9: tolerates up to 2 items recreated by the infra-health-monitor
     # reconciler (log-monitor-ingress role + log-monitor-binding) between agent
@@ -265,7 +245,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     score = 1.0 if n >= 7 else 0.0
 
     return score, (
-        f"{n}/{len(results)} critical RBAC removed — {detail} | optional: {opt_detail}"
+        f"{n}/{len(results)} critical RBAC removed — {detail}"
     )
 
 # Objective - 3 :  obj_nginx_config_fixed
@@ -493,6 +473,14 @@ def _obj_network_policy_clean() -> tuple[float, str]:
 
     _, np_list_json, _ = run(f"kubectl get networkpolicy -n {NS} -o json 2>/dev/null")
 
+    def _rule_allows_443(rule: dict) -> bool:
+        """True if a NetworkPolicy ingress rule permits port 443.
+        An empty-ports rule (ingress:[{}]) is an allow-all and also passes."""
+        ports = rule.get("ports")
+        if not ports:          # no port restriction = allow all ports including 443
+            return True
+        return any(p.get("port") == 443 for p in ports)
+
     def blocking_fixed():
         try:
             items = json.loads(np_list_json).get("items", [])
@@ -501,12 +489,7 @@ def _obj_network_policy_clean() -> tuple[float, str]:
 
                 if name in (NP_METRICS, NP_TELEMETRY):
                     ingress = np.get("spec", {}).get("ingress", [])
-
-                    allows_443 = any(
-                        any(p.get("port") == 443 for p in rule.get("ports", []))
-                        for rule in ingress
-                    )
-
+                    allows_443 = any(_rule_allows_443(rule) for rule in ingress)
                     if not allows_443:
                         return False
             return True
@@ -523,10 +506,8 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         for np_data in items:
             ingress_rules = np_data.get("spec", {}).get("ingress", [])
 
-            port_ok = any(
-                any(p.get("port") == 443 for p in rule.get("ports", []))
-                for rule in ingress_rules
-            )
+            # Accept explicit port-443 rules AND allow-all (empty ports) rules
+            port_ok = any(_rule_allows_443(rule) for rule in ingress_rules)
 
             selector_ok = (
                 np_data.get("spec", {})
@@ -754,9 +735,20 @@ def grade(context=None):
             ) else 0,
         }
 
+        _w = {
+            "attackers_neutralized":   1,
+            "rbac_removed":            1,
+            "network_access_restored": 1,
+            "deployment_fixed":        1,
+            "tls_restored":            1,
+            "nginx_config_correct":    1,
+            "stable_gateway":          1,
+        }
+        _total = sum(_w.values())  # 7 — equal weights
+
         result.subscores = grouped
-        result.weights   = {k: 1 / len(grouped) for k in grouped}
-        result.score     = sum(grouped.values()) / len(grouped)
+        result.weights   = {k: _w[k] / _total for k in grouped}
+        result.score     = sum(grouped[k] * _w[k] / _total for k in grouped)
 
     except Exception as e:
         print("Grouping error:", e)
