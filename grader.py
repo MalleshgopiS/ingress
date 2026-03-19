@@ -260,10 +260,8 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
     opt_detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in optional.items())
 
-    # ✅ KEY FIX: require 7/9 instead of strict all-or-nothing.
-    # Agents who find and remove most rogue RBAC but miss 1-2 legitimately-named
-    # roles still score — mirrors the n >= 3 fix in deployment_spec_integrity.
-    score = 1.0 if n >= 7 else 0.0
+    # All 9 critical items (5 roles + 4 bindings) must be removed.
+    score = 1.0 if all(results.values()) else 0.0
 
     return score, (
         f"{n}/{total} critical RBAC removed — {detail} | optional: {opt_detail}"
@@ -696,17 +694,19 @@ OBJECTIVES = [
 
 
 def grade(_ = None) -> GradingResult:
-    raw, feedback_parts = {}, []
+    subscores, weights, feedback_parts = {}, {}, []
 
     for name, fn in OBJECTIVES:
         score, message = fn()
-        raw[name] = score
+        subscores[name] = score
+        weights[name]   = round(1.0 / len(OBJECTIVES), 6)
         status = "PASS" if score >= 1.0 else "FAIL"
         feedback_parts.append(f"{status} {name}: {message}")
 
     def ok(k):
-        return float(raw.get(k, 0)) >= 1.0
+        return float(subscores.get(k, 0)) >= 1.0
 
+    # ── 7 grouped binary subscores ────────────────────────────────────────────
     grouped = {
         "attackers_neutralized":   1 if ok("rogue_cronjobs_removed") else 0,
         "rbac_removed":            1 if ok("unauthorized_rbac_removed") else 0,
@@ -718,20 +718,12 @@ def grade(_ = None) -> GradingResult:
     }
 
     score        = sum(grouped.values()) / len(grouped)
-    passed_count = sum(1 for v in grouped.values() if v >= 1)
+    passed_count = sum(1 for v in grouped.values() if v >= 1.0)
     summary      = f"score={score:.4f} ({passed_count}/{len(grouped)} objectives passed)"
-
-    # Build weights that sum to EXACTLY 1.0 — avoids floating-point drift
-    # (e.g. round(1/7,6)*7 = 0.999999, causing the platform to report 0.9999990…)
-    n          = len(grouped)
-    base_w     = round(1 / n, 6)
-    keys       = list(grouped.keys())
-    weights    = {k: base_w for k in keys}
-    weights[keys[-1]] = round(1.0 - base_w * (n - 1), 6)   # absorb rounding remainder
 
     return GradingResult(
         score=round(score, 6),
         subscores=grouped,
-        weights=weights,
+        weights={k: 1 / len(grouped) for k in grouped},
         feedback=" | ".join([summary] + feedback_parts),
     )

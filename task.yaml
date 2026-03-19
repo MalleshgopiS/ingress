@@ -39,9 +39,14 @@ prompt: |
   configuration sources, and networking controls across allowed namespaces.
 
   Note:
-  The cluster environment may have been tampered with. All components should be treated
-  as suspect until verified. Thorough investigation across the cluster is required before
-  any remediation — partial fixes may not restore stable operation.
+  Some operational baseline configuration values used by the ingress platform are stored
+  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
+  and Secrets in the ingress-system namespace may reveal important recovery parameters.
+  Some resources may appear valid but could have been introduced or modified during the
+  incident. Validate their necessity carefully before retaining them.
+
+  After removing malicious or conflicting resources, proper governance resources such as
+  NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
 
   [Verification]
   The incident is resolved when HTTPS traffic flows reliably through the ingress controller
@@ -58,7 +63,28 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  - "The cluster may have been modified across multiple layers — a thorough investigation of all components is required before remediating."
-  - "Cluster resources that cannot be justified as part of the original platform baseline may need to be removed."
-  - "Restoring stable operation may require examining configuration sources, scheduled workloads, access controls, and networking across the cluster."
-  - "Removing problematic resources alone may not be sufficient — verify the cluster has the correct governance configuration in place for stable operation."
+  # Base Platform Guidance
+  - "Secrets maintained by the platform team contain authoritative baseline configuration values."
+  - "Some ConfigMaps may contain default, outdated, or deprecated values and should not be blindly trusted."
+  - "Malicious or poisoned resources should be removed entirely rather than modified."
+
+  # ServiceAccount + Deployment (CRITICAL)
+  - "Unauthorized ServiceAccounts introduced during the incident must be deleted using kubectl delete, not just removed from workload references."
+  - "Verify that workloads are not configured to use unauthorized ServiceAccounts introduced during the incident."
+  - "The ingress controller deployment may have been modified to use a non-default ServiceAccount that was not part of the original platform configuration."
+  - "The ingress controller typically runs using the default ServiceAccount unless explicitly configured otherwise."
+  - "Ensure the deployment does not continue referencing a removed or unauthorized ServiceAccount."
+  - "Inspect the deployment specification for unexpected containers, probes, or ServiceAccount changes introduced during the incident."
+
+  # Deployment Probe Clarity
+  - "The ingress controller serves HTTPS traffic on port 443 — verify that health probes target the correct port and path and are not misconfigured."
+
+  # RBAC / Control Plane
+  - "RBAC resources associated with unauthorized ServiceAccounts (such as nginx-watcher-config) may also need to be removed if they are not part of baseline platform configuration."
+  - "Some RBAC resources and disruption controls may appear legitimate but could have been introduced during the incident — verify their necessity carefully."
+
+  # Recovery Blockers
+  - "Ensure all PodDisruptionBudgets that may block pod scheduling or recovery are identified and removed if unnecessary."
+
+  # Final System Restoration
+  - "Restoring stable operation may require correcting both access controls and configuration sources across namespaces."
