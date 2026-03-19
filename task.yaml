@@ -69,7 +69,6 @@ guidance:
   - "Operational baseline values may be stored in cluster configuration objects and should be discovered during investigation."
   # Investigation Approach
   - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
-  - "
 
   # Deployment Integrity
   - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."

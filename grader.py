@@ -214,7 +214,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if sum(results.values()) >= (len(results)-1) else 0.0
+    score  =  1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
 
 
@@ -600,7 +600,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if sum(results.values()) >= (len(results)-1) else 0.0
+    score  =  1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
