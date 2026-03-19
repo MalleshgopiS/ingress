@@ -700,8 +700,8 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
     return score, f"{n}/{len(results)} deployment checks — {detail}"
 
 # ── Objective 10: configmap_hygiene ───────────────────────────────────────────
-# Three checks: poisoned template ConfigMap deleted, config-template-sync
-# CronJob neutralised, and ingress-nginx-config contains all four exact values.
+# Two checks: poisoned template ConfigMap deleted, config-template-sync
+# CronJob neutralised.
 
 def _obj_configmap_hygiene() -> tuple[float, str]:
     results = {}
@@ -713,9 +713,6 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
     results[f"cronjob:{CTS_CJ_NAME}@{CTS_CJ_NS}"] = (
         _cronjob_gone(CTS_CJ_NAME, CTS_CJ_NS) or ks_role_revoked
     )
-
-    # ✅ FIX: remove duplicate nginx check
-    # nginx already validated in nginx_config_fixed
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())

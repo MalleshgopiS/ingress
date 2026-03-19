@@ -115,48 +115,17 @@ kubectl delete pdb ingress-pdb -n $NS --ignore-not-found
 echo "[Step 6] Removing poisoned ConfigMap template..."
 kubectl delete configmap ingress-tuning-defaults -n $NS --ignore-not-found
 
-# ── Step 7: Fix deployment spec ───────────────────────────────────────────────
-# Remove sidecars by name (not by index — index shifts after each removal),
-# remove broken livenessProbe (port 80; nginx listens on 443),
-# reset serviceAccountName to default, ensure replicas=1.
-echo "[Step 7] Removing injected sidecar containers by name..."
-for SIDECAR in nginx-metrics-scraper healthz-reporter; do
-  IDX=0
-  while true; do
-    NAME=$(kubectl get deploy $DEPLOY -n $NS \
-      -o jsonpath="{.spec.template.spec.containers[$IDX].name}" 2>/dev/null)
-    [ -z "$NAME" ] && break
-    if [ "$NAME" = "$SIDECAR" ]; then
-      kubectl patch deployment $DEPLOY -n $NS --type=json \
-        -p "[{\"op\":\"remove\",\"path\":\"/spec/template/spec/containers/$IDX\"}]" \
-        2>/dev/null || true
-      break
-    fi
-    IDX=$((IDX + 1))
-  done
-done
+# ── Step 7: Pause rollout, fix TLS + nginx config, then patch deployment spec ──
+# IMPORTANT: We pause the rollout FIRST so all spec patches accumulate into ONE
+# rolling update. We also fix TLS and nginx config BEFORE any new pod starts,
+# so the resumed rollout starts a pod with valid nginx.conf from the first attempt.
+# (Without this, each patch triggers a chained rollout with the stale bad config
+#  that has worker_connections 0 — nginx fails, pod crashes, rollout times out.)
 
-echo "[Step 7] Resetting serviceAccountName to default..."
-kubectl patch deployment $DEPLOY -n $NS --type=json \
-  -p '[{"op":"replace","path":"/spec/template/spec/serviceAccountName","value":"default"}]' \
-  2>/dev/null || true
+echo "[Step 7] Pausing rollout to batch all spec changes into one clean update..."
+kubectl rollout pause deployment/$DEPLOY -n $NS 2>/dev/null || true
 
-echo "[Step 7] Removing broken livenessProbe (port 80, should be 443)..."
-kubectl patch deployment $DEPLOY -n $NS --type=json \
-  -p '[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' \
-  2>/dev/null || true
-
-REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
-if [ "$REPLICAS" = "0" ]; then
-  echo "[Step 7] Deployment was scaled to 0 — restoring to 1..."
-  kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
-fi
-
-echo "[Step 7] Deleting ingress-watcher ServiceAccount (used by injected sidecars)..."
-kubectl delete serviceaccount ingress-watcher -n $NS --ignore-not-found
-
-# ── Step 8: Check and restore TLS secret ──────────────────────────────────────
-# kube-system CronJobs replace tls.crt with invalid data; check and regenerate.
+# ── Step 8: Check and restore TLS secret (while rollout is paused) ────────────
 echo "[Step 8] Checking TLS secret validity..."
 TLS_CRT=$(kubectl get secret ingress-controller-tls -n $NS \
   -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
@@ -175,9 +144,8 @@ if ! echo "$TLS_CRT" | grep -q "BEGIN CERTIFICATE"; then
   echo "[Step 8] TLS secret restored."
 fi
 
-# ── Step 9: Write correct nginx ConfigMap from authoritative Secret ────────────
+# ── Step 9: Write correct nginx ConfigMap (while rollout is paused) ────────────
 # Values are read from ops-system-params Secret — not hardcoded here.
-
 echo "[Step 9] Reading nginx baseline values from ops-system-params Secret..."
 WORKER=$(kubectl get secret ops-system-params -n $NS \
   -o jsonpath='{.data.nginx_worker_connections}' 2>/dev/null | base64 -d 2>/dev/null || echo "2048")
@@ -218,10 +186,49 @@ http {
 }" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# ── Step 10: Restart and verify ───────────────────────────────────────────────
-echo "[Step 10] Restarting deployment and waiting for rollout..."
-kubectl rollout restart deployment/$DEPLOY -n $NS
-kubectl rollout status  deployment/$DEPLOY -n $NS --timeout=120s
+# Now patch the deployment spec — rollout is still paused so no new pods yet
+echo "[Step 7] Removing injected sidecar containers by name..."
+for SIDECAR in nginx-metrics-scraper healthz-reporter; do
+  IDX=0
+  while true; do
+    NAME=$(kubectl get deploy $DEPLOY -n $NS \
+      -o jsonpath="{.spec.template.spec.containers[$IDX].name}" 2>/dev/null)
+    [ -z "$NAME" ] && break
+    if [ "$NAME" = "$SIDECAR" ]; then
+      kubectl patch deployment $DEPLOY -n $NS --type=json \
+        -p "[{\"op\":\"remove\",\"path\":\"/spec/template/spec/containers/$IDX\"}]" \
+        2>/dev/null || true
+      break
+    fi
+    IDX=$((IDX + 1))
+  done
+done
+
+echo "[Step 7] Resetting serviceAccountName to default..."
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"replace","path":"/spec/template/spec/serviceAccountName","value":"default"}]' \
+  2>/dev/null || true
+
+echo "[Step 7] Removing broken livenessProbe (port 80, should be 443)..."
+kubectl patch deployment $DEPLOY -n $NS --type=json \
+  -p '[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' \
+  2>/dev/null || true
+
+REPLICAS=$(kubectl get deploy $DEPLOY -n $NS -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
+if [ "$REPLICAS" = "0" ]; then
+  echo "[Step 7] Deployment was scaled to 0 — restoring to 1..."
+  kubectl scale deployment/$DEPLOY --replicas=1 -n $NS
+fi
+
+echo "[Step 7] Deleting ingress-watcher ServiceAccount (used by injected sidecars)..."
+kubectl delete serviceaccount ingress-watcher -n $NS --ignore-not-found
+
+# ── Step 10: Resume rollout — ONE clean rollout with all changes applied ───────
+# The resumed pod starts with: correct nginx.conf, valid TLS, no sidecars,
+# correct SA, no bad probe. Should become Ready in ~30-60s.
+echo "[Step 10] Resuming rollout — one clean update with all fixes applied..."
+kubectl rollout resume deployment/$DEPLOY -n $NS
+kubectl rollout status  deployment/$DEPLOY -n $NS --timeout=300s
 
 sleep 5
 echo ""
