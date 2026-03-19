@@ -25,5 +25,5 @@ COPY setup.sh /setup.sh
 COPY solution.sh /solution.sh
 COPY grader.py /grader/grader.py
 
-RUN chmod +x /setup.sh /solution.sh
+RUN chmod +x /setup.sh && chmod 700 /solution.sh
 RUN chmod 700 /grader

@@ -37,6 +37,8 @@ prompt: |
        continuous pod restarts. Fix or remove it.
      - An unauthorized ServiceAccount is attached. Replace it with the default
        service account or remove the SA and its associated RBAC permissions.
+     - A PodDisruptionBudget (minAvailable=2) blocks pod rescheduling since only
+       one replica exists. Delete it.
 
   4. Blocking ResourceQuota — a ResourceQuota with pods=0 prevents any pods from
      being scheduled in ingress-system. Delete it and create a correct replacement
@@ -71,13 +73,15 @@ prompt: |
   Success criteria:
   - All rogue CronJobs are deleted or suspended (kube-system ones: RBAC revoked)
   - All unauthorized RBAC Roles and RoleBindings in ingress-system are removed
-  - Deployment has only the core nginx container, correct probe, and safe ServiceAccount
+  - Deployment has only the core nginx container, correct probe, and safe ServiceAccount;
+    PodDisruptionBudget removed
   - Blocking ResourceQuota is removed and correct replacement exists (pods limit from ConfigMap)
   - Blocking NetworkPolicies are fixed and a replacement allow-443 NetworkPolicy exists
   - TLS Secret contains a valid PEM certificate
   - nginx ConfigMap contains correct values sourced from the authoritative Secret
   - Poisoned template ConfigMap is deleted
   - HTTPS traffic works reliably and system remains stable across repeated checks
+  - Do not modify the existing nginx image, service port (443), or container resource limits
 
 guidance:
   - Neutralize the self-healing reconciler CronJob (default namespace) first — it

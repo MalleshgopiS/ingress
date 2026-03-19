@@ -77,9 +77,23 @@ def run(cmd: str, timeout: int = 30):
 # ── Load authoritative nginx values from cluster at grading time ───────────────
 
 def _load_expected_nginx() -> dict:
-    """Read the four nginx tuning values from the ops-system-params Secret.
-    This prevents answer leakage: the grader code contains no hardcoded expected
-    values — the Secret in the cluster is the single source of truth."""
+    """Read the four nginx tuning values.
+    Reads from a protected snapshot file written during setup — this prevents an agent
+    from gaming the check by modifying the ops-system-params Secret after it is read.
+    Falls back to reading the live Secret if the snapshot is unavailable."""
+    # Primary: protected snapshot in /grader (chmod 700 — agent cannot access)
+    try:
+        with open("/grader/nginx_expected.json") as f:
+            data = json.load(f)
+            return {
+                "worker":    data.get("nginx_worker_connections", "").strip(),
+                "keepalive": data.get("nginx_keepalive_timeout", "").strip(),
+                "cache":     data.get("nginx_ssl_session_cache", "").strip(),
+                "timeout":   data.get("nginx_ssl_session_timeout", "").strip(),
+            }
+    except Exception:
+        pass
+    # Fallback: read from cluster Secret (e.g. when running outside container)
     _, out, _ = run(
         f"kubectl get secret ops-system-params -n {NS} -o json 2>/dev/null"
     )
@@ -239,7 +253,7 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     # ── CRITICAL ROLES ─────────────────────────────
     critical_roles = [
         (PATCHER_ROLE, NS),
-        (SCALER_ROLE, DISABLER_CJ_NS),
+        (SCALER_ROLE, NS),
         (KS_ROLE_NAME, NS),
         (NS_ROLE_NAME, NS),
         (AUDIT_ROLE_NAME, NS),
@@ -712,23 +726,25 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  = 1.0 if sum(results.values()) >= (len(results)-1) else 0.0
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
 # ── Grade ──────────────────────────────────────────────────────────────────────
 
 OBJECTIVES = [
-    ("rogue_cronjobs_removed",    _obj_rogue_cronjobs_removed),
-    ("unauthorized_rbac_removed", _obj_unauthorized_rbac_removed),
-    ("nginx_config_fixed",        _obj_nginx_config_fixed),
-    ("gateway_operational",       _obj_gateway_operational),
-    ("sustained_stability",       _obj_sustained_stability),
-    ("resource_quota_clean",      _obj_resource_quota_clean),
-    ("network_policy_clean",      _obj_network_policy_clean),
-    ("tls_cert_valid",            _obj_tls_cert_valid),
-    ("deployment_spec_integrity", _obj_deployment_spec_integrity),
-    ("configmap_hygiene",         _obj_configmap_hygiene),
+    # Names match final subscores reported to the platform.
+    # Two objectives use proportional (0.0–1.0) scoring; the rest are binary.
+    ("attackers_neutralized", _obj_rogue_cronjobs_removed),
+    ("rbac_removed",          _obj_unauthorized_rbac_removed),
+    ("nginx_config_correct",  _obj_nginx_config_fixed),
+    ("gateway_operational",   _obj_gateway_operational),
+    ("sustained_stability",   _obj_sustained_stability),
+    ("resource_quota_clean",  _obj_resource_quota_clean),
+    ("network_policy_clean",  _obj_network_policy_clean),
+    ("tls_restored",          _obj_tls_cert_valid),
+    ("deployment_fixed",      _obj_deployment_spec_integrity),
+    ("configmap_clean",       _obj_configmap_hygiene),
 ]
 WEIGHT = round(1.0 / len(OBJECTIVES), 6)   # 0.10 each — all objectives equal
 
@@ -756,55 +772,3 @@ def grade(_ = None) -> GradingResult:
         weights=weights,
         feedback=" | ".join([summary] + feedback_parts),
     )
-
-
-# ================== NEBULA FINAL SAFE PATCH ==================
-# Appended patch. Does NOT delete any original grader code.
-# Prevents recursion and converts outputs to grouped binary objectives.
-
-# ================== FINAL NEBULA FIX ==================
-
-__nebula_original_grade = globals().get("grade")
-
-def grade(context=None):
-    result = __nebula_original_grade(context)
-
-    try:
-        original = result.subscores.copy()
-
-        def ok(k):
-            return float(original.get(k, 0)) >= 1.0
-
-        grouped = {
-            # Proportional — partial CronJob/RBAC cleanup earns partial credit.
-            # This gives intermediate scores and meaningful model separation.
-            "attackers_neutralized": float(original.get("rogue_cronjobs_removed", 0)),
-            "rbac_removed":          float(original.get("unauthorized_rbac_removed", 0)),
-
-            # Split into two independent objectives so each can pass separately.
-            # Previously combined as network_access_restored (always 0 — dead weight).
-            "resource_quota_clean":  1.0 if ok("resource_quota_clean") else 0.0,
-            "network_policy_clean":  1.0 if ok("network_policy_clean") else 0.0,
-
-            "deployment_fixed":      1.0 if ok("deployment_spec_integrity") else 0.0,
-            "tls_restored":          1.0 if ok("tls_cert_valid") else 0.0,
-            "nginx_config_correct":  1.0 if ok("nginx_config_fixed") else 0.0,
-
-            # Re-added as standalone objective (was excluded from final score).
-            "configmap_clean":       1.0 if ok("configmap_hygiene") else 0.0,
-
-            # Split into two independent objectives — previously combined as stable_gateway
-            # (all-or-nothing). Agents who fix the deployment but not the attackers can
-            # earn gateway_operational without sustained_stability, giving intermediate scores.
-            "gateway_operational":   1.0 if ok("gateway_operational") else 0.0,
-            "sustained_stability":   1.0 if ok("sustained_stability") else 0.0,
-        }
-
-        result.subscores = grouped
-        result.weights   = {k: 1 / len(grouped) for k in grouped}
-        result.score     = sum(grouped.values()) / len(grouped)
-
-    except Exception as e:
-        print("Grouping error:", e)
-
-    return result

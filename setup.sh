@@ -98,6 +98,28 @@ kubectl create secret generic ops-system-params -n $NS \
   2>/dev/null || true
 sleep 3
 
+# Snapshot nginx expected values into the protected /grader directory.
+# The grader reads this file rather than the live Secret, so an agent cannot
+# game the nginx config check by modifying ops-system-params after setup.
+python3 - <<'PYEOF'
+import subprocess, base64, json, os
+try:
+    out = subprocess.check_output(
+        ['kubectl', 'get', 'secret', 'ops-system-params',
+         '-n', 'ingress-system', '-o', 'json'],
+        stderr=subprocess.DEVNULL
+    )
+    data = json.loads(out)['data']
+    expected = {k: base64.b64decode(v).decode().strip() for k, v in data.items()}
+    os.makedirs('/grader', exist_ok=True)
+    with open('/grader/nginx_expected.json', 'w') as f:
+        json.dump(expected, f)
+    os.chmod('/grader/nginx_expected.json', 0o600)
+    print("Nginx expected values snapshot saved to /grader/nginx_expected.json")
+except Exception as e:
+    print(f"Warning: could not snapshot nginx values: {e}")
+PYEOF
+
 # ── Decoy ConfigMap: nginx-ops-defaults (authoritative-looking, WRONG values) ──
 # Looks like the canonical nginx config — values are standard defaults, NOT baseline.
 # Agent who reads this and uses these values fails all nginx-related objectives.
