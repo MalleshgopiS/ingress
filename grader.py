@@ -237,10 +237,19 @@ def _obj_pod_stable() -> tuple[float, str]:
     # Observe window: detect any immediate OOMKill caused by a bad fix
     time.sleep(30)
 
-    _, ready, _ = run(
-        f"kubectl get deploy {DEPLOY} -n {NS} "
-        "-o jsonpath='{{.status.readyReplicas}}'"
-    )
+    # Confirm readyReplicas=1 after the observation window.
+    # Retry up to 3× with 10s gaps to tolerate a brief Kubernetes control-plane
+    # reconciliation that can transiently clear readyReplicas between updates.
+    ready = ""
+    for _ in range(3):
+        _, ready, _ = run(
+            f"kubectl get deploy {DEPLOY} -n {NS} "
+            "-o jsonpath='{{.status.readyReplicas}}'"
+        )
+        if ready == "1":
+            break
+        time.sleep(10)
+
     restart_after = _get_restart_count()
 
     checks = {

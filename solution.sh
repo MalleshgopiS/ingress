@@ -57,71 +57,28 @@ http {
 echo "[Step 2] ConfigMap updated."
 
 # ── Step 3: Reload nginx to apply the new config ───────────────────────────────
-# Two-phase approach:
-#   Phase A — wait for kubelet to sync the updated ConfigMap to the pod volume
-#             (the file /etc/nginx/nginx.conf inside the pod is a ConfigMap mount;
-#              kubelet refreshes it asynchronously, typically within 60–90 s).
-#             Only AFTER the on-disk file reflects the new cache value is it safe
-#             to call nginx -s reload, otherwise nginx re-reads the stale file.
-#   Phase B — if the kubelet sync window passes without a confirmed live update,
-#             fall back to a rollout restart so the new pod gets a fresh mount.
+# The nginx.conf ConfigMap is mounted with subPath, so kubelet does NOT auto-sync
+# the file when the ConfigMap is updated (this is documented Kubernetes behaviour —
+# subPath mounts bypass the kubelet ConfigMap refresh mechanism).
+# A rollout restart is therefore always required: the new pod mounts the ConfigMap
+# fresh, reads the updated nginx.conf, and starts with the corrected TLS values.
 
-echo "[Step 3] Applying new TLS configuration to the running nginx process..."
-POD=$(kubectl get pods -n $NS -l app=ingress-controller \
-  --field-selector=status.phase=Running \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+echo "[Step 3] Applying new TLS configuration via rollout restart..."
+kubectl rollout restart deployment/$DEPLOY -n $NS
+kubectl rollout status deployment/$DEPLOY -n $NS --timeout=120s
+echo "[Step 3] Rollout restart completed — new pod has fresh ConfigMap volume."
 
-RELOAD_OK=false
+# Wait for the pod to fully stabilise after rollout before the grader checks it
+sleep 15
 
-if [ -n "$POD" ]; then
-    echo "[Step 3] Waiting for kubelet to sync ConfigMap volume to pod (up to 90s)..."
-    for i in $(seq 1 18); do
-        sleep 5
-        # Check whether the on-disk nginx.conf inside the pod already has the new value.
-        # Only once the file is updated should nginx -s reload be issued.
-        if kubectl exec -n $NS "$POD" -- \
-               grep -q "ssl_session_cache.*$SSL_CACHE" /etc/nginx/nginx.conf 2>/dev/null; then
-            echo "[Step 3] Volume synced (iteration ${i}). Sending reload signal..."
-            kubectl exec -n $NS "$POD" -- nginx -s reload
-            sleep 3
-            # Verify the running process picked up the new values via nginx -T
-            LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
-            if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
-                RELOAD_OK=true
-                echo "[Step 3] nginx reload verified — live process updated."
-            else
-                echo "[Step 3] Reload sent but nginx -T still shows old config. Retrying reload..."
-                kubectl exec -n $NS "$POD" -- nginx -s reload
-                sleep 5
-                LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
-                if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
-                    RELOAD_OK=true
-                    echo "[Step 3] nginx reload verified on retry."
-                fi
-            fi
-            break
-        fi
-        echo "[Step 3]  ... waiting for kubelet sync (${i}/18)"
-    done
-fi
-
-if [ "$RELOAD_OK" != "true" ]; then
-    echo "[Step 3] Performing rollout restart to guarantee fresh ConfigMap mount..."
-    kubectl rollout restart deployment/$DEPLOY -n $NS
-    kubectl rollout status deployment/$DEPLOY -n $NS --timeout=120s
-    echo "[Step 3] Rollout restart completed — new pod has fresh ConfigMap volume."
-fi
-
-# Final syntax check on whichever pod is now active
+# Final syntax check on the new active pod
 ACTIVE_POD=$(kubectl get pods -n $NS -l app=ingress-controller \
   --field-selector=status.phase=Running \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 if [ -n "$ACTIVE_POD" ]; then
     kubectl exec -n $NS "$ACTIVE_POD" -- nginx -t
+    echo "[Step 3] nginx configuration syntax OK."
 fi
-
-# Allow the pod a moment to fully stabilize before the grader starts its checks
-sleep 10
 
 # ── Step 4: Verify the fix ─────────────────────────────────────────────────────
 
