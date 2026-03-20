@@ -37,8 +37,12 @@ prompt: |
   Note:
   Authoritative platform configuration for this ingress deployment is stored in Secrets
   managed by the platform team — not in ConfigMaps, which may be stale or tampered.
-  Removing a resource that blocks operation is not always sufficient; the platform may
-  require a correctly configured replacement to resume stable service.
+  Removing a blocking resource is not always sufficient — the platform requires a
+  correctly configured replacement to resume stable operation; the expected values and
+  resource limits are documented in the namespace and discoverable through investigation.
+  Some attack workloads operate from namespaces outside your direct access scope. You
+  cannot delete them directly, but revoking their cross-namespace access from within
+  ingress-system is a valid and sufficient containment strategy.
 
   [Verification]
   The incident is resolved when HTTPS traffic flows reliably through the ingress controller
@@ -55,9 +59,9 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate the source of recurrence before declaring recovery."
-  - "The ingress-system namespace Secrets contain the authoritative nginx tuning values; ConfigMaps in that namespace may reflect deprecated or attacker-modified defaults."
-  - "Stable operation may require correct governance controls to be present — not just absent malicious ones; the platform-ops-baseline ConfigMap in ingress-system records the expected limits."
-  - "Cross-check the active nginx configuration against what the ingress-system Secrets say the values should be — ConfigMaps may not be the source of truth."
-  - "Removing a network policy that blocks traffic does not automatically allow it — the controller may need an explicit ingress rule for HTTPS."
-  - "A ConfigMap acting as a configuration template can silently reintroduce bad nginx values — check whether any template sources remain active."
+  - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate every source of recurrence before declaring recovery."
+  - "The ops-system-params Secret in ingress-system holds the four nginx tuning values the platform team originally provisioned — both the active ConfigMap and the running nginx process must reflect those exact values simultaneously for the fix to hold."
+  - "The ingress-system namespace had resource governance in place before the incident — the platform-ops-baseline ConfigMap records the correct quota name and pod limit; removing the attacker quota without restoring the correct replacement leaves the namespace non-compliant."
+  - "Removing a network policy that blocks traffic does not restore connectivity — an explicit allow rule for HTTPS port 443 scoped to the ingress controller pods must be created as a separate, deliberate step."
+  - "The ingress-tuning-defaults ConfigMap in ingress-system acts as an nginx configuration template — it must be deleted, and the scheduled workload that periodically applies it must also be stopped, otherwise the bad configuration will return."
+  - "Some attack workloads run in namespaces outside your direct access — revoking the cross-namespace role that grants them write access to ingress-system is the correct way to neutralize them without needing to delete them directly."

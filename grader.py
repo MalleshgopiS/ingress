@@ -2,6 +2,7 @@
 
 import base64
 import json
+import random
 import re
 import subprocess
 import time
@@ -16,53 +17,8 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# ── CronJob constants ──────────────────────────────────────────────────────────
-ROGUE_CJ_NAME      = "config-cache-warmer";      ROGUE_CJ_NS      = "default"
-DISABLER_CJ_NAME   = "metrics-pipeline-exporter"; DISABLER_CJ_NS   = "ingress-system"
-TLS_CJ_NAME        = "node-cert-validator";       TLS_CJ_NS        = "default"
-RECONCILER_CJ_NAME = "infra-health-monitor";      RECONCILER_CJ_NS = "default"
-KS_TLS_CJ_NAME     = "cluster-health-aggregator"; KS_TLS_CJ_NS     = "kube-system"
-KS_CFG_CJ_NAME     = "log-pipeline-worker";       KS_CFG_CJ_NS     = "kube-system"
-KS_SCRAPER_CJ_NAME = "metric-scraper-pipeline";   KS_SCRAPER_CJ_NS = "kube-system"
-KS_AUDIT_CJ_NAME   = "audit-log-forwarder";       KS_AUDIT_CJ_NS   = "kube-system"
-ES_CJ_NAME         = "event-stream-collector";    ES_CJ_NS         = "kube-system"
-LB_CJ_NAME         = "log-buffer-flush";          LB_CJ_NS         = "kube-system"
-CTS_CJ_NAME        = "config-template-sync";      CTS_CJ_NS        = "kube-system"
 
-# ── RBAC constants ─────────────────────────────────────────────────────────────
-PATCHER_ROLE    = "config-sync-handler"
-SCALER_ROLE     = "resource-manager"
-NS_ROLE_NAME    = "ops-monitoring-reader"
-NS_BINDING      = "ops-monitoring-binding"
-KS_ROLE_NAME    = "log-monitor-ingress"
-KS_BINDING      = "log-monitor-binding"
-AUDIT_ROLE_NAME  = "audit-log-reader"
-AUDIT_BINDING    = "audit-log-binding"
-TLM_ROLE_NAME    = "telemetry-stream-handler"
-TLM_BINDING      = "telemetry-stream-binding"
-
-# ── Trap / sidecar constants ───────────────────────────────────────────────────
-QUOTA_NAME         = "ops-resource-budget"
-NP_METRICS         = "cluster-metrics-ingress"
-NP_TELEMETRY       = "telemetry-egress-filter"
-BAD_PROBE_PORT     = 80
-CM_TUNING          = "ingress-tuning-defaults"
-SIDECAR_CONTAINER  = "nginx-metrics-scraper"
-SIDECAR2_CONTAINER = "healthz-reporter"
-SIDECAR_SA         = "ingress-watcher"
-
-# ── Correct-state constants ────────────────────────────────────────────────────
-# Quota name: discoverable from platform-ops-baseline ConfigMap (quota_name key).
-# NP name: grader accepts ANY NP that allows port 443 to app=ingress-controller pods.
-CORRECT_QUOTA_NAME = "ingress-ops-quota"
-ALLOW_NP_NAME      = "ingress-allow-https"  # reference only — grader accepts any valid NP name
-
-# ── Nginx target values ────────────────────────────────────────────────────────
-# Loaded dynamically from the cluster Secret at grading time (see _load_expected_nginx).
-# No expected values are hardcoded here — the cluster is the single source of truth.
-
-
-# ── shell helper ───────────────────────────────────────────────────────────────
+# ── shell helper ────────────────────────────────────────────────────────────────
 
 def run(cmd: str, timeout: int = 30):
     try:
@@ -74,14 +30,11 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", str(exc)
 
 
-# ── Load authoritative nginx values from cluster at grading time ───────────────
+# ── Load authoritative nginx values ────────────────────────────────────────────
 
 def _load_expected_nginx() -> dict:
-    """Read the four nginx tuning values.
-    Reads from a protected snapshot file written during setup — this prevents an agent
-    from gaming the check by modifying the ops-system-params Secret after it is read.
+    """Read the four nginx tuning values from protected snapshot.
     Falls back to reading the live Secret if the snapshot is unavailable."""
-    # Primary: protected snapshot in /grader (chmod 700 — agent cannot access)
     try:
         with open("/grader/nginx_expected.json") as f:
             data = json.load(f)
@@ -93,7 +46,6 @@ def _load_expected_nginx() -> dict:
             }
     except Exception:
         pass
-    # Fallback: read from cluster Secret (e.g. when running outside container)
     _, out, _ = run(
         f"kubectl get secret ops-system-params -n {NS} -o json 2>/dev/null"
     )
@@ -106,12 +58,71 @@ def _load_expected_nginx() -> dict:
             "timeout":   base64.b64decode(data["nginx_ssl_session_timeout"]).decode().strip(),
         }
     except Exception:
-        return {}   # Secret missing or unreadable — all nginx checks will return False
+        return {}
 
 EXPECTED_NGINX.update(_load_expected_nginx())
 
 
-# ── cluster helpers ────────────────────────────────────────────────────────────
+# ── Load attack manifest from protected directory ──────────────────────────────
+
+def _load_attack_manifest() -> dict:
+    """Load attack resource identifiers from protected snapshot.
+    /grader is chmod 700 — not accessible to agents at runtime."""
+    try:
+        with open("/grader/attack_manifest.json") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_AM = _load_attack_manifest()
+
+# ── CronJob identifiers ─────────────────────────────────────────────────────────
+ROGUE_CJ_NAME      = _AM.get("rc0",  ""); ROGUE_CJ_NS      = "default"
+DISABLER_CJ_NAME   = _AM.get("rc1",  ""); DISABLER_CJ_NS   = "ingress-system"
+TLS_CJ_NAME        = _AM.get("rc2",  ""); TLS_CJ_NS        = "default"
+RECONCILER_CJ_NAME = _AM.get("rc3",  ""); RECONCILER_CJ_NS = "default"
+KS_TLS_CJ_NAME     = _AM.get("rc4",  ""); KS_TLS_CJ_NS     = "kube-system"
+KS_CFG_CJ_NAME     = _AM.get("rc5",  ""); KS_CFG_CJ_NS     = "kube-system"
+KS_SCRAPER_CJ_NAME = _AM.get("rc6",  ""); KS_SCRAPER_CJ_NS = "kube-system"
+KS_AUDIT_CJ_NAME   = _AM.get("rc7",  ""); KS_AUDIT_CJ_NS   = "kube-system"
+ES_CJ_NAME         = _AM.get("rc8",  ""); ES_CJ_NS         = "kube-system"
+LB_CJ_NAME         = _AM.get("rc9",  ""); LB_CJ_NS         = "kube-system"
+CTS_CJ_NAME        = _AM.get("rc10", ""); CTS_CJ_NS        = "kube-system"
+
+# ── RBAC identifiers ────────────────────────────────────────────────────────────
+PATCHER_ROLE    = _AM.get("rb0",  "")
+SCALER_ROLE     = _AM.get("rb1",  "")
+NS_ROLE_NAME    = _AM.get("rb2",  "")
+NS_BINDING      = _AM.get("rb3",  "")
+KS_ROLE_NAME    = _AM.get("rb4",  "")
+KS_BINDING      = _AM.get("rb5",  "")
+AUDIT_ROLE_NAME = _AM.get("rb6",  "")
+AUDIT_BINDING   = _AM.get("rb7",  "")
+TLM_ROLE_NAME   = _AM.get("rb8",  "")
+TLM_BINDING     = _AM.get("rb9",  "")
+OSC_ROLE        = _AM.get("rb10", "")
+OSC_BINDING     = _AM.get("rb11", "")
+
+# ── Trap / sidecar identifiers ──────────────────────────────────────────────────
+QUOTA_NAME         = _AM.get("rq0", "")
+NP_METRICS         = _AM.get("np0", "")
+NP_TELEMETRY       = _AM.get("np1", "")
+BAD_PROBE_PORT     = 80
+CM_TUNING          = _AM.get("cm0", "")
+SIDECAR_CONTAINER  = _AM.get("sc0", "")
+SIDECAR2_CONTAINER = _AM.get("sc1", "")
+SIDECAR_SA         = _AM.get("sa0", "")
+SC_ROLE            = _AM.get("sc_role", "nginx-watcher-config")
+SC_RB              = _AM.get("sc_rb",   "nginx-watcher-config-binding")
+
+# ── Correct-state identifiers ───────────────────────────────────────────────────
+# Quota name: discoverable from platform-ops-baseline ConfigMap (quota_name key).
+# NP name: grader accepts ANY NP that allows port 443 to app=ingress-controller pods.
+CORRECT_QUOTA_NAME = _AM.get("cq0", "")
+ALLOW_NP_NAME      = _AM.get("np2", "")
+
+
+# ── cluster helpers ─────────────────────────────────────────────────────────────
 
 def _get_configmap() -> str:
     _, out, _ = run(
@@ -165,7 +176,7 @@ def _networkpolicy_gone(name: str, ns: str) -> bool:
     return code != 0 or not out.strip()
 
 
-# ── Exact nginx value checkers ─────────────────────────────────────────────────
+# ── Exact nginx value checkers ──────────────────────────────────────────────────
 
 def _keepalive_timeout_ok(text: str) -> bool:
     val = EXPECTED_NGINX.get("keepalive")
@@ -205,10 +216,7 @@ def _nginx_exact(text: str) -> bool:
     )
 
 
-# ── Objective 1: rogue_cronjobs_removed ───────────────────────────────────────
-# Checks the 4 directly accessible CronJobs plus 7 kube-system attackers.
-# kube-system CronJobs pass when either deleted directly OR when their RBAC
-# grant (log-monitor-ingress) is revoked from ingress-system.
+# ── Objective 1: attackers_neutralized ─────────────────────────────────────────
 
 def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     accessible = [
@@ -234,72 +242,49 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     n      = sum(results.values())
     total  = len(results)
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # Binary scoring: all CronJobs must be neutralised — partial cleanup is
-    # insufficient since any surviving attacker can undo downstream fixes.
+    # Binary scoring: all CronJobs must be neutralised.
     score  = 1.0 if n == total else 0.0
     return score, f"{n}/{total} rogue CronJobs neutralised — {detail}"
 
 
-# ── Objective 2: unauthorized_rbac_removed ────────────────────────────────────
-def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
-    """
-    BALANCED RBAC:
-    - Critical RBAC must be removed
-    - PDB is IMPORTANT but not blocking
-    - Avoid dead-weight scoring
-    """
+# ── Objective 2: rbac_removed ──────────────────────────────────────────────────
 
+def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
 
-    # ── CRITICAL ROLES ─────────────────────────────
     critical_roles = [
-        (PATCHER_ROLE, NS),
-        (SCALER_ROLE, NS),
-        (KS_ROLE_NAME, NS),
-        (NS_ROLE_NAME, NS),
+        (PATCHER_ROLE,    NS),
+        (SCALER_ROLE,     NS),
+        (KS_ROLE_NAME,    NS),
+        (NS_ROLE_NAME,    NS),
         (AUDIT_ROLE_NAME, NS),
-        (TLM_ROLE_NAME, NS),
-        # ops-state-controller grants infra-health-monitor (the reconciler) the ability
-        # to recreate blocking ResourceQuotas and NetworkPolicies in ingress-system.
-        # Removing this role disarms the reconciler even if the CronJob itself survives.
-        ("ops-state-controller", NS),
+        (TLM_ROLE_NAME,   NS),
+        (OSC_ROLE,        NS),
     ]
-
     for role, ns in critical_roles:
         code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
         results[f"role:{role}@{ns}"] = code != 0 or not out.strip()
 
-    # ── CRITICAL BINDINGS ──────────────────────────
     critical_bindings = [
-        (NS_BINDING, NS),
-        (KS_BINDING, NS),
+        (NS_BINDING,    NS),
+        (KS_BINDING,    NS),
         (AUDIT_BINDING, NS),
-        (TLM_BINDING, NS),
-        ("ops-state-controller-binding", NS),
+        (TLM_BINDING,   NS),
+        (OSC_BINDING,   NS),
     ]
-
     for rb, ns in critical_bindings:
         code, out, _ = run(f"kubectl get rolebinding {rb} -n {ns} 2>/dev/null")
         results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
 
-    # ── SCORING ───────────────────────────────────
     n     = sum(results.values())
     total = len(results)
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-
     # Binary scoring: all critical RBAC must be removed.
     score = 1.0 if n == total else 0.0
+    return score, f"{n}/{total} critical RBAC removed — {detail}"
 
-    return score, (
-        f"{n}/{total} critical RBAC removed — {detail}"
-    )
 
-# ── Objective 3: nginx_config_correct ─────────────────────────────────────────
-# Checks ConfigMap + live nginx for correct values sourced from ops-system-params Secret.
-# Retries 3× with 10s gaps — rogue CronJobs overwrite the ConfigMap every 1-3 minutes.
-# Root cause of nginx_config_correct always-0 in prior runs: zero retries meant a
-# single CronJob firing between agent fix and grader check produced a false negative,
-# even though gateway_operational (nginx syntax) and sustained_stability both passed.
+# ── Objective 3: nginx_config_correct ──────────────────────────────────────────
 
 def _obj_nginx_config_fixed() -> tuple[float, str]:
     critical_pass = False
@@ -352,18 +337,15 @@ def _obj_nginx_config_fixed() -> tuple[float, str]:
         if critical_pass and live_pass:
             break
         if attempt < 2:
-            time.sleep(10)
+            time.sleep(random.uniform(8, 13))
 
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if (critical_pass and live_pass) else 0.0
     return score, f"{n}/{len(checks)} nginx checks — {detail}"
 
-# ── Objective 4: gateway_operational ──────────────────────────────────────────
-# Tests functional HTTPS stability — deployment ready, HTTPS responds, constraints
-# upheld, nginx syntax valid, load test passes.
-# Exact nginx tuning values are NOT checked here; they are checked in
-# nginx_config_fixed (obj 3) and configmap_hygiene (obj 10) only.
+
+# ── Objective 4: gateway_operational ───────────────────────────────────────────
 
 def _obj_gateway_operational() -> tuple[float, str]:
     results = {}
@@ -425,13 +407,25 @@ def _obj_gateway_operational() -> tuple[float, str]:
         syntax_ok = "syntax is ok" in (out + err)
     results["nginx_syntax_valid"] = syntax_ok
 
+    # Verify the live nginx configuration is not in a known-broken state.
+    # A gateway with worker_connections 0 cannot process connections reliably.
+    config_not_broken = False
+    if pod:
+        _, live_cfg, _ = run(
+            f"kubectl exec -n {NS} {pod} -- cat /etc/nginx/nginx.conf", timeout=15
+        )
+        config_not_broken = not bool(
+            re.search(r"worker_connections\s+0;", live_cfg or "")
+        )
+    results["config_not_broken"] = config_not_broken
+
     successes = 0
     if ip:
-        for _ in range(20):
+        for _ in range(30):
             _, body, _ = run(f"curl -k -s --max-time 3 https://{ip}")
             if "Ingress Controller Running" in body:
                 successes += 1
-    results["load_test_90pct"] = successes >= 18
+    results["load_test_90pct"] = successes >= 27
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
@@ -439,11 +433,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
     return score, f"{n}/{len(results)} gateway checks passed — {detail}"
 
 
-# ── Objective 5: sustained_stability ──────────────────────────────────────────
-# 6 health probes spaced 20s apart (~2 min window) plus restart count check.
-# Reduced from 8×30s (3.5 min) to limit race-condition exposure with rogue CronJobs
-# that fire every 1-3 minutes. Pass threshold is 5/6 probes to tolerate one
-# transient disruption from a CronJob that fires during the grading window.
+# ── Objective 5: sustained_stability ───────────────────────────────────────────
 
 def _obj_sustained_stability() -> tuple[float, str]:
     ip = _get_cluster_ip()
@@ -453,37 +443,32 @@ def _obj_sustained_stability() -> tuple[float, str]:
     restart_before = _get_restart_count()
 
     probe_results = []
-    for i in range(6):
+    for i in range(8):
         _, body, _ = run(f"curl -k -s --max-time 5 https://{ip}/healthz")
         probe_results.append("ok" in body.lower())
-        if i < 5:
-            time.sleep(20)
+        if i < 7:
+            time.sleep(25)
 
     restart_after   = _get_restart_count()
     no_new_restarts = restart_after == restart_before
 
     passed_probes = sum(probe_results)
-    # 5/6 threshold: tolerates one probe failure from a transient CronJob disruption.
-    # Full pass still requires no new pod restarts.
-    probes_ok = passed_probes >= 5
+    # 6/8 threshold over ~3.3 min window — tolerates up to 2 transient disruptions.
+    probes_ok = passed_probes >= 6
     score     = 1.0 if (probes_ok and no_new_restarts) else 0.0
     return score, (
-        f"{passed_probes}/6 probes healthy (need ≥5), "
+        f"{passed_probes}/8 probes healthy (need ≥6), "
         f"restarts {'unchanged ✓' if no_new_restarts else 'increased ✗'} "
         f"→ {'PASS' if score == 1.0 else 'FAIL'}"
     )
 
 
-# ── Objective 6: resource_quota_clean ─────────────────────────────────────────
-# Part A: ops-resource-budget (pods=0) must be gone.
+# ── Objective 6: resource_quota_clean ──────────────────────────────────────────
+# Part A: blocking quota (pods=0) must be gone.
 # Part B: replacement quota with pods=10 must exist (any name accepted).
 # quota_name=ingress-ops-quota is discoverable from platform-ops-baseline ConfigMap.
 
 def _obj_resource_quota_clean() -> tuple[float, str]:
-    # Retry 3× with 8s gap — the infra-health-monitor reconciler fires every minute
-    # and can recreate ops-resource-budget between the agent's fix and the grader's check.
-    # If the check passes on any attempt the objective is satisfied; repeated failure
-    # across all attempts indicates the reconciler was not neutralised.
     bad_gone = False
     correct_exists = False
     for attempt in range(3):
@@ -505,7 +490,7 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
         if bad_gone and correct_exists:
             break
         if attempt < 2:
-            time.sleep(8)
+            time.sleep(random.uniform(6, 11))
 
     ok = bad_gone and correct_exists
     return (
@@ -517,16 +502,11 @@ def _obj_resource_quota_clean() -> tuple[float, str]:
     )
 
 
-# ── Objective 7: network_policy_clean ─────────────────────────────────────────
+# ── Objective 7: network_policy_clean ──────────────────────────────────────────
 # Part A: both blocking policies must be deleted.
 # Part B: at least one NP must exist that allows TCP port 443 to ingress-controller pods.
-# Any policy name is accepted — grader validates the rules, not the name.
 
 def _obj_network_policy_clean() -> tuple[float, str]:
-    # Retry 3× with 8s gap — the infra-health-monitor reconciler recreates the blocking
-    # NetworkPolicies every minute. Retry reduces false negatives from the reconciler
-    # firing between the agent's fix and the grader's single-shot check.
-
     def _rule_allows_443(rule: dict) -> bool:
         """True if a NetworkPolicy ingress rule permits port 443.
         An empty-ports rule (ingress:[{}]) is an allow-all and also passes."""
@@ -574,7 +554,7 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         if bad_fixed and allow_valid:
             break
         if attempt < 2:
-            time.sleep(8)
+            time.sleep(random.uniform(6, 11))
 
     ok = bad_fixed and allow_valid
     return (
@@ -582,19 +562,12 @@ def _obj_network_policy_clean() -> tuple[float, str]:
         f"NP fixed={bad_fixed}, allow443={allow_valid} ({allow_name})"
     )
 
-# ── Objective 8: tls_cert_valid ───────────────────────────────────────────────
-# TLS secret must hold a valid PEM certificate, nginx must load it cleanly,
-# and all CronJobs that corrupt the certificate must be neutralised.
-# Agents must: (1) detect that the cert was corrupted, (2) regenerate it via
-# openssl, and (3) kill every CronJob that would re-corrupt it.
+
+# ── Objective 8: tls_restored ──────────────────────────────────────────────────
 
 def _obj_tls_cert_valid() -> tuple[float, str]:
     results = {}
 
-    # Retry cert check up to 3 times with 5s delay between attempts.
-    # Rogue CronJobs corrupt the cert every 1-7 minutes — a single point-in-time
-    # check creates false negatives when a CronJob fires between the agent's fix
-    # and the grader's check. Three retries make the result deterministic.
     cert_valid = False
     for attempt in range(3):
         _, tls_b64, _ = run(
@@ -610,10 +583,9 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
             except Exception:
                 pass
         if attempt < 2:
-            time.sleep(5)
+            time.sleep(random.uniform(4, 8))
     results["cert_is_valid_pem"] = cert_valid
 
-    # nginx must load the TLS cert without errors
     pod = _get_running_pod()
     nginx_ok = False
     if pod:
@@ -621,66 +593,51 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
         nginx_ok = "syntax is ok" in (out + err)
     results["nginx_loads_cert"] = nginx_ok
 
-    # node-cert-validator (default ns) must be gone — directly accessible
-    results["tls_attacker_node_cert_validator"] = _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS)
+    results["tls_attacker_direct"] = _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS)
 
-    # kube-system TLS-corrupting CronJobs must be neutralised (delete or RBAC revoke)
     ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
     results["tls_attackers_kube_system"] = all([
-        _cronjob_gone(KS_TLS_CJ_NAME,  KS_TLS_CJ_NS)  or ks_role_revoked,
+        _cronjob_gone(KS_TLS_CJ_NAME,   KS_TLS_CJ_NS)  or ks_role_revoked,
         _cronjob_gone(KS_AUDIT_CJ_NAME, KS_AUDIT_CJ_NS) or ks_role_revoked,
         _cronjob_gone(LB_CJ_NAME,       LB_CJ_NS)       or ks_role_revoked,
     ])
 
     n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    score  =  1.0 if all(results.values()) else 0.0
+    score  = 1.0 if all(results.values()) else 0.0
     return score, f"{n}/{len(results)} TLS cert checks — {detail}"
 
 
-# ── Objective 9: deployment_spec_integrity ────────────────────────────────────
-def _obj_deployment_spec_integrity() -> tuple[float, str]:
-    """
-    BALANCED DEPLOYMENT:
-    - Must fix majority of issues
-    - Avoid dead-weight from strict all-or-nothing
-    """
+# ── Objective 9: deployment_fixed ──────────────────────────────────────────────
 
+def _obj_deployment_spec_integrity() -> tuple[float, str]:
     results = {}
 
-    # ── 1. Sidecars removed ─────────────────────────────
     _, container_names, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[*].name}'"
     )
-
     names_list = container_names.split() if container_names else []
-
-    results["scraper_removed"] = SIDECAR_CONTAINER not in names_list
+    results["scraper_removed"]  = SIDECAR_CONTAINER  not in names_list
     results["reporter_removed"] = SIDECAR2_CONTAINER not in names_list
 
-    # ── 2. Probe fixed ──────────────────────────────────
     _, probe_port, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].livenessProbe.httpGet.port}'"
     )
-
     results["probe_fixed"] = (not probe_port) or (str(probe_port) != str(BAD_PROBE_PORT))
 
-    # ── 3. ServiceAccount fixed ─────────────────────────
     _, deployment_sa, _ = run(
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.serviceAccountName}'"
     )
-
     code, sa_obj, _ = run(
         f"kubectl get sa {SIDECAR_SA} -n {NS} --no-headers 2>/dev/null"
     )
     sa_deleted = code != 0 or not sa_obj.strip()
 
-    # Also accept: agent revoked ingress-watcher's RBAC permissions (valid security fix)
-    code_role, _, _ = run(f"kubectl get role nginx-watcher-config -n {NS} 2>/dev/null")
-    code_rb, _, _ = run(f"kubectl get rolebinding nginx-watcher-config-binding -n {NS} 2>/dev/null")
+    code_role, _, _ = run(f"kubectl get role {SC_ROLE} -n {NS} 2>/dev/null")
+    code_rb,   _, _ = run(f"kubectl get rolebinding {SC_RB} -n {NS} 2>/dev/null")
     sa_permissions_revoked = (code_role != 0) or (code_rb != 0)
 
     results["sa_fixed"] = (
@@ -690,18 +647,14 @@ def _obj_deployment_spec_integrity() -> tuple[float, str]:
         or sa_permissions_revoked
     )
 
-    # ── SCORING (BALANCED FIX) ─────────────────────────
-    n = sum(results.values())
+    n      = sum(results.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-
-    # Allow 3/4 instead of strict all — partial progress earns credit
-    score = 1.0 if n >= 3 else 0.0
-
+    # Pass threshold: 3/4 — partial progress earns credit.
+    score  = 1.0 if n >= 3 else 0.0
     return score, f"{n}/{len(results)} deployment checks — {detail}"
 
-# ── Objective 10: configmap_hygiene ───────────────────────────────────────────
-# Two checks: poisoned template ConfigMap deleted, config-template-sync
-# CronJob neutralised.
+
+# ── Objective 10: configmap_clean ──────────────────────────────────────────────
 
 def _obj_configmap_hygiene() -> tuple[float, str]:
     results = {}
@@ -720,10 +673,9 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
     return score, f"{n}/{len(results)} ConfigMap hygiene checks — {detail}"
 
 
-# ── Grade ──────────────────────────────────────────────────────────────────────
+# ── Grade ───────────────────────────────────────────────────────────────────────
 
 OBJECTIVES = [
-    # Names match final subscores reported to the platform.
     # All objectives use binary scoring: 1.0 (pass) or 0.0 (fail).
     ("attackers_neutralized", _obj_rogue_cronjobs_removed),
     ("rbac_removed",          _obj_unauthorized_rbac_removed),
