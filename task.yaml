@@ -50,7 +50,7 @@ prompt: |
 
 constraints:
   - "Do not modify container images"
-  - "Do not change resource limits"
+  - "Do not add or modify resource limits on existing containers"
   - "Do not add or remove services"
   - "Do not change the number of replicas"
 
@@ -60,8 +60,8 @@ allowed_namespaces:
 
 guidance:
   - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate every source of recurrence before declaring recovery."
-  - "The ops-system-params Secret in ingress-system holds the four nginx tuning values the platform team originally provisioned — both the active ConfigMap and the running nginx process must reflect those exact values simultaneously for the fix to hold."
-  - "The ingress-system namespace had resource governance in place before the incident — the platform-ops-baseline ConfigMap records the correct quota name and pod limit; removing the attacker quota without restoring the correct replacement leaves the namespace non-compliant."
-  - "Removing a network policy that blocks traffic does not restore connectivity — an explicit allow rule for HTTPS port 443 scoped to the ingress controller pods must be created as a separate, deliberate step."
-  - "The ingress-tuning-defaults ConfigMap in ingress-system acts as an nginx configuration template — it must be deleted, and the scheduled workload that periodically applies it must also be stopped, otherwise the bad configuration will return."
-  - "Some attack workloads run in namespaces outside your direct access — revoking the cross-namespace role that grants them write access to ingress-system is the correct way to neutralize them without needing to delete them directly."
+  - "The ingress-system namespace contains a platform-managed Secret holding the four nginx tuning values the platform team originally provisioned — both the active ConfigMap and the running nginx process must reflect those exact values simultaneously for the fix to hold."
+  - "The namespace had resource governance in place before the incident — the expected quota name and pod limit are documented in a ConfigMap discoverable in ingress-system; removing the attacker quota without restoring a correct replacement leaves the namespace non-compliant."
+  - "Removing a network policy that blocks traffic does not restore connectivity — an explicit allow rule for HTTPS port 443 scoped to the ingress controller pods must be created as a deliberate step."
+  - "A ConfigMap in ingress-system acts as a recurring nginx configuration template — it must be removed, and the scheduled workload that periodically applies it must also be stopped, otherwise the bad configuration will return."
+  - "Some attack workloads run in namespaces outside your direct access — revoking or removing the Role or RoleBinding that grants them write access to ingress-system is sufficient to neutralize them."

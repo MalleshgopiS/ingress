@@ -171,6 +171,15 @@ def _role_gone(name: str, ns: str) -> bool:
     return code != 0 or not out.strip()
 
 
+def _rbac_effective_gone(role: str, binding: str, ns: str) -> bool:
+    """RBAC access is effectively revoked if either the Role or the RoleBinding is absent.
+    Deleting either object is sufficient — agents need not remove both."""
+    if _role_gone(role, ns):
+        return True
+    code, out, _ = run(f"kubectl get rolebinding {binding} -n {ns} 2>/dev/null")
+    return code != 0 or not out.strip()
+
+
 def _networkpolicy_gone(name: str, ns: str) -> bool:
     code, out, _ = run(f"kubectl get networkpolicy {name} -n {ns} 2>/dev/null")
     return code != 0 or not out.strip()
@@ -227,7 +236,7 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
     ]
     results = {f"{n}@{ns}": _cronjob_gone(n, ns) for n, ns in accessible}
 
-    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    ks_role_revoked = _rbac_effective_gone(KS_ROLE_NAME, KS_BINDING, NS)
     for n, ns in [
         (KS_TLS_CJ_NAME,     KS_TLS_CJ_NS),
         (KS_CFG_CJ_NAME,     KS_CFG_CJ_NS),
@@ -252,34 +261,27 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
 def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
     results = {}
 
-    critical_roles = [
-        (PATCHER_ROLE,    NS),
-        (SCALER_ROLE,     NS),
-        (KS_ROLE_NAME,    NS),
-        (NS_ROLE_NAME,    NS),
-        (AUDIT_ROLE_NAME, NS),
-        (TLM_ROLE_NAME,   NS),
-        (OSC_ROLE,        NS),
-    ]
-    for role, ns in critical_roles:
-        code, out, _ = run(f"kubectl get role {role} -n {ns} 2>/dev/null")
-        results[f"role:{role}@{ns}"] = code != 0 or not out.strip()
+    # Standalone roles — no paired binding in the attack manifest; Role must be deleted.
+    for role in [PATCHER_ROLE, SCALER_ROLE]:
+        code, out, _ = run(f"kubectl get role {role} -n {NS} 2>/dev/null")
+        results[f"role:{role}@{NS}"] = code != 0 or not out.strip()
 
-    critical_bindings = [
-        (NS_BINDING,    NS),
-        (KS_BINDING,    NS),
-        (AUDIT_BINDING, NS),
-        (TLM_BINDING,   NS),
-        (OSC_BINDING,   NS),
+    # Paired role+binding — access is revoked if EITHER the Role OR the RoleBinding is gone.
+    # Agents that delete only the binding still receive credit for that pair.
+    paired = [
+        (KS_ROLE_NAME,    KS_BINDING),
+        (NS_ROLE_NAME,    NS_BINDING),
+        (AUDIT_ROLE_NAME, AUDIT_BINDING),
+        (TLM_ROLE_NAME,   TLM_BINDING),
+        (OSC_ROLE,        OSC_BINDING),
     ]
-    for rb, ns in critical_bindings:
-        code, out, _ = run(f"kubectl get rolebinding {rb} -n {ns} 2>/dev/null")
-        results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
+    for role, binding in paired:
+        results[f"rbac:{role}@{NS}"] = _rbac_effective_gone(role, binding, NS)
 
     n     = sum(results.values())
     total = len(results)
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # Binary scoring: all critical RBAC must be removed.
+    # Binary scoring: all 7 RBAC authorities must be neutralised.
     score = 1.0 if n == total else 0.0
     return score, f"{n}/{total} critical RBAC removed — {detail}"
 
@@ -595,7 +597,7 @@ def _obj_tls_cert_valid() -> tuple[float, str]:
 
     results["tls_attacker_direct"] = _cronjob_gone(TLS_CJ_NAME, TLS_CJ_NS)
 
-    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    ks_role_revoked = _rbac_effective_gone(KS_ROLE_NAME, KS_BINDING, NS)
     results["tls_attackers_kube_system"] = all([
         _cronjob_gone(KS_TLS_CJ_NAME,   KS_TLS_CJ_NS)  or ks_role_revoked,
         _cronjob_gone(KS_AUDIT_CJ_NAME, KS_AUDIT_CJ_NS) or ks_role_revoked,
@@ -662,7 +664,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
     code, out, _ = run(f"kubectl get configmap {CM_TUNING} -n {NS} 2>/dev/null")
     results[f"configmap:{CM_TUNING}"] = code != 0 or not out.strip()
 
-    ks_role_revoked = _role_gone(KS_ROLE_NAME, NS)
+    ks_role_revoked = _rbac_effective_gone(KS_ROLE_NAME, KS_BINDING, NS)
     results[f"cronjob:{CTS_CJ_NAME}@{CTS_CJ_NS}"] = (
         _cronjob_gone(CTS_CJ_NAME, CTS_CJ_NS) or ks_role_revoked
     )
