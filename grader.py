@@ -206,7 +206,7 @@ def _nginx_exact(text: str) -> bool:
 
 
 # ── Objective 1: rogue_cronjobs_removed ───────────────────────────────────────
-# Checks the 4 directly accessible CronJobs plus 4 kube-system attackers.
+# Checks the 4 directly accessible CronJobs plus 7 kube-system attackers.
 # kube-system CronJobs pass when either deleted directly OR when their RBAC
 # grant (log-monitor-ingress) is revoked from ingress-system.
 
