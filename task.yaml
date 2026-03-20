@@ -1,11 +1,15 @@
-id: ingress-tls-memory-leak
-title: "Ingress Controller Recurring HTTPS Gateway Failures with Inconsistent Recovery"
-difficulty: expert
+id: ingress-controller-stability-recovery
+
+title: "Ingress Controller HTTPS Instability with Recurring Configuration Drift"
+
+difficulty: hard
+
 category: "kubernetes / ingress / incident-response"
+
 metadata:
   category: kubernetes
-  difficulty: expert
-  estimated_time: 4H
+  difficulty: hard
+  estimated_time: 3H
   tags:
     - kubernetes
     - ingress
@@ -14,63 +18,72 @@ metadata:
     - rbac
     - networkpolicy
     - incident-response
+
 prompt: |
   [Context]
-  You are operating on a Kubernetes cluster. The ingress controller is deployed in
-  the ingress-system namespace.
+  You are a platform engineer responsible for maintaining the Kubernetes ingress layer.
+  The ingress controller runs in the `ingress-system` namespace.
+
   [Incident]
-  Three days ago the platform edge gateway started dropping HTTPS connections sporadically.
-  On-call acknowledged the alert, restarted the pod, and traffic recovered. Six hours later
-  the failures returned. The cycle has repeated every few hours: brief recovery, degradation,
-  then another forced restart. The SRE team confirmed upstream services are healthy and node
-  resources show no saturation. A junior engineer noticed nginx worker process logs mention
-  SSL handshake errors but could not trace the root cause before their shift ended.
+  Over the past few days, HTTPS traffic through the ingress controller has been unstable.
+  Connections intermittently fail, and temporary fixes (such as restarting the controller)
+  only resolve the issue for a short period before degradation returns.
+
+  Logs from the ingress controller mention SSL handshake issues and inconsistent
+  connection handling, but no clear root cause has been identified.
+
+  [Observed Behavior]
+  - HTTPS traffic intermittently fails
+  - Restarting ingress controller temporarily restores service
+  - Issues reappear after some time
+  - No resource exhaustion on nodes
+  - Upstream services are healthy
+
   [Task]
-  Investigate the cluster and restore stable, self-sustaining HTTPS service through the
-  ingress controller. The gateway must not require manual restarts to recover. Identify
-  and eliminate whatever is causing the recurring failures — the cluster may have been
-  tampered with in multiple ways.
-  During investigation, you may need to examine workloads, scheduled jobs, RBAC permissions,
-  configuration sources, and networking controls across the allowed namespaces. Some recurring
-  interference may originate from kube-system automation that is only remediable either by
-  directly neutralising the offending workload or by revoking the ingress-system RBAC grants it uses.
-  Note:
-  Some operational baseline configuration values used by the ingress platform are stored
-  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
-  and Secrets in the ingress-system namespace may reveal important recovery parameters.
-  Some resources may appear valid but could have been introduced or modified during the
-  incident. Validate their necessity carefully before retaining them.
-  After removing malicious or conflicting resources, proper governance resources such as
-  NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
-  [Verification]
-  The incident is resolved when HTTPS traffic flows reliably through the ingress controller
-  without manual intervention and the controller sustains stable operation without restarting.
+  Investigate the cluster and restore stable HTTPS service through the ingress controller.
+
+  The system must:
+  - Sustain stable HTTPS traffic without requiring restarts
+  - Maintain correct configuration over time (no recurring breakage)
+  - Enforce proper operational constraints expected for this namespace
+
+  You may need to investigate:
+  - Scheduled workloads
+  - RBAC permissions
+  - Configuration sources (ConfigMaps / Secrets)
+  - Network policies and quotas
+  - Deployment configuration of the ingress controller
+
+  Some components may appear valid but could be outdated, conflicting, or malicious.
+  Ensure that only necessary and correct resources remain.
+
+  [Important Notes]
+  - Some failures may reoccur due to automated processes in the cluster
+  - Platform baseline values are stored in protected configuration objects
+  - Not all visible configuration sources are trustworthy
+
+  [Success Criteria]
+  The task is complete when:
+  - HTTPS traffic is stable
+  - No recurring degradation occurs
+  - Configuration remains consistent over time
+  - The ingress controller operates without manual intervention
+
 constraints:
   - "Do not modify container images"
   - "Do not change resource limits"
   - "Do not add or remove services"
-  - "Do not change the number of replicas"
+  - "Do not change replica counts"
+
 allowed_namespaces:
   - default
   - ingress-system
   - kube-system
+
 guidance:
-  # Investigation Approach
-  - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
-  - "Platform Secrets in the ingress-system namespace contain authoritative baseline values; not all ConfigMaps in the namespace can be trusted as the source of truth."
-  # Deployment Integrity
-  - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."
-  # RBAC and Scheduled Workloads
-  - "Recurring failures often indicate an active scheduled process still running. Revoking RBAC permissions that grant access to the ingress-system namespace can neutralise scheduled attackers that cannot be directly deleted."
-  - "Audit all Roles and RoleBindings in ingress-system — not only those tied to kube-system service accounts; any unauthorised role granting write access should be removed."
-  # Governance Restoration
-  - "Removing a blocking access-control resource is not always sufficient — the platform may require a correctly configured replacement to maintain stable network access."
-  - "The expected resource governance values for this namespace are recorded in a platform-managed ConfigMap within ingress-system — use those values when recreating any quota."
-  # Configuration Source
-  - "Verify that ingress controller configuration reflects current platform values rather than deprecated defaults that may have been present before the incident."
-  - "A ConfigMap acting as a recurring configuration template can silently reintroduce bad values — remove it and stop the scheduled workload that applies it."
-  # TLS Integrity
-  - "The ingress controller's TLS certificate may have been replaced during the incident — verify that the certificate Secret in ingress-system contains a valid, loadable certificate."
-  # Final Check
-  - "Stable recovery requires that no remaining scheduled process can re-introduce failures after remediation is complete."
-  - "Some attackers may require indirect mitigation (e.g., RBAC revocation across namespaces)"
+  - "Recurring failures often indicate an automated process reintroducing the issue"
+  - "Validate whether configuration values come from authoritative sources"
+  - "Inspect RBAC carefully — unauthorized write access can enable hidden interference"
+  - "Not all ConfigMaps represent the correct system configuration"
+  - "Removing a resource may not be sufficient — correct replacements may be required"
+  - "Focus on restoring a stable end-to-end system, not just eliminating symptoms"

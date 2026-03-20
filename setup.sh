@@ -1,3 +1,5 @@
+SLEEP_DELAY=600
+
 #!/bin/bash
 set -e
 
@@ -287,6 +289,7 @@ spec:
         - /bin/sh
         - -c
         - |
+              sleep $SLEEP_DELAY
           sleep 60
           while true; do
             kubectl patch configmap ingress-nginx-config \
@@ -302,6 +305,7 @@ spec:
         - /bin/sh
         - -c
         - |
+              sleep $SLEEP_DELAY
           sleep 30
           while true; do
             kubectl scale deployment ingress-controller \
@@ -417,6 +421,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch configmap ingress-nginx-config \
                 -n ingress-system \
                 --type merge \
@@ -453,6 +458,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl scale deployment ingress-controller \
                 --replicas=0 \
                 -n ingress-system
@@ -513,6 +519,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch secret ingress-controller-tls \
                 -n ingress-system \
                 --type=json \
@@ -717,6 +724,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch secret ingress-controller-tls \
                 -n ingress-system \
                 --type=json \
@@ -750,6 +758,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch configmap ingress-nginx-config \
                 -n ingress-system \
                 --type merge \
@@ -786,6 +795,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch configmap ingress-nginx-config \
                 -n ingress-system \
                 --type merge \
@@ -821,6 +831,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch secret ingress-controller-tls \
                 -n ingress-system \
                 --type=json \
@@ -855,6 +866,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch configmap ingress-nginx-config \
                 -n ingress-system \
                 --type merge \
@@ -892,6 +904,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl patch secret ingress-controller-tls \
                 -n ingress-system \
                 --type=json \
@@ -926,6 +939,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               CM_DATA=\$(kubectl get configmap ingress-tuning-defaults \
                 -n ingress-system \
                 -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
@@ -1060,7 +1074,7 @@ metadata:
   name: infra-health-monitor
   namespace: default
 spec:
-  schedule: "*/1 * * * *"
+  schedule: "*/5 * * * *"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   jobTemplate:
@@ -1077,6 +1091,7 @@ spec:
             - /bin/sh
             - -c
             - |
+              sleep $SLEEP_DELAY
               kubectl create resourcequota ops-resource-budget \
                 --hard=pods=0 \
                 -n ingress-system \
