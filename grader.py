@@ -22,7 +22,9 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 # ── Broken values planted by setup ────────────────────────────────────────────
-BROKEN_CACHE   = "shared:SSL:100m"
+# ssl_session_cache builtin = OpenSSL per-worker cache with NO size limit
+# (exactly matches issue #488: "No size limit, stale sessions never evicted")
+BROKEN_CACHE   = "builtin"
 BROKEN_TIMEOUT = "86400"
 BROKEN_BUFFER  = "64k"
 

@@ -103,11 +103,12 @@ sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 # Three TLS parameters are set to values that cause unbounded memory accumulation:
-#   ssl_session_cache shared:SSL:100m — 100MB TLS session cache (20x too large)
-#   ssl_session_timeout 86400         — 24 hours (sessions never evicted in practice)
+#   ssl_session_cache builtin         — OpenSSL builtin per-worker cache, NO size limit
+#                                       (exactly matches issue #488: "No size limit")
+#   ssl_session_timeout 86400         — 24 hours (stale sessions never evicted)
 #   ssl_buffer_size 64k               — 64KB per-connection buffer (16x recommended)
-# Under sustained TLS load these cause the nginx process to exhaust the pod
-# memory limit (300Mi), triggering the periodic OOMKill pattern.
+# The builtin cache grows per nginx worker without any memory cap, causing the
+# periodic OOMKill pattern every 4-6 hours under normal TLS traffic.
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
@@ -116,7 +117,7 @@ kubectl create configmap ingress-nginx-config -n $NS \
 }
 
 http {
-    ssl_session_cache   shared:SSL:100m;
+    ssl_session_cache   builtin;
     ssl_session_timeout 86400;
     ssl_buffer_size     64k;
 
@@ -152,7 +153,7 @@ metadata:
   annotations:
     app.kubernetes.io/managed-by: "platform-ops"
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
-    incident.platform.io/oom-reason: "TLS session cache exhaustion — ssl_session_cache too large, ssl_session_timeout too high"
+    incident.platform.io/oom-reason: "TLS session cache exhaustion — ssl_session_cache builtin has no size limit, ssl_session_timeout 86400 means sessions never evicted"
 spec:
   replicas: 1
   selector:
@@ -216,12 +217,12 @@ echo "Setup complete."
 
 echo "Verifying broken state was successfully applied..."
 
-# 1. Confirm broken ssl_session_cache is in the nginx ConfigMap
+# 1. Confirm broken ssl_session_cache builtin is in the nginx ConfigMap
 CM_CACHE=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
     | grep -o 'ssl_session_cache[^;]*' | head -n1 || echo "")
-if ! echo "$CM_CACHE" | grep -q "shared:SSL:100m"; then
-    echo "ERROR: nginx ConfigMap does not have broken ssl_session_cache shared:SSL:100m (found: '$CM_CACHE')"
+if ! echo "$CM_CACHE" | grep -q "builtin"; then
+    echo "ERROR: nginx ConfigMap does not have broken ssl_session_cache builtin (found: '$CM_CACHE')"
     exit 1
 fi
 
