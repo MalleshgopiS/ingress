@@ -15,7 +15,7 @@ RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download
     | tar xz -C /usr/local/bin crane && chmod +x /usr/local/bin/crane
 
 RUN crane pull --platform linux/amd64 nginx:1.27-alpine /nginx.tar
-RUN crane pull --platform linux/amd64 bitnami/kubectl:1.30 /kubectl.tar
+RUN crane pull --platform linux/amd64 alpine/k8s:1.30.4 /kubectl.tar
 
 RUN mkdir -p /grader
 RUN mkdir -p /mcp_server/tests
