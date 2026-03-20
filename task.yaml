@@ -32,22 +32,13 @@ prompt: |
   Investigate the cluster and restore stable, self-sustaining HTTPS service through the
   ingress controller. The gateway must not require manual restarts to recover. Identify
   and eliminate whatever is causing the recurring failures — the cluster may have been
-  tampered with in multiple ways.
-
-  During investigation, you may need to examine workloads, scheduled jobs, RBAC permissions,
-  configuration sources, and networking controls across the allowed namespaces. Some recurring
-  interference may originate from kube-system automation that is only remediable either by
-  directly neutralising the offending workload or by revoking the ingress-system RBAC grants
-  it uses.
+  tampered with in multiple ways across several resource types.
 
   Note:
-  Some operational baseline configuration values used by the ingress platform are stored
-  in cluster configuration objects managed by the platform team. Investigating ConfigMaps
-  and Secrets in the ingress-system namespace may reveal important recovery parameters.
-  Some resources may appear valid but could have been introduced or modified during the
-  incident. Validate their necessity carefully before retaining them.
-  After removing malicious or conflicting resources, proper governance resources such as
-  NetworkPolicies and ResourceQuotas may need to be restored for stable operation.
+  Authoritative platform configuration for this ingress deployment is stored in Secrets
+  managed by the platform team — not in ConfigMaps, which may be stale or tampered.
+  Removing a resource that blocks operation is not always sufficient; the platform may
+  require a correctly configured replacement to resume stable service.
 
   [Verification]
   The incident is resolved when HTTPS traffic flows reliably through the ingress controller
@@ -64,17 +55,6 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  # Investigation Approach
-  - "Treat all cluster resources introduced after the incident began as suspect — verify each one's legitimacy before retaining it."
-  - "Platform Secrets in the ingress-system namespace contain authoritative baseline values; not all ConfigMaps in the namespace can be trusted as the source of truth."
-  # Deployment Integrity
-  - "Inspect the ingress controller deployment specification carefully — unexpected containers, misconfigured health probes, or an incorrect ServiceAccount are common tampering vectors."
-  # RBAC and Scheduled Workloads
-  - "Recurring failures often indicate an active scheduled process still running. Revoking RBAC permissions that grant access to the ingress-system namespace can neutralise scheduled attackers that cannot be directly deleted."
-  # Governance Restoration
-  - "Removing a blocking access-control resource is not always sufficient — the platform may require a correctly configured replacement to maintain stable network access."
-  # Configuration Source
-  - "Verify that ingress controller configuration reflects current platform values rather than deprecated defaults that may have been present before the incident."
-  # Final Check
-  - "Stable recovery requires that no remaining scheduled process can re-introduce failures after remediation is complete."
-  - "Some attackers may require indirect mitigation (e.g., RBAC revocation across namespaces)"
+  - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate the source of recurrence before declaring recovery."
+  - "The ingress-system namespace Secrets contain the authoritative nginx tuning values; ConfigMaps in that namespace may reflect deprecated or attacker-modified defaults."
+  - "Stable operation may require correct governance controls to be present — not just absent malicious ones."
