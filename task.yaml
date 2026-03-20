@@ -1,11 +1,7 @@
 id: ingress-controller-stability-recovery
-
 title: "Ingress Controller HTTPS Instability with Recurring Configuration Drift"
-
 difficulty: hard
-
 category: "kubernetes / ingress / incident-response"
-
 metadata:
   category: kubernetes
   difficulty: hard
@@ -20,60 +16,48 @@ metadata:
     - incident-response
 
 prompt: |
-  [Context]
-  You are a platform engineer responsible for maintaining the Kubernetes ingress layer.
-  The ingress controller runs in the `ingress-system` namespace.
+  ### Context
+  You are a platform engineer responsible for maintaining the Kubernetes ingress layer. The ingress controller runs in the `ingress-system` namespace.
 
-  [Incident]
-  Over the past few days, HTTPS traffic through the ingress controller has been unstable.
-  Connections intermittently fail, and temporary fixes (such as restarting the controller)
-  only resolve the issue for a short period before degradation returns.
+  ### Incident
+  Over the past few days, HTTPS traffic through the ingress controller has been unstable. Connections intermittently fail, and temporary fixes (such as restarting the controller) only resolve the issue for a short period before degradation returns. Logs from the ingress controller mention SSL handshake issues and inconsistent connection handling, but no clear root cause has been identified.
 
-  Logs from the ingress controller mention SSL handshake issues and inconsistent
-  connection handling, but no clear root cause has been identified.
+  ### Observed Behavior
+  * **Traffic:** HTTPS traffic intermittently fails.
+  * **Temporary Fix:** Restarting the ingress controller restores service briefly.
+  * **Persistence:** Issues reappear after some time without manual changes.
+  * **Health:** No resource exhaustion on nodes; upstream services are healthy.
 
-  [Observed Behavior]
-  - HTTPS traffic intermittently fails
-  - Restarting ingress controller temporarily restores service
-  - Issues reappear after some time
-  - No resource exhaustion on nodes
-  - Upstream services are healthy
+  ### Task
+  Investigate the cluster and restore stable HTTPS service. The system must:
+  1. Sustain stable HTTPS traffic without requiring restarts.
+  2. Maintain correct configuration over time (prevent recurring breakage).
+  3. Enforce proper operational constraints expected for this namespace.
 
-  [Task]
-  Investigate the cluster and restore stable HTTPS service through the ingress controller.
+  **Potential Areas of Investigation:**
+  * Scheduled workloads (CronJobs/Jobs) re-applying bad config.
+  * RBAC permissions allowing unauthorized configuration changes.
+  * Configuration sources (ConfigMaps / Secrets).
+  * Network policies and quotas.
+  * Deployment configuration of the ingress controller.
 
-  The system must:
-  - Sustain stable HTTPS traffic without requiring restarts
-  - Maintain correct configuration over time (no recurring breakage)
-  - Enforce proper operational constraints expected for this namespace
+  ### Important Notes
+  * Some failures may reoccur due to automated processes in the cluster.
+  * Platform baseline values are stored in protected configuration objects.
+  * Some required configurations may not exist yet and may need to be recreated based on platform baseline definitions.
+  * Not all visible configuration sources are trustworthy.
 
-  You may need to investigate:
-  - Scheduled workloads
-  - RBAC permissions
-  - Configuration sources (ConfigMaps / Secrets)
-  - Network policies and quotas
-  - Deployment configuration of the ingress controller
-
-  Some components may appear valid but could be outdated, conflicting, or malicious.
-  Ensure that only necessary and correct resources remain.
-
-  [Important Notes]
-  - Some failures may reoccur due to automated processes in the cluster
-  - Platform baseline values are stored in protected configuration objects
-  - Not all visible configuration sources are trustworthy
-
-  [Success Criteria]
-  The task is complete when:
-  - HTTPS traffic is stable
-  - No recurring degradation occurs
-  - Configuration remains consistent over time
-  - The ingress controller operates without manual intervention
+success_criteria:
+  - "HTTPS traffic is stable and SSL handshakes succeed consistently."
+  - "No recurring degradation occurs over an extended period."
+  - "Configuration remains consistent and resistant to unauthorized drift."
+  - "The ingress controller operates without manual intervention."
 
 constraints:
-  - "Do not modify container images"
-  - "Do not change resource limits"
-  - "Do not add or remove services"
-  - "Do not change replica counts"
+  - "Do not modify container images."
+  - "Do not change resource limits."
+  - "Do not add or remove services."
+  - "Avoid modifying replica counts unless necessary to restore service availability."
 
 allowed_namespaces:
   - default
@@ -81,9 +65,9 @@ allowed_namespaces:
   - kube-system
 
 guidance:
-  - "Recurring failures often indicate an automated process reintroducing the issue"
-  - "Validate whether configuration values come from authoritative sources"
-  - "Inspect RBAC carefully — unauthorized write access can enable hidden interference"
-  - "Not all ConfigMaps represent the correct system configuration"
-  - "Removing a resource may not be sufficient — correct replacements may be required"
-  - "Focus on restoring a stable end-to-end system, not just eliminating symptoms"
+  - "Recurring failures often indicate an automated process reintroducing the issue."
+  - "Validate whether configuration values come from authoritative sources."
+  - "Inspect RBAC carefully—unauthorized write access can enable hidden interference."
+  - "Not all ConfigMaps represent the correct system configuration."
+  - "Removing a resource may not be sufficient—correct replacements may be required."
+  - "Focus on restoring a stable end-to-end system, not just eliminating symptoms."
