@@ -57,41 +57,67 @@ http {
 echo "[Step 2] ConfigMap updated."
 
 # ── Step 3: Reload nginx to apply the new config ───────────────────────────────
-# Patching the ConfigMap alone does not affect the running nginx process.
-# Sending SIGHUP (nginx -s reload) applies the new config without dropping
-# existing connections. Fall back to a rollout restart if no pod is running.
+# Two-phase approach:
+#   Phase A — wait for kubelet to sync the updated ConfigMap to the pod volume
+#             (the file /etc/nginx/nginx.conf inside the pod is a ConfigMap mount;
+#              kubelet refreshes it asynchronously, typically within 60–90 s).
+#             Only AFTER the on-disk file reflects the new cache value is it safe
+#             to call nginx -s reload, otherwise nginx re-reads the stale file.
+#   Phase B — if the kubelet sync window passes without a confirmed live update,
+#             fall back to a rollout restart so the new pod gets a fresh mount.
 
-echo "[Step 3] Reloading nginx to apply new TLS configuration..."
+echo "[Step 3] Applying new TLS configuration to the running nginx process..."
 POD=$(kubectl get pods -n $NS -l app=ingress-controller \
   --field-selector=status.phase=Running \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
+RELOAD_OK=false
+
 if [ -n "$POD" ]; then
-    kubectl exec -n $NS "$POD" -- nginx -s reload
-    echo "[Step 3] Waiting for nginx to finish reloading..."
-    # Poll nginx -T until the live process reflects the new cache value (up to 60s)
-    RELOAD_OK=false
-    for i in $(seq 1 12); do
+    echo "[Step 3] Waiting for kubelet to sync ConfigMap volume to pod (up to 90s)..."
+    for i in $(seq 1 18); do
         sleep 5
-        LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
-        if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
-            RELOAD_OK=true
+        # Check whether the on-disk nginx.conf inside the pod already has the new value.
+        # Only once the file is updated should nginx -s reload be issued.
+        if kubectl exec -n $NS "$POD" -- \
+               grep -q "ssl_session_cache.*$SSL_CACHE" /etc/nginx/nginx.conf 2>/dev/null; then
+            echo "[Step 3] Volume synced (iteration ${i}). Sending reload signal..."
+            kubectl exec -n $NS "$POD" -- nginx -s reload
+            sleep 3
+            # Verify the running process picked up the new values via nginx -T
+            LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
+            if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
+                RELOAD_OK=true
+                echo "[Step 3] nginx reload verified — live process updated."
+            else
+                echo "[Step 3] Reload sent but nginx -T still shows old config. Retrying reload..."
+                kubectl exec -n $NS "$POD" -- nginx -s reload
+                sleep 5
+                LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
+                if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
+                    RELOAD_OK=true
+                    echo "[Step 3] nginx reload verified on retry."
+                fi
+            fi
             break
         fi
-        echo "[Step 3] Waiting for nginx reload... (${i}/12)"
+        echo "[Step 3]  ... waiting for kubelet sync (${i}/18)"
     done
-    kubectl exec -n $NS "$POD" -- nginx -t
-    if [ "$RELOAD_OK" = "true" ]; then
-        echo "[Step 3] nginx reloaded successfully — live config verified."
-    else
-        echo "[Step 3] Warning: nginx reload triggered but live config verification timed out. Forcing rollout restart..."
-        kubectl rollout restart deployment/$DEPLOY -n $NS
-        kubectl rollout status deployment/$DEPLOY -n $NS --timeout=120s
-    fi
-else
-    echo "[Step 3] No running pod found — triggering rollout restart..."
+fi
+
+if [ "$RELOAD_OK" != "true" ]; then
+    echo "[Step 3] Performing rollout restart to guarantee fresh ConfigMap mount..."
     kubectl rollout restart deployment/$DEPLOY -n $NS
     kubectl rollout status deployment/$DEPLOY -n $NS --timeout=120s
+    echo "[Step 3] Rollout restart completed — new pod has fresh ConfigMap volume."
+fi
+
+# Final syntax check on whichever pod is now active
+ACTIVE_POD=$(kubectl get pods -n $NS -l app=ingress-controller \
+  --field-selector=status.phase=Running \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$ACTIVE_POD" ]; then
+    kubectl exec -n $NS "$ACTIVE_POD" -- nginx -t
 fi
 
 # ── Step 4: Verify the fix ─────────────────────────────────────────────────────
