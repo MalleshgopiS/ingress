@@ -7,27 +7,20 @@ DEPLOY=ingress-controller
 echo "=== Applying ingress controller full remediation ==="
 
 # ── Step 0: Kill the self-healing reconciler FIRST ────────────────────────────
-# infra-health-monitor (default ns) recreates ops-resource-budget, bad NPs,
-# log-monitor-ingress RBAC, and corrupts nginx config every minute.
-# Must be killed before all other steps or fixes get immediately undone.
+
 echo "[Step 0] Killing self-healing reconciler..."
 kubectl delete cronjob infra-health-monitor -n default --ignore-not-found
 kubectl delete jobs --all -n default --ignore-not-found 2>/dev/null || true
 sleep 5
 
 # ── Step 1: Revoke kube-system attack permissions ─────────────────────────────
-# kube-system CronJobs (cluster-health-aggregator, log-pipeline-worker, etc.)
-# operate via log-monitor-ingress Role/RoleBinding in ingress-system.
-# Revoking these grants neutralizes all kube-system attackers without needing
-# direct access to kube-system namespace.
+
 echo "[Step 1] Revoking kube-system attack permissions..."
 kubectl delete rolebinding log-monitor-binding  -n $NS --ignore-not-found
 kubectl delete role        log-monitor-ingress  -n $NS --ignore-not-found
 
 # ── Step 2: Remove blocking ResourceQuota then recreate correct one ───────────
-# ops-resource-budget has pods=0, blocking all pod creation.
-# Replacement name and pod limit are read from the platform-ops-baseline ConfigMap
-# (quota_name and quota_pods_limit keys) — not hardcoded here.
+
 echo "[Step 2] Removing blocking ResourceQuota and creating correct replacement..."
 kubectl delete resourcequota ops-resource-budget -n $NS --ignore-not-found
 
@@ -48,8 +41,7 @@ spec:
 EOF
 
 # ── Step 3: Remove blocking NetworkPolicies then recreate allow-HTTPS ─────────
-# cluster-metrics-ingress blocks all ingress, telemetry-egress-filter blocks egress.
-# Grader accepts any NP allowing TCP 443 to app=ingress-controller pods.
+
 echo "[Step 3] Removing blocking NetworkPolicies and creating allow-HTTPS policy..."
 kubectl delete networkpolicy cluster-metrics-ingress  -n $NS --ignore-not-found
 kubectl delete networkpolicy telemetry-egress-filter  -n $NS --ignore-not-found
@@ -116,11 +108,7 @@ echo "[Step 6] Removing poisoned ConfigMap template..."
 kubectl delete configmap ingress-tuning-defaults -n $NS --ignore-not-found
 
 # ── Step 7: Pause rollout, fix TLS + nginx config, then patch deployment spec ──
-# IMPORTANT: We pause the rollout FIRST so all spec patches accumulate into ONE
-# rolling update. We also fix TLS and nginx config BEFORE any new pod starts,
-# so the resumed rollout starts a pod with valid nginx.conf from the first attempt.
-# (Without this, each patch triggers a chained rollout with the stale bad config
-#  that has worker_connections 0 — nginx fails, pod crashes, rollout times out.)
+
 
 echo "[Step 7] Pausing rollout to batch all spec changes into one clean update..."
 kubectl rollout pause deployment/$DEPLOY -n $NS 2>/dev/null || true
@@ -224,8 +212,7 @@ echo "[Step 7] Deleting ingress-watcher ServiceAccount (used by injected sidecar
 kubectl delete serviceaccount ingress-watcher -n $NS --ignore-not-found
 
 # ── Step 10: Resume rollout — ONE clean rollout with all changes applied ───────
-# The resumed pod starts with: correct nginx.conf, valid TLS, no sidecars,
-# correct SA, no bad probe. Should become Ready in ~30-60s.
+
 echo "[Step 10] Resuming rollout — one clean update with all fixes applied..."
 kubectl rollout resume deployment/$DEPLOY -n $NS
 kubectl rollout status  deployment/$DEPLOY -n $NS --timeout=300s

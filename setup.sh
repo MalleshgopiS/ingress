@@ -78,8 +78,7 @@ echo "TLS secret created."
 sleep 3
 
 # ── Platform operational baseline ConfigMap ────────────────────────────────────
-# Contains quota recovery reference only. No nginx hints — nginx specs live in
-# ops-system-params Secret which agents must discover by auditing cluster secrets.
+
 kubectl create configmap platform-ops-baseline -n $NS \
   --from-literal=quota_pods_limit=10 \
   --from-literal=quota_name=ingress-ops-quota \
@@ -88,8 +87,7 @@ kubectl create configmap platform-ops-baseline -n $NS \
 sleep 3
 
 # ── ops-system-params Secret: ALL four nginx baseline values (hidden) ──────────
-# Real nginx recovery values. Name does not hint at nginx purpose.
-# Agent must list secrets and inspect this one to discover the values.
+
 kubectl create secret generic ops-system-params -n $NS \
   --from-literal=nginx_worker_connections="2048" \
   --from-literal=nginx_keepalive_timeout="90s" \
@@ -99,8 +97,7 @@ kubectl create secret generic ops-system-params -n $NS \
 sleep 3
 
 # Snapshot nginx expected values into the protected /grader directory.
-# The grader reads this file rather than the live Secret, so an agent cannot
-# game the nginx config check by modifying ops-system-params after setup.
+
 python3 - <<'PYEOF'
 import subprocess, base64, json, os
 try:
@@ -121,8 +118,7 @@ except Exception as e:
 PYEOF
 
 # ── Decoy ConfigMap: nginx-ops-defaults (authoritative-looking, WRONG values) ──
-# Looks like the canonical nginx config — values are standard defaults, NOT baseline.
-# Agent who reads this and uses these values fails all nginx-related objectives.
+
 kubectl create configmap nginx-ops-defaults -n $NS \
   --from-literal=worker_connections="1024" \
   --from-literal=keepalive_timeout="65s" \
@@ -570,7 +566,7 @@ EOF
 sleep 3
 
 # ── Hidden attack permission: log-monitor-ingress (namespace-scoped in ingress-system) ──
-# Grants kube-system/default SA full attack access into ingress-system
+
 kubectl apply -f - <<EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -647,8 +643,6 @@ EOF
 sleep 3
 
 # ── kube-system attack CronJobs (every 1 min) ─────────────────────────────────
-# All use kube-system/default SA which is authorized via log-monitor-ingress
-# Agents cannot delete these directly (no kube-system access) — must revoke log-monitor-ingress
 
 INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
 kubectl apply -f - <<EOF
