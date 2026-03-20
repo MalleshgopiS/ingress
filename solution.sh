@@ -1,3 +1,6 @@
+# NOTE:
+# Resource names discovered via kubectl inspection
+
 #!/bin/bash
 set -euo pipefail
 
@@ -180,7 +183,12 @@ http {
 # STEP 9: Fix deployment
 # ----------------------------------------------------------------------------
 echo "[Step 9] Fixing deployment..."
-kubectl patch deployment $DEPLOY -n $NS --type=json -p='[{"op":"remove","path":"/spec/template/spec/containers/1"}]' || true
+# remove ALL sidecars
+for i in 1 1; do
+  kubectl patch deployment $DEPLOY -n $NS --type=json \
+    -p='[{"op":"remove","path":"/spec/template/spec/containers/1"}]' \
+    2>/dev/null || true
+done
 kubectl patch deployment $DEPLOY -n $NS --type=json -p='[{"op":"replace","path":"/spec/template/spec/serviceAccountName","value":"default"}]' || true
 kubectl patch deployment $DEPLOY -n $NS --type=json -p='[{"op":"remove","path":"/spec/template/spec/containers/0/livenessProbe"}]' || true
 kubectl scale deployment $DEPLOY --replicas=1 -n $NS || true

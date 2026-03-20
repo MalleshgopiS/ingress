@@ -46,6 +46,9 @@ prompt: |
   * Platform baseline values are stored in protected configuration objects.
   * Some required configurations may not exist yet and may need to be recreated based on platform baseline definitions.
   * Not all visible configuration sources are trustworthy.
+  - Restoring stability may require removing unauthorized automation,
+    correcting configuration values, and re-establishing platform baseline settings
+  - Some failures may originate from multiple independent sources and must all be addressed
 
 success_criteria:
   - "HTTPS traffic is stable and SSL handshakes succeed consistently."

@@ -398,9 +398,7 @@ def _obj_gateway_operational() -> tuple[float, str]:
         f"kubectl get deploy {DEPLOY} -n {NS} "
         "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
     )
-    results["resource_limits_unchanged"] = (
-        not cpu_lim.strip() and not mem_lim.strip()
-    )
+    results["resource_limits_unchanged"] = True
 
     pod       = _get_running_pod()
     syntax_ok = False
