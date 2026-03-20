@@ -40,6 +40,9 @@ prompt: |
   Removing a blocking resource is not always sufficient — the platform requires a
   correctly configured replacement to resume stable operation; the expected values and
   resource limits are documented in the namespace and discoverable through investigation.
+  The deployment spec itself may have been altered — tampering can extend beyond
+  configuration files to the running workload definition, including its containers,
+  health probes, and service account.
   Some attack workloads operate from namespaces outside your direct access scope. You
   cannot delete them directly, but revoking their cross-namespace access from within
   ingress-system is a valid and sufficient containment strategy.
@@ -59,9 +62,10 @@ allowed_namespaces:
   - ingress-system
 
 guidance:
-  - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate every source of recurrence before declaring recovery."
-  - "The ingress-system namespace contains a platform-managed Secret holding the four nginx tuning values the platform team originally provisioned — both the active ConfigMap and the running nginx process must reflect those exact values simultaneously for the fix to hold."
-  - "The namespace had resource governance in place before the incident — the expected quota name and pod limit are documented in a ConfigMap discoverable in ingress-system; removing the attacker quota without restoring a correct replacement leaves the namespace non-compliant."
-  - "Removing a network policy that blocks traffic does not restore connectivity — an explicit allow rule for HTTPS port 443 scoped to the ingress controller pods must be created as a deliberate step."
-  - "A ConfigMap in ingress-system acts as a recurring nginx configuration template — it must be removed, and the scheduled workload that periodically applies it must also be stopped, otherwise the bad configuration will return."
-  - "Some attack workloads run in namespaces outside your direct access — revoking or removing the Role or RoleBinding that grants them write access to ingress-system is sufficient to neutralize them."
+  - "Fixes that hold briefly then revert indicate an active scheduled process is undoing your changes — audit all scheduled workloads across every namespace you can access, not just ingress-system, before declaring the environment stable."
+  - "The ingress-system namespace contains a platform-managed Secret with the four authoritative nginx tuning values — both the nginx ConfigMap and the live process configuration must reflect those exact values simultaneously for the fix to hold."
+  - "The namespace had resource governance in place before the incident — the correct pod limit is documented in a ConfigMap discoverable within ingress-system; removing a bad quota without restoring a valid replacement with that value leaves the namespace non-compliant."
+  - "Removing a network policy that blocks traffic is not sufficient to restore connectivity — the ingress controller also requires an explicit inbound allow rule for its service port to be created as a separate step."
+  - "The TLS certificate loaded by the ingress controller may have been tampered with — verify the Secret in ingress-system contains a valid certificate and that the nginx process loads it without errors."
+  - "The deployment spec may contain more than the expected nginx container — check for unrecognised additional containers, verify the liveness probe is targeting the correct port, and confirm the service account assignment is appropriate."
+  - "Some attack workloads run from namespaces outside your direct access — revoking or removing the Role or RoleBinding that grants them write access to ingress-system is sufficient to stop them; any ConfigMap they were using as a configuration template should also be removed from ingress-system."
