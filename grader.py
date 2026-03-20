@@ -171,15 +171,23 @@ def _obj_tls_params_corrected() -> tuple[float, str]:
 # Live nginx process reflects all three correct TLS values.
 # Patching the ConfigMap alone is not sufficient — nginx must be reloaded
 # (nginx -s reload / SIGHUP) or the pod must have restarted.
-# Retries 3× with 5s gaps to allow nginx reload to complete.
+# Retries 6× with 10s gaps (up to 60s) to allow nginx reload to complete.
 
 def _obj_nginx_live_updated() -> tuple[float, str]:
+    # Allow time for kubelet to sync the ConfigMap volume and nginx reload to propagate
     pod = _get_running_pod()
+    if not pod:
+        # Pod may be restarting — wait up to 60s for it to come back
+        for _ in range(6):
+            time.sleep(10)
+            pod = _get_running_pod()
+            if pod:
+                break
     if not pod:
         return 0.0, "No running nginx pod found — cannot verify live config"
 
     checks = {}
-    for attempt in range(3):
+    for attempt in range(6):
         # Use `nginx -T` to dump the RUNNING in-memory configuration.
         # This is the only reliable way to confirm nginx has actually reloaded —
         # `cat /etc/nginx/nginx.conf` reflects kubelet file-sync but NOT nginx reload.
@@ -198,8 +206,8 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
         }
         if all(checks.values()):
             break
-        if attempt < 2:
-            time.sleep(5)
+        if attempt < 5:
+            time.sleep(10)
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
@@ -208,12 +216,25 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
 
 # ── Objective 3: pod_stable ───────────────────────────────────────────────────
 # Pod is running and no new OOMKill restarts occurred during the grading window.
-# Waits 30s to detect any immediate OOMKill triggered by an incorrect fix.
+# Waits up to 90s for deployment to become ready, then observes for 30s to
+# detect any immediate OOMKill triggered by an incorrect fix.
 
 def _obj_pod_stable() -> tuple[float, str]:
+    # Pre-wait: allow the deployment to reach readyReplicas=1 before sampling the
+    # restart baseline. This prevents false failures when the grader runs while
+    # a pod is mid-restart after nginx -s reload or a rollout restart.
+    for _ in range(9):
+        _, r, _ = run(
+            f"kubectl get deploy {DEPLOY} -n {NS} "
+            "-o jsonpath='{{.status.readyReplicas}}'"
+        )
+        if r == "1":
+            break
+        time.sleep(10)
+
     restart_before = _get_restart_count()
 
-    # Wait to detect any immediate OOMKill caused by a bad fix
+    # Observe window: detect any immediate OOMKill caused by a bad fix
     time.sleep(30)
 
     _, ready, _ = run(

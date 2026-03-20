@@ -12,11 +12,11 @@ echo "=== Applying TLS memory leak remediation ==="
 
 echo "[Step 1] Reading authoritative TLS values from tls-session-params Secret..."
 SSL_CACHE=$(kubectl get secret tls-session-params -n $NS \
-  -o jsonpath='{.data.ssl_session_cache}' 2>/dev/null | base64 -d || echo "shared:SSL:5m")
+  -o jsonpath='{.data.ssl_session_cache}' | base64 -d)
 SSL_TIMEOUT=$(kubectl get secret tls-session-params -n $NS \
-  -o jsonpath='{.data.ssl_session_timeout}' 2>/dev/null | base64 -d || echo "1h")
+  -o jsonpath='{.data.ssl_session_timeout}' | base64 -d)
 SSL_BUFFER=$(kubectl get secret tls-session-params -n $NS \
-  -o jsonpath='{.data.ssl_buffer_size}' 2>/dev/null | base64 -d || echo "4k")
+  -o jsonpath='{.data.ssl_buffer_size}' | base64 -d)
 
 echo "[Step 1] Found values:"
 echo "    ssl_session_cache   = $SSL_CACHE"
@@ -67,10 +67,27 @@ POD=$(kubectl get pods -n $NS -l app=ingress-controller \
   -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
 if [ -n "$POD" ]; then
-    kubectl exec -n $NS "$POD" -- nginx -s reload 2>/dev/null || true
-    sleep 3
+    kubectl exec -n $NS "$POD" -- nginx -s reload
+    echo "[Step 3] Waiting for nginx to finish reloading..."
+    # Poll nginx -T until the live process reflects the new cache value (up to 60s)
+    RELOAD_OK=false
+    for i in $(seq 1 12); do
+        sleep 5
+        LIVE=$(kubectl exec -n $NS "$POD" -- nginx -T 2>/dev/null || true)
+        if echo "$LIVE" | grep -q "ssl_session_cache.*$SSL_CACHE"; then
+            RELOAD_OK=true
+            break
+        fi
+        echo "[Step 3] Waiting for nginx reload... (${i}/12)"
+    done
     kubectl exec -n $NS "$POD" -- nginx -t
-    echo "[Step 3] nginx reloaded successfully."
+    if [ "$RELOAD_OK" = "true" ]; then
+        echo "[Step 3] nginx reloaded successfully — live config verified."
+    else
+        echo "[Step 3] Warning: nginx reload triggered but live config verification timed out. Forcing rollout restart..."
+        kubectl rollout restart deployment/$DEPLOY -n $NS
+        kubectl rollout status deployment/$DEPLOY -n $NS --timeout=120s
+    fi
 else
     echo "[Step 3] No running pod found — triggering rollout restart..."
     kubectl rollout restart deployment/$DEPLOY -n $NS
@@ -94,6 +111,6 @@ fi
 
 echo ""
 echo "=== Remediation complete. TLS memory leak configuration has been fixed. ==="
-echo "    ssl_session_cache   → $SSL_CACHE   (was: shared:SSL:100m)"
+echo "    ssl_session_cache   → $SSL_CACHE   (was: builtin)"
 echo "    ssl_session_timeout → $SSL_TIMEOUT  (was: 86400)"
 echo "    ssl_buffer_size     → $SSL_BUFFER    (was: 64k)"
