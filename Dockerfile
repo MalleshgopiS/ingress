@@ -1,4 +1,4 @@
-FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.1.0
+FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.3.0
 
 # Mandatory environment variables
 ENV DISPLAY_NUM=1
