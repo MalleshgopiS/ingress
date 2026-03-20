@@ -56,7 +56,6 @@ allowed_namespaces:
 
 guidance:
   - "A fix that holds temporarily but reverts is not a complete fix — find and eliminate the source of recurrence before declaring recovery."
-  - "Some interfering workloads run outside namespaces you can directly access — revoking their RBAC grants into ingress-system stops them without requiring direct deletion."
   - "The ingress-system namespace Secrets contain the authoritative nginx tuning values; ConfigMaps in that namespace may reflect deprecated or attacker-modified defaults."
   - "Stable operation may require correct governance controls to be present — not just absent malicious ones; the platform-ops-baseline ConfigMap in ingress-system records the expected limits."
   - "Cross-check the active nginx configuration against what the ingress-system Secrets say the values should be — ConfigMaps may not be the source of truth."
