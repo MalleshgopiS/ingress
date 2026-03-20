@@ -1,21 +1,30 @@
-FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.0.3
+FROM us-central1-docker.pkg.dev/bespokelabs/nebula-devops-registry/nebula-devops:1.1.0
 
-ENV ALLOWED_NAMESPACES="default,ingress-system"
+# Mandatory environment variables
+ENV DISPLAY_NUM=1
+ENV COMPUTER_HEIGHT_PX=768
+ENV COMPUTER_WIDTH_PX=1024
 
-USER root
+# Allow access to the ingress-system namespace only
+ENV ALLOWED_NAMESPACES="ingress-system"
 
+# Install dependencies (openssl for TLS cert generation in setup/solution scripts)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    curl \
+    skopeo \
     openssl \
     python3 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://github.com/google/go-containerregistry/releases/download/v0.19.0/go-containerregistry_Linux_x86_64.tar.gz" \
-    | tar xz -C /usr/local/bin crane && chmod +x /usr/local/bin/crane
+# Pull and store container images offline (nginx pod needs this without internet access)
+RUN mkdir -p /images && \
+    skopeo copy --override-os linux --override-arch amd64 \
+    docker://nginx:1.27-alpine \
+    oci-archive:/images/nginx_1.27-alpine.oci.tar:nginx:1.27-alpine
 
-RUN crane pull --platform linux/amd64 nginx:1.27-alpine /nginx.tar
-RUN crane pull --platform linux/amd64 alpine/k8s:1.30.4 /kubectl.tar
+RUN skopeo copy --override-os linux --override-arch amd64 \
+    docker://alpine/k8s:1.30.4 \
+    oci-archive:/images/alpine_k8s_1.30.4.oci.tar:alpine/k8s:1.30.4
 
 RUN mkdir -p /grader
 RUN mkdir -p /mcp_server/tests

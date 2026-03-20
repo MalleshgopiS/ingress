@@ -1,76 +1,65 @@
-id: ingress-controller-stability-recovery
-title: "Ingress Controller HTTPS Instability with Recurring Configuration Drift"
-difficulty: hard
-category: "kubernetes / ingress / incident-response"
+id: ingress-tls-memory-leak
+prompt: |
+  [Context]
+  You are a platform SRE on-call for a Kubernetes cluster running k3s.
+  The HTTPS ingress layer is handled by a single nginx-based ingress controller
+  in the `ingress-system` namespace. You have kubectl access to the
+  `ingress-system` namespace.
+
+  [Business Objective]
+  Eliminate periodic gateway crashes caused by unbounded TLS session memory
+  accumulation so that the ingress layer operates without unplanned restarts.
+
+  [Scenario]
+  Over the past several days the ingress controller pod has been OOMKilled
+  every 4–6 hours. Each crash interrupts all HTTPS traffic until the pod
+  restarts automatically, but the underlying condition is never cleared and
+  the cycle repeats.
+
+  Inspection of the deployment reveals OOMKill history annotations and events
+  pointing to memory exhaustion in the nginx process. No recent application
+  changes were made that would explain the increased memory usage.
+
+  Initial investigation points to the nginx process itself consuming memory
+  beyond the pod limit. The nginx ConfigMap controlling TLS behaviour has not
+  been audited since the controller was first deployed, and platform-wide
+  tuning standards have since been updated.
+
+  Platform operational configuration is stored in `ingress-system`. Not all
+  configuration objects in the namespace reflect current standards.
+
+  [Goals]
+
+  Diagnose the root cause of the periodic OOMKill crashes and restore stable
+  operation:
+
+  1. Identify which nginx TLS configuration parameters are contributing to
+     unbounded memory growth and correct them to values that bound memory
+     usage.
+
+  2. Ensure the running nginx process reflects the corrected configuration —
+     the fix must be active in the live process, not only on disk.
+
+  3. Confirm stable HTTPS operation with no new pod restarts after the fix
+     is applied.
+
+  [Constraints]
+
+  Investigate the existing configuration rather than rebuilding the system.
+  Do not modify container images or pod memory limits. The corrected
+  configuration must persist across nginx reloads and pod restarts.
+
 metadata:
   category: kubernetes
   difficulty: hard
-  estimated_time: 3H
+  estimated_time: 1H
   tags:
     - kubernetes
     - ingress
     - nginx
     - tls
-    - rbac
-    - networkpolicy
+    - memory-leak
     - incident-response
 
-prompt: |
-  ### Context
-  You are a platform engineer responsible for maintaining the Kubernetes ingress layer. The ingress controller runs in the `ingress-system` namespace.
-
-  ### Incident
-  Over the past few days, HTTPS traffic through the ingress controller has been unstable. Connections intermittently fail, and temporary fixes (such as restarting the controller) only resolve the issue for a short period before degradation returns. Logs from the ingress controller mention SSL handshake issues and inconsistent connection handling, but no clear root cause has been identified.
-
-  ### Observed Behavior
-  * **Traffic:** HTTPS traffic intermittently fails.
-  * **Temporary Fix:** Restarting the ingress controller restores service briefly.
-  * **Persistence:** Issues reappear after some time without manual changes.
-  * **Health:** No resource exhaustion on nodes; upstream services are healthy.
-
-  ### Task
-  Investigate the cluster and restore stable HTTPS service. The system must:
-  1. Sustain stable HTTPS traffic without requiring restarts.
-  2. Maintain correct configuration over time (prevent recurring breakage).
-  3. Enforce proper operational constraints expected for this namespace.
-
-  **Potential Areas of Investigation:**
-  * Scheduled workloads (CronJobs/Jobs) re-applying bad config.
-  * RBAC permissions allowing unauthorized configuration changes.
-  * Configuration sources (ConfigMaps / Secrets).
-  * Network policies and quotas.
-  * Deployment configuration of the ingress controller.
-
-  ### Important Notes
-  * Some failures may reoccur due to automated processes in the cluster.
-  * Platform baseline values are stored in protected configuration objects.
-  * Some required configurations may not exist yet and may need to be recreated based on platform baseline definitions.
-  * Not all visible configuration sources are trustworthy.
-  - Restoring stability may require removing unauthorized automation,
-    correcting configuration values, and re-establishing platform baseline settings
-  - Some failures may originate from multiple independent sources and must all be addressed
-
-success_criteria:
-  - "HTTPS traffic is stable and SSL handshakes succeed consistently."
-  - "No recurring degradation occurs over an extended period."
-  - "Configuration remains consistent and resistant to unauthorized drift."
-  - "The ingress controller operates without manual intervention."
-
-constraints:
-  - "Do not modify container images."
-  - "Do not change resource limits."
-  - "Do not add or remove services."
-  - "Avoid modifying replica counts unless necessary to restore service availability."
-
 allowed_namespaces:
-  - default
   - ingress-system
-  - kube-system
-
-guidance:
-  - "Recurring failures often indicate an automated process reintroducing the issue."
-  - "Validate whether configuration values come from authoritative sources."
-  - "Inspect RBAC carefully—unauthorized write access can enable hidden interference."
-  - "Not all ConfigMaps represent the correct system configuration."
-  - "Removing a resource may not be sufficient—correct replacements may be required."
-  - "Focus on restoring a stable end-to-end system, not just eliminating symptoms."

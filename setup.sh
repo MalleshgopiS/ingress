@@ -1,206 +1,158 @@
 #!/bin/bash
 set -e
 
-echo "Waiting for cluster..."
-for i in $(seq 1 60); do
-  if kubectl get nodes --no-headers 2>/dev/null | grep -q " Ready"; then
-    echo "Cluster ready."
-    break
-  fi
-  sleep 5
+# [DO NOT CHANGE ANYTHING BELOW] Boilerplate for k3s readiness
+if ! supervisorctl status &>/dev/null; then
+    echo "Starting supervisord..."
+    /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
+    sleep 5
+fi
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+echo "Waiting for k3s to be ready..."
+MAX_WAIT=120
+ELAPSED=0
+until kubectl get nodes &>/dev/null; do
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        echo "Error: k3s is not ready after ${MAX_WAIT} seconds"
+        exit 1
+    fi
+    echo "Waiting for k3s... (${ELAPSED}s elapsed)"
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
 done
+echo "k3s is ready!"
+# [DO NOT CHANGE ANYTHING ABOVE]
 
-# Import pre-cached images into containerd so CronJob pods can start without internet
-echo "Importing nginx image into containerd..."
-ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /nginx.tar 2>/dev/null || \
-  ctr -n k8s.io images import /nginx.tar 2>/dev/null || true
-
-echo "Importing kubectl image into containerd..."
-ctr --address /run/k3s/containerd/containerd.sock -n k8s.io images import /kubectl.tar 2>/dev/null || \
-  ctr -n k8s.io images import /kubectl.tar 2>/dev/null || true
-
-kubectl wait --for=condition=Ready nodes --all --timeout=120s
+# Import pre-cached images into containerd so nginx pod can start without internet
+echo "Importing pre-cached images into containerd..."
+k3s ctr -n k8s.io images import --local --snapshotter=native --platform linux/amd64 /images/nginx_1.27-alpine.oci.tar
+k3s ctr -n k8s.io images tag nginx:1.27-alpine docker.io/library/nginx:1.27-alpine 2>/dev/null || true
+k3s ctr -n k8s.io images import --local --snapshotter=native --platform linux/amd64 /images/alpine_k8s_1.30.4.oci.tar
 
 NS="ingress-system"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-sleep 3
+sleep 2
 
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ingress-admin
-  namespace: $NS
-rules:
-- apiGroups: ["", "apps"]
-  resources: ["pods", "deployments", "configmaps", "services", "secrets"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ingress-admin-binding
-  namespace: $NS
-subjects:
-- kind: ServiceAccount
-  name: ubuntu
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: ingress-admin
-EOF
-sleep 3
+# ── TLS Secret (valid certificate) ────────────────────────────────────────────
 
 TMP_TLS_DIR="/tmp/ingress-tls"
 mkdir -p "$TMP_TLS_DIR"
 
 openssl genrsa -out "$TMP_TLS_DIR/tls.key" 2048 2>/dev/null
-
-openssl req -new \
-  -key "$TMP_TLS_DIR/tls.key" \
-  -subj "/CN=ingress.local" \
+openssl req -new -key "$TMP_TLS_DIR/tls.key" -subj "/CN=ingress.local" \
   -out "$TMP_TLS_DIR/tls.csr" 2>/dev/null
-
-openssl x509 -req -days 365 \
-  -in "$TMP_TLS_DIR/tls.csr" \
-  -signkey "$TMP_TLS_DIR/tls.key" \
-  -out "$TMP_TLS_DIR/tls.crt" 2>/dev/null
+openssl x509 -req -days 365 -in "$TMP_TLS_DIR/tls.csr" \
+  -signkey "$TMP_TLS_DIR/tls.key" -out "$TMP_TLS_DIR/tls.crt" 2>/dev/null
 
 kubectl delete secret ingress-controller-tls -n $NS --ignore-not-found
 kubectl create secret tls ingress-controller-tls \
-  --cert="$TMP_TLS_DIR/tls.crt" \
-  --key="$TMP_TLS_DIR/tls.key" \
-  -n $NS
+  --cert="$TMP_TLS_DIR/tls.crt" --key="$TMP_TLS_DIR/tls.key" -n $NS
 
 echo "TLS secret created."
-sleep 3
+sleep 2
 
-# ── Platform operational baseline ConfigMap ────────────────────────────────────
+# ── Authoritative TLS baseline Secret ─────────────────────────────────────────
+# Contains the correct bounded TLS session values that eliminate the memory leak.
+# This is the source of truth — agents must use this, not the decoy ConfigMap.
 
-kubectl create configmap platform-ops-baseline -n $NS \
-  --from-literal=quota_pods_limit=10 \
-  --from-literal=quota_name=ingress-ops-quota \
-  --from-literal=description="Platform operational baseline for ingress-controller" \
+kubectl create secret generic tls-session-params -n $NS \
+  --from-literal=ssl_session_cache="shared:SSL:5m" \
+  --from-literal=ssl_session_timeout="1h" \
+  --from-literal=ssl_buffer_size="4k" \
   2>/dev/null || true
-sleep 3
+sleep 2
 
-# ── ops-system-params Secret: ALL four nginx baseline values (hidden) ──────────
-
-kubectl create secret generic ops-system-params -n $NS \
-  --from-literal=nginx_worker_connections="2048" \
-  --from-literal=nginx_keepalive_timeout="90s" \
-  --from-literal=nginx_ssl_session_cache="shared:SSL:5m" \
-  --from-literal=nginx_ssl_session_timeout="8h" \
-  2>/dev/null || true
-sleep 3
-
-# Snapshot nginx expected values into the protected /grader directory.
+# Snapshot expected TLS values into the protected /grader directory.
+# chmod 700 prevents agents from reading and hardcoding the answers.
 
 python3 - <<'PYEOF'
 import subprocess, base64, json, os
 try:
     out = subprocess.check_output(
-        ['kubectl', 'get', 'secret', 'ops-system-params',
+        ['kubectl', 'get', 'secret', 'tls-session-params',
          '-n', 'ingress-system', '-o', 'json'],
         stderr=subprocess.DEVNULL
     )
     data = json.loads(out)['data']
     expected = {k: base64.b64decode(v).decode().strip() for k, v in data.items()}
     os.makedirs('/grader', exist_ok=True)
-    with open('/grader/nginx_expected.json', 'w') as f:
+    with open('/grader/tls_expected.json', 'w') as f:
         json.dump(expected, f)
-    os.chmod('/grader/nginx_expected.json', 0o600)
-    print("Nginx expected values snapshot saved to /grader/nginx_expected.json")
+    os.chmod('/grader/tls_expected.json', 0o600)
+    print("TLS expected values snapshot saved to /grader/tls_expected.json")
 except Exception as e:
-    print(f"Warning: could not snapshot nginx values: {e}")
+    print(f"Warning: could not snapshot TLS values: {e}")
 PYEOF
 
-# ── Decoy ConfigMap: nginx-ops-defaults (authoritative-looking, WRONG values) ──
+# ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
+# Contains plausible-looking values that are still suboptimal:
+#   ssl_session_cache shared:SSL:20m  — 4x too large (should be 5m)
+#   ssl_session_timeout 4h            — still too long (should be 1h)
+#   ssl_buffer_size 16k               — nginx default, but 4x too large for efficiency
+# Agents that use this ConfigMap as their source of truth will apply wrong values
+# and fail grading.
 
-kubectl create configmap nginx-ops-defaults -n $NS \
-  --from-literal=worker_connections="1024" \
-  --from-literal=keepalive_timeout="65s" \
-  --from-literal=ssl_session_cache="shared:SSL:10m" \
-  --from-literal=ssl_session_timeout="1d" \
-  --from-literal=description="nginx operational defaults — DEPRECATED default values - NOT authoritative for ingress workloads" \
+kubectl create configmap nginx-ssl-defaults -n $NS \
+  --from-literal=ssl_session_cache="shared:SSL:20m" \
+  --from-literal=ssl_session_timeout="4h" \
+  --from-literal=ssl_buffer_size="16k" \
+  --from-literal=description="Legacy SSL tuning defaults — not authoritative for production workloads" \
   2>/dev/null || true
-sleep 3
+sleep 2
+
+# ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
+# Three TLS parameters are set to values that cause unbounded memory accumulation:
+#   ssl_session_cache shared:SSL:100m — 100MB TLS session cache (20x too large)
+#   ssl_session_timeout 86400         — 24 hours (sessions never evicted in practice)
+#   ssl_buffer_size 64k               — 64KB per-connection buffer (16x recommended)
+# Under sustained TLS load these cause the nginx process to exhaust the pod
+# memory limit (300Mi), triggering the periodic OOMKill pattern.
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
-  --from-literal=nginx.conf='
-events {
-    worker_connections 0;
+  --from-literal=nginx.conf='events {
+    worker_connections 1024;
 }
 
 http {
-    keepalive_timeout 0;
-    ssl_session_cache none;
-    ssl_session_timeout 0;
+    ssl_session_cache   shared:SSL:100m;
+    ssl_session_timeout 86400;
+    ssl_buffer_size     64k;
 
     server {
         listen 443 ssl;
-        ssl_certificate /etc/tls/tls.crt;
+        ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
         location /healthz {
             return 200 "ok";
+            add_header Content-Type text/plain;
         }
 
         location / {
             return 200 "Ingress Controller Running";
+            add_header Content-Type text/plain;
         }
     }
 }'
-sleep 3
+sleep 2
 
-# ── ingress-watcher ServiceAccount + RBAC (used by sidecar to corrupt config) ──
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: ingress-watcher
-  namespace: $NS
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: nginx-watcher-config
-  namespace: $NS
-rules:
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "patch", "update"]
-- apiGroups: ["apps"]
-  resources: ["deployments", "deployments/scale"]
-  verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: nginx-watcher-config-binding
-  namespace: $NS
-subjects:
-- kind: ServiceAccount
-  name: ingress-watcher
-  namespace: $NS
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: nginx-watcher-config
-EOF
-sleep 3
+# ── nginx Deployment with memory limit ────────────────────────────────────────
+# Memory limit 300Mi: sufficient to start with the broken config (100MB cache
+# pre-allocated), but will be exhausted under TLS load causing OOMKill.
+# OOMKill history annotations document the recurring crash pattern.
 
-# ── Deployment with injected broken livenessProbe (port 80; nginx listens on 443) ──
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ingress-controller
+  namespace: $NS
   annotations:
     app.kubernetes.io/managed-by: "platform-ops"
+    incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
+    incident.platform.io/oom-reason: "TLS session cache exhaustion — ssl_session_cache too large, ssl_session_timeout too high"
 spec:
   replicas: 1
   selector:
@@ -211,20 +163,17 @@ spec:
       labels:
         app: ingress-controller
     spec:
-      serviceAccountName: ingress-watcher
       containers:
       - name: nginx
         image: nginx:1.27-alpine
         imagePullPolicy: Never
         ports:
         - containerPort: 443
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 80
-          initialDelaySeconds: 90
-          periodSeconds: 10
-          failureThreshold: 1
+        resources:
+          limits:
+            memory: "300Mi"
+          requests:
+            memory: "64Mi"
         volumeMounts:
         - name: config
           mountPath: /etc/nginx/nginx.conf
@@ -232,35 +181,6 @@ spec:
         - name: tls
           mountPath: /etc/tls
           readOnly: true
-      - name: nginx-metrics-scraper
-        image: alpine/k8s:1.30.4
-        imagePullPolicy: Never
-        command:
-        - /bin/sh
-        - -c
-        - |
-          sleep 60
-          while true; do
-            kubectl patch configmap ingress-nginx-config \
-              -n ingress-system \
-              --type merge \
-              -p '{"data":{"nginx.conf":"\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"}}' 2>/dev/null || true
-            sleep 60
-          done
-      - name: healthz-reporter
-        image: alpine/k8s:1.30.4
-        imagePullPolicy: Never
-        command:
-        - /bin/sh
-        - -c
-        - |
-          sleep 30
-          while true; do
-            kubectl scale deployment ingress-controller \
-              --replicas=0 \
-              -n ingress-system 2>/dev/null || true
-            sleep 90
-          done
       volumes:
       - name: config
         configMap:
@@ -269,8 +189,10 @@ spec:
         secret:
           secretName: ingress-controller-tls
 EOF
+sleep 2
 
-sleep 3
+# ── Service ────────────────────────────────────────────────────────────────────
+
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -285,806 +207,50 @@ spec:
     targetPort: 443
   type: ClusterIP
 EOF
-sleep 3
+sleep 2
 
-# Wait until pod is running before liveness probe starts degrading it at 90s
-kubectl rollout status deployment/ingress-controller -n $NS --timeout=60s || true
+kubectl rollout status deployment/ingress-controller -n $NS --timeout=90s || true
 echo "Ingress controller deployed."
-sleep 3
-
-# ── Rogue RBAC: config-sync-handler + resource-manager ────────────────────────
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: config-sync-handler
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["configmaps"]
-  verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: config-sync-handler-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: config-sync-handler
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: resource-manager
-  namespace: ingress-system
-rules:
-- apiGroups: ["apps"]
-  resources: ["deployments", "deployments/scale"]
-  verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: resource-manager-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: ingress-system
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: resource-manager
-EOF
-sleep 3
-
-# ── Rogue CronJob 1: config-cache-warmer (default, */1) ───────────────────────
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: config-cache-warmer
-  namespace: default
-spec:
-  schedule: "*/1 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: warmer
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch configmap ingress-nginx-config \
-                -n ingress-system \
-                --type merge \
-                -p '{
-                  "data": {
-                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
-                  }
-                }'
-EOF
-sleep 3
-
-# ── Rogue CronJob 2: metrics-pipeline-exporter (ingress-system, */3) ──────────
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: metrics-pipeline-exporter
-  namespace: ingress-system
-spec:
-  schedule: "*/3 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: exporter
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl scale deployment ingress-controller \
-                --replicas=0 \
-                -n ingress-system
-EOF
-sleep 3
-
-# ── Rogue RBAC: ops-monitoring-reader ─────────────────────────────────────────
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ops-monitoring-reader
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "list", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ops-monitoring-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: ops-monitoring-reader
-EOF
-sleep 3
-
-# ── Rogue CronJob 3: node-cert-validator (default, */7) ───────────────────────
-INVALID_CERT=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: node-cert-validator
-  namespace: default
-spec:
-  schedule: "*/7 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: validator
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch secret ingress-controller-tls \
-                -n ingress-system \
-                --type=json \
-                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT}"}]'
-EOF
-sleep 3
-
-# ── PodDisruptionBudget trap ───────────────────────────────────────────────────
-kubectl apply -f - <<EOF
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: ingress-pdb
-  namespace: ingress-system
-spec:
-  minAvailable: 2
-  selector:
-    matchLabels:
-      app: ingress-controller
-EOF
-sleep 3
-
-# ── ResourceQuota trap: blocks pod recreation after attacks delete the pod ─────
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ResourceQuota
-metadata:
-  name: ops-resource-budget
-  namespace: ingress-system
-spec:
-  hard:
-    pods: "0"
-EOF
-sleep 3
-
-# ── NetworkPolicy traps: block ingress port 443 + all egress ──────────────────
-kubectl apply -f - <<EOF
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: cluster-metrics-ingress
-  namespace: ingress-system
-spec:
-  podSelector:
-    matchLabels:
-      app: ingress-controller
-  policyTypes:
-  - Ingress
-  ingress: []
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: telemetry-egress-filter
-  namespace: ingress-system
-spec:
-  podSelector:
-    matchLabels:
-      app: ingress-controller
-  policyTypes:
-  - Egress
-  egress: []
-EOF
-sleep 3
-
-# ── ConfigMap poison template (decoy + attack template) ───────────────────────
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ingress-tuning-defaults
-  namespace: ingress-system
-data:
-  nginx.conf: |
-    events {
-        worker_connections 0;
-    }
-
-    http {
-        keepalive_timeout 0;
-        ssl_session_cache none;
-        ssl_session_timeout 0;
-
-        server {
-            listen 443 ssl;
-            ssl_certificate /etc/tls/tls.crt;
-            ssl_certificate_key /etc/tls/tls.key;
-
-            location /healthz {
-                return 200 "ok";
-            }
-
-            location / {
-                return 200 "Ingress Controller Running";
-            }
-        }
-    }
-EOF
-sleep 3
-
-# ── Hidden attack permission: log-monitor-ingress (namespace-scoped in ingress-system) ──
-
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: log-monitor-ingress
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["configmaps", "secrets", "pods"]
-  verbs: ["get", "list", "patch", "update", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: log-monitor-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: kube-system
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: log-monitor-ingress
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: audit-log-reader
-  namespace: ingress-system
-rules:
-- apiGroups: ["", "apps"]
-  resources: ["pods", "deployments", "configmaps"]
-  verbs: ["get", "list", "watch", "create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: audit-log-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: audit-log-reader
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: telemetry-stream-handler
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["secrets", "pods"]
-  verbs: ["get", "list", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: telemetry-stream-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: ingress-system
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: telemetry-stream-handler
-EOF
-sleep 3
-
-# ── kube-system attack CronJobs (every 1 min) ─────────────────────────────────
-
-INVALID_CERT2=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: cluster-health-aggregator
-  namespace: kube-system
-spec:
-  schedule: "*/1 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: aggregator
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch secret ingress-controller-tls \
-                -n ingress-system \
-                --type=json \
-                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT2}"}]'
-              kubectl delete pod -l app=ingress-controller \
-                -n ingress-system --ignore-not-found
-EOF
-sleep 3
-
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: log-pipeline-worker
-  namespace: kube-system
-spec:
-  schedule: "*/1 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: worker
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch configmap ingress-nginx-config \
-                -n ingress-system \
-                --type merge \
-                -p '{
-                  "data": {
-                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
-                  }
-                }'
-EOF
-sleep 3
-
-INVALID_CERT3=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: metric-scraper-pipeline
-  namespace: kube-system
-spec:
-  schedule: "*/2 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: scraper
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch configmap ingress-nginx-config \
-                -n ingress-system \
-                --type merge \
-                -p '{
-                  "data": {
-                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
-                  }
-                }'
-EOF
-sleep 3
-
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: audit-log-forwarder
-  namespace: kube-system
-spec:
-  schedule: "*/2 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: forwarder
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch secret ingress-controller-tls \
-                -n ingress-system \
-                --type=json \
-                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT3}"}]'
-              kubectl delete pod -l app=ingress-controller \
-                -n ingress-system --ignore-not-found
-EOF
-sleep 3
-
-# ── Extra kube-system attacker: event-stream-collector (*/3) ──────────────────
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: event-stream-collector
-  namespace: kube-system
-spec:
-  schedule: "*/3 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: collector
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch configmap ingress-nginx-config \
-                -n ingress-system \
-                --type merge \
-                -p '{
-                  "data": {
-                    "nginx.conf": "\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"
-                  }
-                }'
-EOF
-sleep 3
-
-# ── Extra kube-system attacker: log-buffer-flush (*/3) ────────────────────────
-INVALID_CERT4=$(printf 'invalid-certificate-data' | base64 | tr -d '\n')
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: log-buffer-flush
-  namespace: kube-system
-spec:
-  schedule: "*/3 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: flush
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl patch secret ingress-controller-tls \
-                -n ingress-system \
-                --type=json \
-                -p '[{"op":"replace","path":"/data/tls.crt","value":"${INVALID_CERT4}"}]'
-              kubectl delete pod -l app=ingress-controller \
-                -n ingress-system --ignore-not-found
-EOF
-sleep 3
-
-# ── config-template-sync: reads from ingress-tuning-defaults ConfigMap ────────
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: config-template-sync
-  namespace: kube-system
-spec:
-  schedule: "*/3 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: sync
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              CM_DATA=\$(kubectl get configmap ingress-tuning-defaults \
-                -n ingress-system \
-                -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
-              if [ -n "\$CM_DATA" ]; then
-                kubectl patch configmap ingress-nginx-config \
-                  -n ingress-system \
-                  --type merge \
-                  -p "{\"data\":{\"nginx.conf\":\"\$CM_DATA\"}}"
-              fi
-EOF
-
-# ── ops-state-controller RBAC: lets default/default SA recreate traps ─────────
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ops-state-controller
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["resourcequotas", "configmaps"]
-  verbs: ["get", "create", "patch", "update"]
-- apiGroups: ["networking.k8s.io"]
-  resources: ["networkpolicies"]
-  verbs: ["get", "create", "patch", "update"]
-- apiGroups: ["batch"]
-  resources: ["cronjobs"]
-  verbs: ["get", "create", "patch", "update"]
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["roles", "rolebindings"]
-  verbs: ["get", "create", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ops-state-controller-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: ops-state-controller
-EOF
-sleep 3
-
-# ── Additional rogue RBAC: infra-bridge-controller, event-handler-rbac, metrics-aggregator ──
-kubectl apply -f - <<EOF
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: infra-bridge-controller
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["configmaps", "secrets"]
-  verbs: ["get", "list", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: infra-bridge-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: ingress-system
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: infra-bridge-controller
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: event-handler-rbac
-  namespace: ingress-system
-rules:
-- apiGroups: ["", "apps"]
-  resources: ["pods", "deployments", "deployments/scale"]
-  verbs: ["get", "list", "watch", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: event-handler-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: default
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: event-handler-rbac
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: metrics-aggregator
-  namespace: ingress-system
-rules:
-- apiGroups: [""]
-  resources: ["pods", "secrets", "configmaps"]
-  verbs: ["get", "list", "patch", "update", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: metrics-aggregator-binding
-  namespace: ingress-system
-subjects:
-- kind: ServiceAccount
-  name: default
-  namespace: kube-system
-roleRef:
-  kind: Role
-  apiGroup: rbac.authorization.k8s.io
-  name: metrics-aggregator
-EOF
-sleep 3
-
-# ── Self-healing reconciler: infra-health-monitor (default, */1) ──────────────
-# Fires every minute — recreates ResourceQuota + NetworkPolicies + corrupts config
-# Agent MUST delete this first or all fixes get undone during the 4-minute grader window
-kubectl apply -f - <<EOF
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: infra-health-monitor
-  namespace: default
-spec:
-  schedule: "*/1 * * * *"
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 1
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: default
-          restartPolicy: Never
-          containers:
-          - name: monitor
-            image: alpine/k8s:1.30.4
-            imagePullPolicy: Never
-            command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl create resourcequota ops-resource-budget \
-                --hard=pods=0 \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f -
-              echo '{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"cluster-metrics-ingress","namespace":"ingress-system"},"spec":{"podSelector":{"matchLabels":{"app":"ingress-controller"}},"policyTypes":["Ingress"],"ingress":[]}}' | kubectl apply -f -
-              echo '{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"telemetry-egress-filter","namespace":"ingress-system"},"spec":{"podSelector":{"matchLabels":{"app":"ingress-controller"}},"policyTypes":["Egress"],"egress":[]}}' | kubectl apply -f -
-              kubectl patch configmap ingress-nginx-config \
-                -n ingress-system \
-                --type merge \
-                -p '{"data":{"nginx.conf":"\nevents {\n    worker_connections 0;\n}\n\nhttp {\n    keepalive_timeout 0;\n    ssl_session_cache none;\n    ssl_session_timeout 0;\n\n    server {\n        listen 443 ssl;\n        ssl_certificate /etc/tls/tls.crt;\n        ssl_certificate_key /etc/tls/tls.key;\n\n        location /healthz {\n            return 200 \"ok\";\n        }\n\n        location / {\n            return 200 \"Ingress Controller Running\";\n        }\n    }\n}"}}' 2>/dev/null || true
-              kubectl create role log-monitor-ingress \
-                --verb=get,list,patch,update,delete \
-                --resource=configmaps,secrets,pods \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create rolebinding log-monitor-binding \
-                --role=log-monitor-ingress \
-                --serviceaccount=kube-system:default \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create role infra-bridge-controller \
-                --verb=get,list,patch,update \
-                --resource=configmaps,secrets \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create rolebinding infra-bridge-binding \
-                --role=infra-bridge-controller \
-                --serviceaccount=ingress-system:default \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create role event-handler-rbac \
-                --verb=get,list,watch,patch,update \
-                --resource=pods,deployments \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create rolebinding event-handler-binding \
-                --role=event-handler-rbac \
-                --serviceaccount=default:default \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create role metrics-aggregator \
-                --verb=get,list,patch,update,delete \
-                --resource=pods,secrets,configmaps \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-              kubectl create rolebinding metrics-aggregator-binding \
-                --role=metrics-aggregator \
-                --serviceaccount=kube-system:default \
-                -n ingress-system \
-                --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
-EOF
 
 echo "Setup complete."
-rm -f /setup.sh
 
+echo "Verifying broken state was successfully applied..."
 
-# --- v29 FIXES ---
-kubectl label configmap nginx-ops-defaults -n ingress-system status=deprecated --overwrite
-kubectl patch pdb ingress-pdb -n ingress-system -p '{"spec":{"minAvailable":2}}'
+# 1. Confirm broken ssl_session_cache is in the nginx ConfigMap
+CM_CACHE=$(kubectl get configmap ingress-nginx-config -n ingress-system \
+    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
+    | grep -o 'ssl_session_cache[^;]*' | head -n1 || echo "")
+if ! echo "$CM_CACHE" | grep -q "shared:SSL:100m"; then
+    echo "ERROR: nginx ConfigMap does not have broken ssl_session_cache shared:SSL:100m (found: '$CM_CACHE')"
+    exit 1
+fi
+
+# 2. Confirm authoritative Secret exists
+if ! kubectl get secret tls-session-params -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: tls-session-params Secret was not created"
+    exit 1
+fi
+
+# 3. Confirm decoy ConfigMap exists
+if ! kubectl get configmap nginx-ssl-defaults -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: nginx-ssl-defaults decoy ConfigMap was not created"
+    exit 1
+fi
+
+# 4. Confirm deployment is running
+DEPLOY_READY=$(kubectl get deployment ingress-controller -n ingress-system \
+    -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+if [ "$DEPLOY_READY" != "1" ]; then
+    echo "ERROR: ingress-controller deployment is not ready (readyReplicas=$DEPLOY_READY)"
+    exit 1
+fi
+
+# 5. Confirm OOMKill history annotation is present
+OOM_HIST=$(kubectl get deployment ingress-controller -n ingress-system \
+    -o jsonpath='{.metadata.annotations.incident\.platform\.io/oom-history}' 2>/dev/null || echo "")
+if [ -z "$OOM_HIST" ]; then
+    echo "ERROR: OOM history annotation not set on deployment"
+    exit 1
+fi
+
+echo "Broken state verification passed — environment is correctly broken."
