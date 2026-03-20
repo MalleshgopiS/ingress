@@ -283,16 +283,15 @@ def _obj_unauthorized_rbac_removed() -> tuple[float, str]:
         results[f"rb:{rb}@{ns}"] = code != 0 or not out.strip()
 
     # ── SCORING ───────────────────────────────────
-    n = sum(results.values())
+    n     = sum(results.values())
+    total = len(results)
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
 
-
-    # Proportional scoring: partial RBAC removal earns partial credit,
-    # enabling intermediate scores and better model separation.
-    score = round(n / len(results), 6)
+    # Binary scoring: all critical RBAC must be removed.
+    score = 1.0 if n == total else 0.0
 
     return score, (
-        f"{n}/{len(results)} critical RBAC removed — {detail}"
+        f"{n}/{total} critical RBAC removed — {detail}"
     )
 
 # ── Objective 3: nginx_config_correct ─────────────────────────────────────────
@@ -725,7 +724,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
 OBJECTIVES = [
     # Names match final subscores reported to the platform.
-    # One objective uses proportional (0.0–1.0) scoring; the rest are binary.
+    # All objectives use binary scoring: 1.0 (pass) or 0.0 (fail).
     ("attackers_neutralized", _obj_rogue_cronjobs_removed),
     ("rbac_removed",          _obj_unauthorized_rbac_removed),
     ("nginx_config_correct",  _obj_nginx_config_fixed),
