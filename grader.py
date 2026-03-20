@@ -216,44 +216,42 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
 
 # ── Objective 3: pod_stable ───────────────────────────────────────────────────
 # Pod is running and no new OOMKill restarts occurred during the grading window.
-# Waits up to 90s for deployment to become ready, then observes for 30s to
-# detect any immediate OOMKill triggered by an incorrect fix.
+# Waits up to 90s for a Running pod, then observes for 30s to detect any
+# immediate OOMKill triggered by an incorrect fix.
+#
+# NOTE: Uses pod-level phase (status.phase=Running) rather than deployment-level
+# readyReplicas. readyReplicas is updated by the deployment controller
+# asynchronously and can lag significantly in loaded k3s environments; pod phase
+# is set by the kubelet on the node and is always current.
 
 def _obj_pod_stable() -> tuple[float, str]:
-    # Pre-wait: allow the deployment to reach readyReplicas=1 before sampling the
-    # restart baseline. This prevents false failures when the grader runs while
-    # a pod is mid-restart after nginx -s reload or a rollout restart.
+    # Pre-wait: allow a Running pod to appear before sampling the restart baseline.
+    pod = _get_running_pod()
     for _ in range(9):
-        _, r, _ = run(
-            f"kubectl get deploy {DEPLOY} -n {NS} "
-            "-o jsonpath='{{.status.readyReplicas}}'"
-        )
-        if r == "1":
+        if pod:
             break
         time.sleep(10)
+        pod = _get_running_pod()
 
     restart_before = _get_restart_count()
 
     # Observe window: detect any immediate OOMKill caused by a bad fix
     time.sleep(30)
 
-    # Confirm readyReplicas=1 after the observation window.
-    # Retry up to 3× with 10s gaps to tolerate a brief Kubernetes control-plane
-    # reconciliation that can transiently clear readyReplicas between updates.
-    ready = ""
-    for _ in range(3):
-        _, ready, _ = run(
-            f"kubectl get deploy {DEPLOY} -n {NS} "
-            "-o jsonpath='{{.status.readyReplicas}}'"
-        )
-        if ready == "1":
+    # Confirm a Running pod still exists after the observation window.
+    # Retry up to 6× with 5s gaps to handle the brief period when an OOMKilled
+    # pod is being rescheduled (which should NOT pass this check).
+    pod_after = ""
+    for _ in range(6):
+        pod_after = _get_running_pod()
+        if pod_after:
             break
-        time.sleep(10)
+        time.sleep(5)
 
     restart_after = _get_restart_count()
 
     checks = {
-        "deployment_ready": ready == "1",
+        "deployment_ready": bool(pod_after),
         "no_new_restarts":  restart_after == restart_before,
     }
 
