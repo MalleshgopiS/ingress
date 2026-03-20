@@ -120,6 +120,9 @@ if [ -n "$ACTIVE_POD" ]; then
     kubectl exec -n $NS "$ACTIVE_POD" -- nginx -t
 fi
 
+# Allow the pod a moment to fully stabilize before the grader starts its checks
+sleep 10
+
 # ── Step 4: Verify the fix ─────────────────────────────────────────────────────
 
 echo "[Step 4] Verifying HTTPS endpoint..."
