@@ -232,11 +232,12 @@ def _obj_rogue_cronjobs_removed() -> tuple[float, str]:
         results[f"{n}@{ns}"] = _cronjob_gone(n, ns) or ks_role_revoked
 
     n      = sum(results.values())
+    total  = len(results)
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in results.items())
-    # Proportional scoring: partial CronJob cleanup earns partial credit,
-    # enabling intermediate scores and better model separation.
-    score  = round(n / len(results), 6)
-    return score, f"{n}/{len(results)} rogue CronJobs neutralised — {detail}"
+    # Binary scoring: all CronJobs must be neutralised — partial cleanup is
+    # insufficient since any surviving attacker can undo downstream fixes.
+    score  = 1.0 if n == total else 0.0
+    return score, f"{n}/{total} rogue CronJobs neutralised — {detail}"
 
 
 # ── Objective 2: unauthorized_rbac_removed ────────────────────────────────────
@@ -724,7 +725,7 @@ def _obj_configmap_hygiene() -> tuple[float, str]:
 
 OBJECTIVES = [
     # Names match final subscores reported to the platform.
-    # Two objectives use proportional (0.0–1.0) scoring; the rest are binary.
+    # One objective uses proportional (0.0–1.0) scoring; the rest are binary.
     ("attackers_neutralized", _obj_rogue_cronjobs_removed),
     ("rbac_removed",          _obj_unauthorized_rbac_removed),
     ("nginx_config_correct",  _obj_nginx_config_fixed),
