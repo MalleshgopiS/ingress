@@ -16,18 +16,17 @@ prompt: |
   restarts automatically, but the underlying condition is never cleared and
   the cycle repeats.
 
-  Inspection of the deployment reveals OOMKill history annotations and events
-  pointing to memory exhaustion in the nginx process. No recent application
-  changes were made that would explain the increased memory usage.
+  Inspection of the deployment reveals OOMKill history annotations pointing
+  to memory exhaustion in the nginx process. No recent application changes
+  were made that would explain the increased memory usage.
 
-  Initial investigation points to the nginx process itself consuming memory
-  beyond the pod limit. The nginx ConfigMap controlling TLS behaviour has not
-  been audited since the controller was first deployed, and platform-wide
-  tuning standards have since been updated.
+  Initial investigation points to the nginx TLS session configuration. The
+  nginx ConfigMap has not been audited since the controller was first deployed,
+  and the platform's operational standards have since been updated.
 
-  Platform operational configuration is stored in `ingress-system`. Investigate
-  the available resources to identify which source reflects current platform
-  standards — not all objects in the namespace contain current values.
+  Platform configuration resources are stored in `ingress-system`. Not all
+  configuration objects in the namespace reflect current platform standards —
+  investigate carefully to identify the authoritative source.
 
   [Goals]
 
@@ -35,14 +34,17 @@ prompt: |
   operation:
 
   1. Identify which nginx TLS configuration parameters are contributing to
-     unbounded memory growth and apply the platform-approved corrected values.
-     Use the current platform standard values as the authoritative source for
-     the fix — do not guess or infer values independently.
+     unbounded memory growth and apply the correct values from the platform's
+     authoritative configuration source.
 
   2. Ensure the running nginx process reflects the corrected configuration —
      the fix must be active in the live process, not only on disk.
 
-  3. Confirm stable HTTPS operation with no new pod restarts after the fix
+  3. Preserve the existing nginx configuration structure — only modify the
+     parameters directly responsible for the memory issue. Do not rebuild or
+     replace the entire nginx configuration file.
+
+  4. Confirm stable HTTPS operation with no new pod restarts after the fix
      is applied.
 
   [Constraints]
