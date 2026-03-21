@@ -80,6 +80,18 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
   2>/dev/null || true
 sleep 2
 
+# ── Platform configuration reference ──────────────────────────────────────────
+# Stores current platform-approved TLS parameters for the ingress tier.
+# Agents must investigate which configuration objects in the namespace
+# reflect current platform standards versus legacy or decoy values.
+
+kubectl create secret generic platform-nginx-config -n $NS \
+  --from-literal=ssl_session_cache="shared:SSL:5m" \
+  --from-literal=ssl_session_timeout="1h" \
+  --from-literal=ssl_buffer_size="4k" \
+  2>/dev/null || true
+sleep 2
+
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 # Three TLS parameters are set to values that cause unbounded memory accumulation:
 #   ssl_session_cache builtin         — OpenSSL per-worker cache; NO size limit
@@ -244,9 +256,9 @@ if [ -z "$OOM_HIST" ]; then
     exit 1
 fi
 
-# 7. Confirm platform-nginx-config Secret does NOT exist (no answer leakage)
-if kubectl get secret platform-nginx-config -n ingress-system >/dev/null 2>&1; then
-    echo "ERROR: platform-nginx-config Secret must not exist (answer leakage)"
+# 7. Confirm platform-nginx-config Secret exists (platform config reference)
+if ! kubectl get secret platform-nginx-config -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: platform-nginx-config Secret was not created"
     exit 1
 fi
 

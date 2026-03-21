@@ -20,11 +20,17 @@ Grading strategy:
 
 TLS value bounds (any values within these ranges pass):
   ssl_session_cache  : shared:SSL:Xm  where X ≤ 10  (eliminates unbounded builtin)
-  ssl_session_timeout: ≤ 14 400 s (4 h)              (prevents long-lived accumulation)
-  ssl_buffer_size    : ≤  8 192 B (8 k)              (prevents per-connection bloat)
+  ssl_session_timeout: ≤  3 600 s (1 h)              (prevents long-lived accumulation;
+                                                       nginx best practice is 1 h or less)
+  ssl_buffer_size    : ≤ 16 384 B (16 k)             (nginx documented default; ≤ 16 k passes)
+
+Decoy trap analysis:
+  tls-session-params  (32m / 8h / 32k)  — cache 32m >10 MB, timeout 8h >1h  → M1 FAILS
+  nginx-ssl-defaults  (20m / 4h / 16k)  — cache 20m >10 MB, timeout 4h >1h  → M1 FAILS
+  Agents who reason from nginx best practices (≤10MB, ≤1h, ≤16k)             → M1 PASSES
 
 Score distribution:
-  0.00 — no fix, wrong decoy values (builtin/32m/8h/32k or 20m/4h/16k all fail)
+  0.00 — no fix, or used decoy values (4h/8h timeout, 20m/32m cache all fail)
   0.60 — ConfigMap patched correctly but rollout restart not performed
   1.00 — all three TLS params fixed + rollout restart + structure preserved
 """
@@ -47,8 +53,8 @@ BROKEN_BUFFER  = "64k"
 
 # Maximum acceptable TLS values (range-based bounds, any value within range passes)
 MAX_CACHE_MB  = 10.0   # shared SSL zone must be ≤ 10 MB  (decoy nginx-ssl-defaults=20m fails)
-MAX_TIMEOUT_S = 14400  # session lifetime must be ≤ 4 h   (decoy tls-session-params=8h fails)
-MAX_BUFFER_B  = 8192   # per-connection buffer must be ≤ 8 k (decoy nginx-ssl-defaults=16k fails)
+MAX_TIMEOUT_S = 3600   # session lifetime must be ≤ 1 h   (decoy nginx-ssl-defaults=4h fails)
+MAX_BUFFER_B  = 16384  # per-connection buffer must be ≤ 16 k (nginx documented default)
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -115,7 +121,7 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (14 400 s = 4 h)."""
+    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (3 600 s = 1 h)."""
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -127,7 +133,7 @@ def _timeout_ok(text: str) -> bool:
 
 
 def _buffer_ok(text: str) -> bool:
-    """ssl_buffer_size must be ≤ MAX_BUFFER_B (8 192 B = 8 k)."""
+    """ssl_buffer_size must be ≤ MAX_BUFFER_B (16 384 B = 16 k)."""
     m = re.search(r'ssl_buffer_size\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -186,7 +192,7 @@ def _get_restart_count() -> str:
 
 # ── Objective 1: tls_params_corrected ─────────────────────────────────────────
 # ConfigMap TLS values must all be within safe operational bounds.
-# Any bounded shared-zone cache ≤ 10 MB, timeout ≤ 4 h, buffer ≤ 8 k passes.
+# Any bounded shared-zone cache ≤ 10 MB, timeout ≤ 1 h, buffer ≤ 16 k passes.
 # builtin cache, decoy tls-session-params (32m/8h/32k), and decoy
 # nginx-ssl-defaults (20m/4h/16k) all fail at least one check.
 
@@ -196,8 +202,8 @@ def _obj_tls_params_corrected() -> tuple[float, str]:
         cfg = _get_configmap_conf()
         checks = {
             "cache_bounded":   _cache_ok(cfg),     # shared:SSL:Xm, X ≤ 10 MB
-            "timeout_bounded": _timeout_ok(cfg),   # ≤ 14 400 s (4 h)
-            "buffer_bounded":  _buffer_ok(cfg),    # ≤ 8 192 B (8 k)
+            "timeout_bounded": _timeout_ok(cfg),   # ≤ 3 600 s (1 h)
+            "buffer_bounded":  _buffer_ok(cfg),    # ≤ 16 384 B (16 k)
             "not_builtin":     _not_builtin(cfg),  # builtin is unbounded — must be gone
         }
         if all(checks.values()):
@@ -234,8 +240,8 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
         syntax_ok = "syntax is ok" in (out + err).lower()
         checks = {
             "live_cache_bounded":   _cache_ok(live),     # shared:SSL:Xm, X ≤ 10 MB
-            "live_timeout_bounded": _timeout_ok(live),   # ≤ 14 400 s
-            "live_buffer_bounded":  _buffer_ok(live),    # ≤ 8 192 B
+            "live_timeout_bounded": _timeout_ok(live),   # ≤ 3 600 s (1 h)
+            "live_buffer_bounded":  _buffer_ok(live),    # ≤ 16 384 B (16 k)
             "live_not_builtin":     _not_builtin(live),  # builtin removed from live process
             "nginx_syntax_valid":   syntax_ok,
         }
@@ -418,7 +424,7 @@ def _obj_https_operational() -> tuple[float, str]:
 
 def _milestone_tls_params_corrected() -> tuple[float, str]:
     """Milestone 1: ConfigMap updated with bounded TLS values.
-    Shared SSL zone ≤ 10 MB, timeout ≤ 4 h, buffer ≤ 8 k.
+    Shared SSL zone ≤ 10 MB, timeout ≤ 1 h, buffer ≤ 16 k.
     builtin cache, tls-session-params (32m/8h/32k), nginx-ssl-defaults (20m/4h/16k) all fail."""
     return _obj_tls_params_corrected()
 
