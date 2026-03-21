@@ -4,18 +4,26 @@
 Verifies that the agent correctly identified and fixed the three broken nginx
 TLS session parameters that were causing periodic OOMKill restarts.
 
-Grading accepts ANY valid bounded TLS values — the fix is correct as long as:
-  • ssl_session_cache uses a named shared:SSL: zone (not the limitless builtin)
-  • ssl_session_timeout uses a time-unit suffix (not raw seconds like 86400)
-  • ssl_buffer_size is a k-unit value (not the oversized 64k)
+Two-tier grading strategy:
+  • ConfigMap (tls_params_corrected) — range-based: any valid bounded value passes.
+    This rewards agents who correctly identify and fix the broken parameters
+    regardless of which specific source they used.
+  • Live nginx (nginx_live_updated) — exact-match: values must match the
+    platform-authoritative tls-session-params Secret. This rewards agents who
+    discovered and used the correct platform standard, not just any bounded value.
 """
 
+import base64
 import datetime
 import json
 import re
 import subprocess
 import time
 from apex_arena._types import GradingResult
+
+# Authoritative TLS values — loaded from protected snapshot at grading time.
+# Used only for the live nginx check (nginx_live_updated milestone).
+EXPECTED_TLS: dict = {}   # populated inside grade() each run
 
 NS     = "ingress-system"
 DEPLOY = "ingress-controller"
@@ -40,6 +48,35 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", "command timed out"
     except Exception as exc:
         return -1, "", str(exc)
+
+
+# ── Load authoritative TLS values (for live nginx exact-match check) ──────────
+
+def _load_expected_tls() -> dict:
+    """Read the three platform-standard TLS values at grading time.
+    Primary source: protected snapshot written by setup (chmod 700 — agent cannot read).
+    Fallback: live tls-session-params Secret (readable by agent, but grader snapshot
+    prevents gaming by Secret modification)."""
+    try:
+        with open("/grader/tls_expected.json") as f:
+            data = json.load(f)
+            return {
+                "cache":   data.get("ssl_session_cache", "").strip(),
+                "timeout": data.get("ssl_session_timeout", "").strip(),
+                "buffer":  data.get("ssl_buffer_size", "").strip(),
+            }
+    except Exception:
+        pass
+    _, out, _ = run(f"kubectl get secret tls-session-params -n {NS} -o json 2>/dev/null")
+    try:
+        data = json.loads(out).get("data", {})
+        return {
+            "cache":   base64.b64decode(data["ssl_session_cache"]).decode().strip(),
+            "timeout": base64.b64decode(data["ssl_session_timeout"]).decode().strip(),
+            "buffer":  base64.b64decode(data["ssl_buffer_size"]).decode().strip(),
+        }
+    except Exception:
+        return {}
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -145,17 +182,36 @@ def _obj_tls_params_corrected() -> tuple[float, str]:
     return score, f"{n}/{len(checks)} ConfigMap TLS param checks — {detail}"
 
 
+# ── Exact-match helpers (live nginx only — uses platform Secret values) ────────
+
+def _live_cache_exact(text: str) -> bool:
+    val = EXPECTED_TLS.get("cache", "")
+    return bool(val and re.search(rf'ssl_session_cache\s+{re.escape(val)}\s*;', text or ""))
+
+
+def _live_timeout_exact(text: str) -> bool:
+    val = EXPECTED_TLS.get("timeout", "")
+    return bool(val and re.search(rf'ssl_session_timeout\s+{re.escape(val)}\s*;', text or ""))
+
+
+def _live_buffer_exact(text: str) -> bool:
+    val = EXPECTED_TLS.get("buffer", "")
+    return bool(val and re.search(rf'ssl_buffer_size\s+{re.escape(val)}\s*;', text or ""))
+
+
 # ── Objective 2: nginx_live_updated ───────────────────────────────────────────
-# Live nginx process reflects all three correct TLS values.
-# Patching the ConfigMap alone is not sufficient — nginx must be reloaded
-# (nginx -s reload / SIGHUP) or the pod must have restarted.
+# Live nginx process reflects the platform-standard TLS values from the
+# tls-session-params Secret — not just any bounded value.
+# ConfigMap update alone is not sufficient — nginx must be reloaded or the
+# pod restarted so the running process picks up the corrected configuration.
 # Retries 6× with 10s gaps (up to 60s) to allow nginx reload to complete.
 
 def _obj_nginx_live_updated() -> tuple[float, str]:
-    # Allow time for kubelet to sync the ConfigMap volume and nginx reload to propagate
+    if not EXPECTED_TLS:
+        return 0.0, "Could not load platform TLS reference values — check tls-session-params Secret"
+
     pod = _get_running_pod()
     if not pod:
-        # Pod may be restarting — wait up to 60s for it to come back
         for _ in range(6):
             time.sleep(10)
             pod = _get_running_pod()
@@ -173,9 +229,9 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         syntax_ok = "syntax is ok" in (out + err).lower()
         checks = {
-            "live_cache_bounded":   _cache_bounded(live),
-            "live_timeout_bounded": _timeout_bounded(live),
-            "live_buffer_bounded":  _buffer_bounded(live),
+            "live_cache_correct":   _live_cache_exact(live),
+            "live_timeout_correct": _live_timeout_exact(live),
+            "live_buffer_correct":  _live_buffer_exact(live),
             "live_not_broken":      _not_broken(live),
             "nginx_syntax_valid":   syntax_ok,
         }
@@ -345,6 +401,9 @@ OBJECTIVES = [
 
 def grade(transcript: str = None) -> GradingResult:
     try:
+        # Load platform-standard TLS values at grading time (used by nginx_live_updated)
+        EXPECTED_TLS.update(_load_expected_tls())
+
         subscores: dict = {}
         milestone_feedback = []
 

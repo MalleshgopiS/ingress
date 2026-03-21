@@ -26,9 +26,8 @@ prompt: |
   tuning standards have since been updated.
 
   Platform operational configuration is stored in `ingress-system`. Investigate
-  all configuration objects in the namespace — including both ConfigMaps and
-  Secrets — to identify which source reflects current platform standards. Not all
-  objects contain current values; some may hold outdated or legacy configuration.
+  the available resources to identify which source reflects current platform
+  standards — not all objects in the namespace contain current values.
 
   [Goals]
 
@@ -36,10 +35,9 @@ prompt: |
   operation:
 
   1. Identify which nginx TLS configuration parameters are contributing to
-     unbounded memory growth and correct them to properly bounded values.
-     The session cache should use a named shared memory zone with a finite
-     size limit; the session timeout should specify an explicit time unit;
-     and the buffer size should reflect a typical TLS record size.
+     unbounded memory growth and apply the platform-approved corrected values.
+     Use the current platform standard values as the authoritative source for
+     the fix — do not guess or infer values independently.
 
   2. Ensure the running nginx process reflects the corrected configuration —
      the fix must be active in the live process, not only on disk.
