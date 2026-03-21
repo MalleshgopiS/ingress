@@ -82,7 +82,7 @@ def _parse_nginx_size(s: str) -> int:
 
 def _parse_cache_mb(val: str) -> float:
     """Extract MB from shared:SSL:5m → 5.0, shared:SSL:1g → 1024.0."""
-    m = re.search(r'shared:SSL:(\d+)(k|m|g)', val.lower())
+    m = re.search(r'shared:SSL:(\d+)(k|m|g)', val, re.IGNORECASE)
     if not m:
         return -1.0
     n, unit = int(m.group(1)), m.group(2)
