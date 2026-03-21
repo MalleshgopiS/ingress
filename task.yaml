@@ -39,15 +39,15 @@ prompt: |
 
   1. Identify which nginx TLS configuration parameters are contributing to
      unbounded memory growth and apply appropriate bounded values that will
-     prevent memory exhaustion under normal HTTPS load. Cross-reference the
-     configuration objects available in the namespace — including Secrets —
-     to determine which source reflects the current platform-approved
-     parameter ranges.
+     prevent memory exhaustion under normal HTTPS load. Examine all
+     configuration resources available in the namespace to determine which
+     source reflects current platform-approved standards — not all objects
+     are equally authoritative.
 
   2. Ensure the running nginx process reflects the corrected configuration —
-     the fix must be active in the live process, not only on disk. Note that
-     the nginx config is mounted via a subPath volume, which requires a
-     rollout restart to pick up ConfigMap changes.
+     the fix must be active in the live process, not only on disk. Verify
+     that the live nginx configuration matches what was written before
+     concluding the incident.
 
   3. Preserve the existing nginx configuration structure — only modify the
      parameters directly responsible for the memory issue. Do not rebuild or
