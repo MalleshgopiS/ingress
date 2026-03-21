@@ -52,44 +52,13 @@ kubectl create secret tls ingress-controller-tls \
 echo "TLS secret created."
 sleep 2
 
-# ── Authoritative TLS baseline Secret ─────────────────────────────────────────
-# platform-nginx-config contains the correct bounded TLS session values that
-# eliminate the memory leak. This is the authoritative source of truth.
-# The deployment annotation config.nginx.io/tls-standards references this Secret.
-
-kubectl create secret generic platform-nginx-config -n $NS \
-  --from-literal=ssl_session_cache="shared:SSL:5m" \
-  --from-literal=ssl_session_timeout="1h" \
-  --from-literal=ssl_buffer_size="4k" \
-  2>/dev/null || true
-sleep 2
-
-# Snapshot expected TLS values into the protected /grader directory.
-# chmod 600 prevents agents from reading and hardcoding the answers.
-
-python3 - <<'PYEOF'
-import subprocess, base64, json, os
-try:
-    out = subprocess.check_output(
-        ['kubectl', 'get', 'secret', 'platform-nginx-config',
-         '-n', 'ingress-system', '-o', 'json'],
-        stderr=subprocess.DEVNULL
-    )
-    data = json.loads(out)['data']
-    expected = {k: base64.b64decode(v).decode().strip() for k, v in data.items()}
-    os.makedirs('/grader', exist_ok=True)
-    with open('/grader/tls_expected.json', 'w') as f:
-        json.dump(expected, f)
-    os.chmod('/grader/tls_expected.json', 0o600)
-    print("TLS expected values snapshot saved to /grader/tls_expected.json")
-except Exception as e:
-    print(f"Warning: could not snapshot TLS values: {e}")
-PYEOF
-
 # ── Decoy Secret: tls-session-params ──────────────────────────────────────────
-# Contains plausible-looking values that are wrong — too large and too long.
-# Agents who use tls-session-params as their source of truth will apply these
-# incorrect values (shared:SSL:32m, 8h, 32k) and fail exact-match grading.
+# Contains plausible-looking values that are far too large for a 300Mi pod:
+#   ssl_session_cache shared:SSL:32m  — 32 MB SSL zone (excessive; causes OOM)
+#   ssl_session_timeout 8h            — 8-hour sessions (28800 s; still unbounded)
+#   ssl_buffer_size 32k               — 32 KB per-connection (2x nginx default)
+# Agents who treat this Secret as the fix source will apply values that are
+# still too large and will fail the range-bounded grading checks.
 
 kubectl create secret generic tls-session-params -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:32m" \
@@ -99,12 +68,9 @@ kubectl create secret generic tls-session-params -n $NS \
 sleep 2
 
 # ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
-# Contains plausible-looking values that are still suboptimal:
-#   ssl_session_cache shared:SSL:20m  — 4x too large (should be 5m)
-#   ssl_session_timeout 4h            — still too long (should be 1h)
-#   ssl_buffer_size 16k               — nginx default, but 4x too large for efficiency
-# Agents that use this ConfigMap as their source of truth will apply wrong values
-# and fail grading.
+# "Legacy SSL tuning defaults" — explicitly labelled non-authoritative.
+# Still has a too-long timeout (4h > 1h limit) so agents who apply these
+# values verbatim will fail the timeout range check.
 
 kubectl create configmap nginx-ssl-defaults -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:20m" \
@@ -116,13 +82,11 @@ sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 # Three TLS parameters are set to values that cause unbounded memory accumulation:
-#   ssl_session_cache builtin         — OpenSSL builtin per-worker cache, NO size limit
-#   ssl_session_timeout 86400         — 24 hours (stale sessions never evicted)
-#   ssl_buffer_size 64k               — 64KB per-connection buffer (16x recommended)
-# The builtin cache grows per nginx worker without any memory cap, causing the
-# periodic OOMKill pattern every 4-6 hours under normal TLS traffic.
-# keepalive_timeout and server_tokens are part of the original config structure
-# and must be preserved by any correct fix.
+#   ssl_session_cache builtin         — OpenSSL per-worker cache; NO size limit
+#   ssl_session_timeout 86400         — 24-hour sessions; stale sessions never evicted
+#   ssl_buffer_size 64k               — 64 KB per-connection buffer (4–16× too large)
+# keepalive_timeout and server_tokens are original config directives that must
+# be preserved by any correct fix (surgical patch, not a full rebuild).
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
@@ -156,12 +120,12 @@ http {
 }'
 sleep 2
 
-# ── nginx Deployment with memory limit ────────────────────────────────────────
-# Memory limit 300Mi: sufficient to start with the broken config (100MB cache
-# pre-allocated), but will be exhausted under TLS load causing OOMKill.
-# OOMKill history annotations document the recurring crash pattern.
-# The config.nginx.io/tls-standards annotation is a buried hint pointing to
-# the authoritative Secret that agents must discover and follow.
+# ── nginx Deployment ───────────────────────────────────────────────────────────
+# Memory limit 300Mi: enough to start, but exhausted under TLS load when the
+# builtin per-worker cache grows without bound (OOMKill every 4–6 hours).
+# OOMKill history is documented in the deployment annotations.
+# NOTE: No annotation names a "correct" Secret — the agent must diagnose from
+# the nginx configuration itself what bounded values are appropriate.
 
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
@@ -173,7 +137,7 @@ metadata:
     app.kubernetes.io/managed-by: "platform-ops"
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory growth under sustained TLS load — root cause under investigation"
-    config.nginx.io/tls-standards: "platform-nginx-config"
+    incident.platform.io/investigation-notes: "ssl_session_cache type identified as growth source — sessions accumulating without bound in worker heap"
 spec:
   replicas: 1
   selector:
@@ -233,8 +197,6 @@ sleep 2
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=90s || true
 echo "Ingress controller deployed."
 
-echo "Setup complete."
-
 echo "Verifying broken state was successfully applied..."
 
 # 1. Confirm broken ssl_session_cache builtin is in the nginx ConfigMap
@@ -246,25 +208,19 @@ if ! echo "$CM_CACHE" | grep -q "builtin"; then
     exit 1
 fi
 
-# 2. Confirm authoritative Secret platform-nginx-config exists
-if ! kubectl get secret platform-nginx-config -n ingress-system >/dev/null 2>&1; then
-    echo "ERROR: platform-nginx-config Secret was not created"
-    exit 1
-fi
-
-# 3. Confirm decoy Secret tls-session-params exists
+# 2. Confirm decoy Secret tls-session-params exists
 if ! kubectl get secret tls-session-params -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: tls-session-params decoy Secret was not created"
     exit 1
 fi
 
-# 4. Confirm decoy ConfigMap exists
+# 3. Confirm decoy ConfigMap nginx-ssl-defaults exists
 if ! kubectl get configmap nginx-ssl-defaults -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: nginx-ssl-defaults decoy ConfigMap was not created"
     exit 1
 fi
 
-# 5. Confirm keepalive_timeout is in the nginx ConfigMap
+# 4. Confirm keepalive_timeout is in the nginx ConfigMap (must survive patching)
 CM_CONF=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
 if ! echo "$CM_CONF" | grep -q "keepalive_timeout"; then
@@ -272,7 +228,7 @@ if ! echo "$CM_CONF" | grep -q "keepalive_timeout"; then
     exit 1
 fi
 
-# 6. Confirm deployment is running
+# 5. Confirm deployment is running
 DEPLOY_READY=$(kubectl get deployment ingress-controller -n ingress-system \
     -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
 if [ "$DEPLOY_READY" != "1" ]; then
@@ -280,11 +236,17 @@ if [ "$DEPLOY_READY" != "1" ]; then
     exit 1
 fi
 
-# 7. Confirm OOMKill history annotation is present
+# 6. Confirm OOMKill history annotation is present
 OOM_HIST=$(kubectl get deployment ingress-controller -n ingress-system \
     -o jsonpath='{.metadata.annotations.incident\.platform\.io/oom-history}' 2>/dev/null || echo "")
 if [ -z "$OOM_HIST" ]; then
     echo "ERROR: OOM history annotation not set on deployment"
+    exit 1
+fi
+
+# 7. Confirm platform-nginx-config Secret does NOT exist (no answer leakage)
+if kubectl get secret platform-nginx-config -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: platform-nginx-config Secret must not exist (answer leakage)"
     exit 1
 fi
 

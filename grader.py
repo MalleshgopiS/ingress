@@ -7,14 +7,19 @@ TLS session parameters causing periodic OOMKill restarts.
 Five milestones × 0.20 weight = 1.0 maximum score.
 
 Grading strategy:
-  • tls_params_corrected   — ConfigMap has exact platform-standard values
-  • nginx_live_updated     — Live nginx process reflects exact platform values
+  • tls_params_corrected    — ConfigMap TLS values are within safe operational bounds
+  • nginx_live_updated      — Live nginx process reflects bounded TLS values
+                              (requires rollout restart; subPath blocks kubelet auto-sync)
   • config_structure_intact — Original nginx directives preserved (not rebuilt from scratch)
-  • pod_stable             — No new OOMKill restarts during observation window
-  • https_operational      — HTTPS endpoint responds with valid TLS
+  • pod_stable              — No new OOMKill; deployment resources unchanged
+  • https_operational       — HTTPS endpoint responds with valid TLS
+
+TLS value bounds (any values within these ranges pass):
+  ssl_session_cache : shared:SSL:Xm  where X ≤ 20  (eliminates unbounded builtin)
+  ssl_session_timeout: ≤ 3600 s (1 h)               (prevents long-lived accumulation)
+  ssl_buffer_size   : ≤ 16 384 B (16 k)             (prevents per-connection bloat)
 """
 
-import base64
 import datetime
 import json
 import re
@@ -26,13 +31,15 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# Authoritative values — loaded from protected snapshot at grading time
-EXPECTED_TLS: dict = {}   # populated inside grade() each run
-
-# Broken values planted by setup
+# Broken values planted by setup — used only to detect un-fixed config
 BROKEN_CACHE   = "builtin"
 BROKEN_TIMEOUT = "86400"
 BROKEN_BUFFER  = "64k"
+
+# Maximum acceptable values for grading (range-based, not exact-match)
+MAX_CACHE_MB  = 20.0   # shared SSL zone must be ≤ 20 MB
+MAX_TIMEOUT_S = 3600   # session lifetime must be ≤ 1 hour
+MAX_BUFFER_B  = 16384  # per-connection buffer must be ≤ 16 kB
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -47,32 +54,83 @@ def run(cmd: str, timeout: int = 30):
         return -1, "", str(exc)
 
 
-# ── Load authoritative TLS values ─────────────────────────────────────────────
+# ── nginx value parsers ────────────────────────────────────────────────────────
 
-def _load_expected_tls() -> dict:
-    """Read platform-standard TLS values from protected snapshot.
-    Primary: /grader/tls_expected.json (chmod 600, agent cannot read).
-    Fallback: live platform-nginx-config Secret."""
+def _parse_nginx_time(s: str) -> int:
+    """Convert nginx time string to seconds: 1h→3600, 30m→1800, 3600→3600."""
+    s = s.strip().lower()
+    if s.endswith('h'):
+        return int(s[:-1]) * 3600
+    if s.endswith('m'):
+        return int(s[:-1]) * 60
+    if s.endswith('s'):
+        return int(s[:-1])
+    return int(s)
+
+
+def _parse_nginx_size(s: str) -> int:
+    """Convert nginx size string to bytes: 4k→4096, 16m→16777216."""
+    s = s.strip().lower()
+    if s.endswith('k'):
+        return int(s[:-1]) * 1024
+    if s.endswith('m'):
+        return int(s[:-1]) * 1024 * 1024
+    if s.endswith('g'):
+        return int(s[:-1]) * 1024 * 1024 * 1024
+    return int(s)
+
+
+def _parse_cache_mb(val: str) -> float:
+    """Extract MB from shared:SSL:5m → 5.0, shared:SSL:1g → 1024.0."""
+    m = re.search(r'shared:SSL:(\d+)(k|m|g)', val.lower())
+    if not m:
+        return -1.0
+    n, unit = int(m.group(1)), m.group(2)
+    if unit == 'k':
+        return n / 1024.0
+    if unit == 'g':
+        return n * 1024.0
+    return float(n)
+
+
+# ── Range-bounded TLS checks ───────────────────────────────────────────────────
+
+def _cache_ok(text: str) -> bool:
+    """ssl_session_cache must be shared:SSL:Xm where X ≤ MAX_CACHE_MB."""
+    m = re.search(r'ssl_session_cache\s+(shared:SSL:\S+)\s*;', text or "", re.IGNORECASE)
+    if not m:
+        return False
+    mb = _parse_cache_mb(m.group(1))
+    return 0 < mb <= MAX_CACHE_MB
+
+
+def _timeout_ok(text: str) -> bool:
+    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S seconds."""
+    m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
+    if not m:
+        return False
     try:
-        with open("/grader/tls_expected.json") as f:
-            data = json.load(f)
-            return {
-                "cache":   data.get("ssl_session_cache", "").strip(),
-                "timeout": data.get("ssl_session_timeout", "").strip(),
-                "buffer":  data.get("ssl_buffer_size", "").strip(),
-            }
-    except Exception:
-        pass
-    _, out, _ = run(f"kubectl get secret platform-nginx-config -n {NS} -o json 2>/dev/null")
+        s = _parse_nginx_time(m.group(1))
+        return 0 < s <= MAX_TIMEOUT_S
+    except (ValueError, TypeError):
+        return False
+
+
+def _buffer_ok(text: str) -> bool:
+    """ssl_buffer_size must be ≤ MAX_BUFFER_B bytes."""
+    m = re.search(r'ssl_buffer_size\s+(\S+)\s*;', text or "")
+    if not m:
+        return False
     try:
-        data = json.loads(out).get("data", {})
-        return {
-            "cache":   base64.b64decode(data["ssl_session_cache"]).decode().strip(),
-            "timeout": base64.b64decode(data["ssl_session_timeout"]).decode().strip(),
-            "buffer":  base64.b64decode(data["ssl_buffer_size"]).decode().strip(),
-        }
-    except Exception:
-        return {}
+        b = _parse_nginx_size(m.group(1))
+        return 0 < b <= MAX_BUFFER_B
+    except (ValueError, TypeError):
+        return False
+
+
+def _not_builtin(text: str) -> bool:
+    """ssl_session_cache must not be 'builtin' (unbounded per-worker OpenSSL cache)."""
+    return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -109,46 +167,19 @@ def _get_restart_count() -> str:
     return out.strip() or "0"
 
 
-# ── Exact-match TLS helpers ────────────────────────────────────────────────────
-
-def _cache_exact(text: str) -> bool:
-    val = EXPECTED_TLS.get("cache", "")
-    return bool(val and re.search(rf'ssl_session_cache\s+{re.escape(val)}\s*;', text or ""))
-
-
-def _timeout_exact(text: str) -> bool:
-    val = EXPECTED_TLS.get("timeout", "")
-    return bool(val and re.search(rf'ssl_session_timeout\s+{re.escape(val)}\s*;', text or ""))
-
-
-def _buffer_exact(text: str) -> bool:
-    val = EXPECTED_TLS.get("buffer", "")
-    return bool(val and re.search(rf'ssl_buffer_size\s+{re.escape(val)}\s*;', text or ""))
-
-
-def _not_broken(text: str) -> bool:
-    return (
-        not re.search(rf'ssl_session_cache\s+{re.escape(BROKEN_CACHE)}\s*;',    text or "")
-        and not re.search(rf'ssl_session_timeout\s+{re.escape(BROKEN_TIMEOUT)}\s*;', text or "")
-        and not re.search(rf'ssl_buffer_size\s+{re.escape(BROKEN_BUFFER)}\s*;',  text or "")
-    )
-
-
 # ── Objective 1: tls_params_corrected ─────────────────────────────────────────
-# ConfigMap has exact platform-standard TLS values from platform-nginx-config Secret.
+# ConfigMap TLS values are within safe operational bounds.
+# Checks range-based — any bounded values pass; builtin or decoy values fail.
 
 def _obj_tls_params_corrected() -> tuple[float, str]:
-    if not EXPECTED_TLS:
-        return 0.0, "Could not load platform TLS reference values"
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
         checks = {
-            "cache_correct":   _cache_exact(cfg),
-            "timeout_correct": _timeout_exact(cfg),
-            "buffer_correct":  _buffer_exact(cfg),
-            "not_broken":      _not_broken(cfg),
-            "not_decoy":       not re.search(r'ssl_session_cache\s+shared:SSL:32m\s*;', cfg or ""),
+            "cache_bounded":   _cache_ok(cfg),     # shared:SSL:Xm, X ≤ 20
+            "timeout_bounded": _timeout_ok(cfg),   # ≤ 3600 s (1 h)
+            "buffer_bounded":  _buffer_ok(cfg),    # ≤ 16 384 B (16 k)
+            "not_builtin":     _not_builtin(cfg),  # builtin is unbounded — must be gone
         }
         if all(checks.values()):
             break
@@ -161,15 +192,12 @@ def _obj_tls_params_corrected() -> tuple[float, str]:
 
 
 # ── Objective 2: nginx_live_updated ───────────────────────────────────────────
-# Live nginx process reflects exact platform-standard TLS values.
-# ConfigMap update alone is insufficient — nginx must be reloaded (rollout restart).
-# Note: nginx.conf uses subPath mount — kubelet does NOT auto-sync on ConfigMap change.
-# The agent must perform a rollout restart to get the new pod to mount fresh config.
+# Live nginx process reflects bounded TLS values.
+# ConfigMap update alone is insufficient — nginx.conf uses a subPath mount so
+# the kubelet does NOT auto-sync on ConfigMap change. A rollout restart is
+# required so the new pod mounts the updated ConfigMap fresh at start-up.
 
 def _obj_nginx_live_updated() -> tuple[float, str]:
-    if not EXPECTED_TLS:
-        return 0.0, "Could not load platform TLS reference values"
-
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -186,10 +214,10 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         syntax_ok = "syntax is ok" in (out + err).lower()
         checks = {
-            "live_cache_correct":   _cache_exact(live),
-            "live_timeout_correct": _timeout_exact(live),
-            "live_buffer_correct":  _buffer_exact(live),
-            "live_not_broken":      _not_broken(live),
+            "live_cache_bounded":   _cache_ok(live),    # shared:SSL:Xm, X ≤ 20
+            "live_timeout_bounded": _timeout_ok(live),  # ≤ 3600 s
+            "live_buffer_bounded":  _buffer_ok(live),   # ≤ 16 k
+            "live_not_builtin":     _not_builtin(live), # builtin removed from live process
             "nginx_syntax_valid":   syntax_ok,
         }
         if all(checks.values()):
@@ -206,15 +234,15 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
 # The original nginx.conf contained directives beyond the broken TLS parameters.
 # A correct fix patches only the broken values in-place — it does NOT rebuild the
 # entire nginx.conf from scratch, which would lose these original directives.
-# Checks that keepalive_timeout and server_tokens (present in setup config) survived.
+# Checks that keepalive_timeout, server_tokens, worker_connections survived.
 
 def _obj_config_structure_intact() -> tuple[float, str]:
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
         checks = {
-            "keepalive_preserved":      bool(re.search(r'keepalive_timeout\s+\d+\s*;', cfg or "")),
-            "server_tokens_preserved":  bool(re.search(r'server_tokens\s+off\s*;', cfg or "")),
+            "keepalive_preserved":       bool(re.search(r'keepalive_timeout\s+\d+\s*;', cfg or "")),
+            "server_tokens_preserved":   bool(re.search(r'server_tokens\s+off\s*;', cfg or "")),
             "worker_connections_intact": bool(re.search(r'worker_connections\s+1024\s*;', cfg or "")),
         }
         if all(checks.values()):
@@ -228,6 +256,8 @@ def _obj_config_structure_intact() -> tuple[float, str]:
 
 
 # ── Objective 4: pod_stable ───────────────────────────────────────────────────
+# Pod is running normally, no new OOMKill events, and deployment resource
+# limits / container image have not been modified (as required by constraints).
 
 def _obj_pod_stable() -> tuple[float, str]:
     pod = _get_running_pod()
@@ -250,10 +280,18 @@ def _obj_pod_stable() -> tuple[float, str]:
     restart_after = _get_restart_count()
 
     checks = {
-        "deployment_ready": bool(pod_after),
-        "no_new_restarts":  restart_after == restart_before,
+        "deployment_ready":  bool(pod_after),
+        "no_new_restarts":   restart_after == restart_before,
     }
 
+    # Verify memory limit is unchanged (constraint: do not modify pod memory limits)
+    _, mem_out, _ = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
+    )
+    checks["limits_unchanged"] = mem_out.strip() == "300Mi"
+
+    # Check for recent OOMKill events (within last 5 minutes)
     _, events_out, _ = run(
         f"kubectl get events -n {NS} --field-selector=reason=OOMKilling "
         "--sort-by=.metadata.creationTimestamp -o json 2>/dev/null"
@@ -327,14 +365,15 @@ def _obj_https_operational() -> tuple[float, str]:
 # ── Grouped milestone functions ────────────────────────────────────────────────
 
 def _milestone_tls_params_corrected() -> tuple[float, str]:
-    """Milestone 1: ConfigMap updated with exact platform-standard TLS values
-    from the authoritative platform-nginx-config Secret."""
+    """Milestone 1: ConfigMap updated with bounded TLS values.
+    Any shared SSL zone ≤ 20 MB, timeout ≤ 1 h, buffer ≤ 16 k passes.
+    builtin cache, decoy values (32m/8h/32k), or unchanged broken values fail."""
     return _obj_tls_params_corrected()
 
 
 def _milestone_nginx_live_updated() -> tuple[float, str]:
-    """Milestone 2: Live nginx process loaded the platform-standard TLS values.
-    Requires rollout restart (subPath mount blocks kubelet auto-sync)."""
+    """Milestone 2: Live nginx process loaded bounded TLS values.
+    Requires rollout restart — subPath mount blocks kubelet auto-sync."""
     return _obj_nginx_live_updated()
 
 
@@ -346,7 +385,8 @@ def _milestone_config_structure_intact() -> tuple[float, str]:
 
 
 def _milestone_pod_stable() -> tuple[float, str]:
-    """Milestone 4: Pod running normally with no new OOMKill events."""
+    """Milestone 4: Pod running normally with no new OOMKill events.
+    Also verifies pod memory limits are unchanged (300Mi constraint)."""
     return _obj_pod_stable()
 
 
@@ -370,8 +410,6 @@ OBJECTIVES = [
 
 def grade(transcript: str = None) -> GradingResult:
     try:
-        EXPECTED_TLS.update(_load_expected_tls())
-
         subscores: dict = {}
         milestone_feedback = []
 

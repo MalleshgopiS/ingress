@@ -6,29 +6,36 @@ DEPLOY=ingress-controller
 
 echo "=== Applying TLS memory leak remediation ==="
 
-# ── Step 1: Read platform-standard TLS values ──────────────────────────────────
-# The authoritative source is the platform-nginx-config Secret in ingress-system.
-# This Secret is referenced by the deployment annotation:
-#   config.nginx.io/tls-standards: platform-nginx-config
-# Do NOT use the tls-session-params Secret — it contains legacy/decoy values.
+# ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
+# The three nginx TLS parameters in the ConfigMap are misconfigured:
+#   ssl_session_cache builtin    — per-worker, no size limit → unbounded heap growth
+#   ssl_session_timeout 86400    — 24-hour sessions → stale sessions never evicted
+#   ssl_buffer_size 64k          — 64 KB per connection → excessive per-connection cost
+#
+# Correct bounded values that eliminate the memory leak:
+#   ssl_session_cache shared:SSL:5m  — single shared zone capped at 5 MB
+#   ssl_session_timeout 1h           — 1-hour session lifetime (3600 s ≤ limit)
+#   ssl_buffer_size 4k               — 4 KB per connection (standard recommendation)
+#
+# NOTE: There is no authoritative Secret containing correct values — these
+# values are derived from nginx operational best practices for a 300 Mi pod.
+# Do NOT use the tls-session-params Secret — it contains legacy/excessive values
+# (shared:SSL:32m, 8h, 32k) that exceed safe bounds and will not fix the OOM.
 
-echo "[Step 1] Reading platform TLS standards from platform-nginx-config Secret..."
-SSL_CACHE=$(kubectl get secret platform-nginx-config -n $NS \
-  -o jsonpath='{.data.ssl_session_cache}' | base64 -d)
-SSL_TIMEOUT=$(kubectl get secret platform-nginx-config -n $NS \
-  -o jsonpath='{.data.ssl_session_timeout}' | base64 -d)
-SSL_BUFFER=$(kubectl get secret platform-nginx-config -n $NS \
-  -o jsonpath='{.data.ssl_buffer_size}' | base64 -d)
+SSL_CACHE="shared:SSL:5m"
+SSL_TIMEOUT="1h"
+SSL_BUFFER="4k"
 
-echo "[Step 1] Platform-standard values:"
-echo "    ssl_session_cache   = $SSL_CACHE"
-echo "    ssl_session_timeout = $SSL_TIMEOUT"
-echo "    ssl_buffer_size     = $SSL_BUFFER"
+echo "[Step 1] Bounded replacement values:"
+echo "    ssl_session_cache   = $SSL_CACHE   (replaces: builtin — unbounded)"
+echo "    ssl_session_timeout = $SSL_TIMEOUT  (replaces: 86400 — 24-hour sessions)"
+echo "    ssl_buffer_size     = $SSL_BUFFER    (replaces: 64k — excessive per-connection)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
 # Read the existing nginx.conf and replace ONLY the three broken TLS directives.
-# This preserves all other original directives (keepalive_timeout, server_tokens, etc).
-# IMPORTANT: Do NOT reconstruct the entire nginx.conf — that would lose existing config.
+# This preserves all other original directives (keepalive_timeout, server_tokens,
+# worker_connections, server block, etc).
+# IMPORTANT: Do NOT reconstruct the entire nginx.conf — that loses existing config.
 
 echo "[Step 2] Reading current nginx.conf from ConfigMap..."
 CURRENT_CONF=$(kubectl get configmap ingress-nginx-config -n $NS \
@@ -83,6 +90,6 @@ fi
 
 echo ""
 echo "=== Remediation complete ==="
-echo "    ssl_session_cache   → $SSL_CACHE   (was: builtin)"
-echo "    ssl_session_timeout → $SSL_TIMEOUT  (was: 86400)"
-echo "    ssl_buffer_size     → $SSL_BUFFER    (was: 64k)"
+echo "    ssl_session_cache   → $SSL_CACHE   (was: builtin — unbounded per-worker)"
+echo "    ssl_session_timeout → $SSL_TIMEOUT  (was: 86400 — 24-hour accumulation)"
+echo "    ssl_buffer_size     → $SSL_BUFFER    (was: 64k — 16x recommended size)"

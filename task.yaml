@@ -20,13 +20,10 @@ prompt: |
   to memory exhaustion in the nginx process. No recent application changes
   were made that would explain the increased memory usage.
 
-  Initial investigation points to the nginx TLS session configuration. The
-  nginx ConfigMap has not been audited since the controller was first deployed,
-  and the platform's operational standards have since been updated.
-
-  Platform configuration resources are stored in `ingress-system`. Not all
-  configuration objects in the namespace reflect current platform standards —
-  investigate carefully to identify the authoritative source.
+  The nginx ConfigMap has not been audited since the controller was first
+  deployed. The TLS session parameters were set at initial deployment and
+  have never been reviewed for correctness — some of the current values are
+  known to cause unbounded memory accumulation under sustained HTTPS traffic.
 
   [Goals]
 
@@ -34,8 +31,8 @@ prompt: |
   operation:
 
   1. Identify which nginx TLS configuration parameters are contributing to
-     unbounded memory growth and apply the correct values from the platform's
-     authoritative configuration source.
+     unbounded memory growth and apply appropriate bounded values that will
+     prevent memory exhaustion under normal HTTPS load.
 
   2. Ensure the running nginx process reflects the corrected configuration —
      the fix must be active in the live process, not only on disk.
@@ -50,7 +47,8 @@ prompt: |
   [Constraints]
 
   Investigate the existing configuration rather than rebuilding the system.
-  Do not modify container images or pod memory limits. The corrected
+  Do not modify container images or pod memory limits — the memory limit is
+  intentionally set and must not be increased as a workaround. The corrected
   configuration must persist across nginx reloads and pod restarts.
 
 metadata:
