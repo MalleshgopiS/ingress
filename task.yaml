@@ -25,6 +25,13 @@ prompt: |
   have never been reviewed for correctness — some of the current values are
   known to cause unbounded memory accumulation under sustained HTTPS traffic.
 
+  The ingress-system namespace contains multiple configuration objects —
+  some are platform-approved references, others are legacy or intermediate
+  drafts that are explicitly not authoritative. Not all configuration objects
+  in the namespace reflect current platform standards. Investigate carefully
+  to identify which objects represent the authoritative platform configuration
+  before applying any values.
+
   [Goals]
 
   Diagnose the root cause of the periodic OOMKill crashes and restore stable
@@ -32,10 +39,15 @@ prompt: |
 
   1. Identify which nginx TLS configuration parameters are contributing to
      unbounded memory growth and apply appropriate bounded values that will
-     prevent memory exhaustion under normal HTTPS load.
+     prevent memory exhaustion under normal HTTPS load. Cross-reference the
+     configuration objects available in the namespace — including Secrets —
+     to determine which source reflects the current platform-approved
+     parameter ranges.
 
   2. Ensure the running nginx process reflects the corrected configuration —
-     the fix must be active in the live process, not only on disk.
+     the fix must be active in the live process, not only on disk. Note that
+     the nginx config is mounted via a subPath volume, which requires a
+     rollout restart to pick up ConfigMap changes.
 
   3. Preserve the existing nginx configuration structure — only modify the
      parameters directly responsible for the memory issue. Do not rebuild or
