@@ -1,79 +1,31 @@
-id: ingress-tls-memory-leak
 prompt: |
   [Context]
-  You are a platform SRE on-call for a Kubernetes cluster running k3s.
-  The HTTPS ingress layer is handled by a single nginx-based ingress controller
-  in the `ingress-system` namespace. You have kubectl access to the
-  `ingress-system` namespace.
+  You are an SRE on-call for a Kubernetes cluster running an nginx-based ingress controller.
 
-  [Business Objective]
-  Eliminate periodic gateway crashes caused by unbounded TLS session memory
-  accumulation so that the ingress layer operates without unplanned restarts.
+  [Incident]
+  Over the past few days, the ingress controller pod in the `ingress-system` namespace has been restarting periodically.
 
-  [Scenario]
-  Over the past several days the ingress controller pod has been OOMKilled
-  every 4–6 hours. Each crash interrupts all HTTPS traffic until the pod
-  restarts automatically, but the underlying condition is never cleared and
-  the cycle repeats.
+  Initial observations:
+  - Restarts happen every few hours
+  - No recent deployment changes were made
+  - HTTPS traffic briefly drops during restarts
 
-  Inspection of the deployment reveals OOMKill history annotations pointing
-  to memory exhaustion in the nginx process. No recent application changes
-  were made that would explain the increased memory usage.
+  [Available Signals]
+  - Kubernetes events and pod status
+  - nginx configuration inside the cluster
+  - Existing cluster configuration objects (ConfigMaps, Secrets)
 
-  The nginx ConfigMap has not been audited since the controller was first
-  deployed. The TLS session parameters were set at initial deployment and
-  have never been reviewed for correctness — some of the current values are
-  known to cause unbounded memory accumulation under sustained HTTPS traffic.
+  Some configuration references exist in the cluster, but not all of them are reliable or up to date.
 
-  The ingress-system namespace contains multiple configuration objects —
-  some are platform-approved references, others are legacy or intermediate
-  drafts that are explicitly not authoritative. Not all configuration objects
-  in the namespace reflect current platform standards. Investigate carefully
-  to identify which objects represent the authoritative platform configuration
-  before applying any values.
+  [Objective]
+  Identify the root cause of the instability and restore stable operation of the ingress controller.
 
-  [Goals]
-
-  Diagnose the root cause of the periodic OOMKill crashes and restore stable
-  operation:
-
-  1. Identify which nginx TLS configuration parameters are contributing to
-     unbounded memory growth and apply appropriate bounded values that will
-     prevent memory exhaustion under normal HTTPS load. Examine all
-     configuration resources available in the namespace to determine which
-     source reflects current platform-approved standards — not all objects
-     are equally authoritative.
-
-  2. Ensure the running nginx process reflects the corrected configuration —
-     the fix must be active in the live process, not only on disk. Verify
-     that the live nginx configuration matches what was written before
-     concluding the incident.
-
-  3. Preserve the existing nginx configuration structure — only modify the
-     parameters directly responsible for the memory issue. Do not rebuild or
-     replace the entire nginx configuration file.
-
-  4. Confirm stable HTTPS operation with no new pod restarts after the fix
-     is applied.
+  The system should:
+  - Stop restarting unexpectedly
+  - Continue serving HTTPS traffic correctly
+  - Preserve existing configuration structure
 
   [Constraints]
-
-  Investigate the existing configuration rather than rebuilding the system.
-  Do not modify container images or pod memory limits — the memory limit is
-  intentionally set and must not be increased as a workaround. The corrected
-  configuration must persist across nginx reloads and pod restarts.
-
-metadata:
-  category: kubernetes
-  difficulty: hard
-  estimated_time: 1H
-  tags:
-    - kubernetes
-    - ingress
-    - nginx
-    - tls
-    - memory-leak
-    - incident-response
-
-allowed_namespaces:
-  - ingress-system
+  - Do not increase memory limits
+  - Do not replace the deployment
+  - Fix the issue through configuration investigation and correction
