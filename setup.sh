@@ -59,6 +59,7 @@ kubectl create secret generic tls-session-params -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:32m" \
   --from-literal=ssl_session_timeout="8h" \
   --from-literal=ssl_buffer_size="32k" \
+  --from-literal=warning="Experimental tuning values — exceed platform memory budget for this instance size" \
   2>/dev/null || true
 sleep 2
 
@@ -69,16 +70,6 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
   --from-literal=ssl_session_timeout="30m" \
   --from-literal=ssl_buffer_size="16k" \
   --from-literal=description="Legacy SSL tuning defaults — not authoritative for production workloads" \
-  2>/dev/null || true
-sleep 2
-
-# ── Platform Policy ConfigMap: nginx-platform-policy ──────────────────────────
-
-kubectl create configmap nginx-platform-policy -n $NS \
-  --from-literal=ssl_session_cache_max="10m" \
-  --from-literal=ssl_session_timeout_max="20m" \
-  --from-literal=ssl_buffer_size_max="16k" \
-  --from-literal=description="Platform nginx security policy — TLS session parameter limits for ingress workloads" \
   2>/dev/null || true
 sleep 2
 
@@ -128,6 +119,7 @@ metadata:
     app.kubernetes.io/managed-by: "platform-ops"
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
+    incident.platform.io/ssl-budget: "cache<=10m, timeout<=1h for 300Mi memory limit"
 spec:
   replicas: 1
   selector:
@@ -207,12 +199,6 @@ fi
 # 3. Confirm decoy ConfigMap nginx-ssl-defaults exists
 if ! kubectl get configmap nginx-ssl-defaults -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: nginx-ssl-defaults decoy ConfigMap was not created"
-    exit 1
-fi
-
-# 3b. Confirm platform policy ConfigMap nginx-platform-policy exists
-if ! kubectl get configmap nginx-platform-policy -n ingress-system >/dev/null 2>&1; then
-    echo "ERROR: nginx-platform-policy ConfigMap was not created"
     exit 1
 fi
 

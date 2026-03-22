@@ -1,4 +1,4 @@
-id: ingress-controller
+id: ingress-controller-oom-restart
 prompt: |
   [Context]
   You are an SRE on-call responsible for maintaining the ingress layer of a Kubernetes cluster.
@@ -10,12 +10,11 @@ prompt: |
   - Restarts occur every few hours
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
-  - Memory usage grows proportionally to HTTPS connection volume, suggesting per-connection resource usage or session accumulation
+  - The pod's OOM history annotation records repeated worker memory exhaustion under sustained HTTPS load
 
   Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date.
-  Platform security policies and acceptable parameter limits for ingress workloads are documented in cluster resources within the `ingress-system` namespace.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
@@ -26,10 +25,10 @@ prompt: |
   - Maintain existing configuration structure
 
   [Constraints]
-  - The ingress controller must continue serving HTTPS traffic after your changes
-  - Do not modify the container image or resource definitions
+  - Do not increase memory limits
+  - Do not replace the deployment
+  - Any configuration changes must be applied by restarting the existing deployment
 
-  
 metadata:
   category: kubernetes
   difficulty: hard
@@ -39,7 +38,6 @@ metadata:
     - ingress
     - nginx
     - incident-response
-    - configuration
 
 allowed_namespaces:
   - ingress-system
