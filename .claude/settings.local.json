@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(apex-arena test-solution:*)"
+      "Bash(apex-arena test-solution:*)",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout0.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout1.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout2.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout3.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout4.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout5.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout6.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout7.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout8.txt\")",
+      "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout9.txt\")"
     ]
   }
 }

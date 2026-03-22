@@ -121,8 +121,8 @@ def _not_builtin(text: str) -> bool:
 
 def _all_tls_bounded(text: str) -> bool:
     """All three TLS params are within safe bounds.
-    Used as a prerequisite gate for M3 (config structure) and M5 (live HTTPS) —
-    ensures those milestones require the TLS fix to be applied first."""
+    Used as a prerequisite gate for M5 (live HTTPS) only —
+    ensures HTTPS milestone requires the rollout restart with correct TLS values."""
     return _cache_ok(text) and _timeout_ok(text) and _buffer_ok(text)
 
 
@@ -220,11 +220,6 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
 # ── Objective 3: config_structure_intact ──────────────────────────────────────
 
 def _obj_config_structure_intact() -> tuple[float, str]:
-    cfg = _get_configmap_conf()
-
-    if not _all_tls_bounded(cfg):
-        return 0.0, "TLS params not all bounded — structure check skipped (fix ConfigMap first)"
-
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -373,7 +368,8 @@ def _milestone_nginx_live_updated() -> tuple[float, str]:
 
 def _milestone_config_structure_intact() -> tuple[float, str]:
     """Milestone 3: Original nginx configuration directives preserved.
-    Gated on TLS fix — prevents trivial pass in unmodified broken environment."""
+    Independent check — passes as long as keepalive, server_tokens, and
+    worker_connections are intact regardless of TLS parameter state."""
     return _obj_config_structure_intact()
 
 
