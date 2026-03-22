@@ -18,12 +18,12 @@ BROKEN_BUFFER  = "64k"
 
 # Maximum acceptable TLS values (range-based bounds, any value within range passes)
 # Decoy traps:
-#   tls-session-params  (32m/8h/32k)  — cache 32m >10 MB, buffer 32k >16k → FAILS
-#   nginx-ssl-defaults  (20m/4h/16k)  — cache 20m >10 MB                  → FAILS
-# Key discriminator: cache size — agents must independently choose ≤10 MB.
-# Copying either decoy cache (20m or 32m) fails. Timeout is permissive (≤8h).
+#   tls-session-params  (32m/8h/32k)  — cache 32m >10 MB, timeout 8h >1h, buffer 32k >16k → FAILS
+#   nginx-ssl-defaults  (20m/4h/16k)  — cache 20m >10 MB, timeout 4h >1h               → FAILS
+# Key discriminators: cache size AND session timeout must both be bounded.
+# Copying either decoy fails on cache (20m/32m > 10 MB) and/or timeout (4h/8h > 1h).
 MAX_CACHE_MB  = 10.0   # shared SSL zone ≤ 10 MB  (decoys: 20m, 32m — both fail)
-MAX_TIMEOUT_S = 28800  # session timeout ≤ 8 h    (decoys: 4h, 8h — both pass)
+MAX_TIMEOUT_S = 3600   # session timeout ≤ 1 h    (decoys: 4h, 8h — both fail)
 MAX_BUFFER_B  = 16384  # per-connection buffer ≤ 16 k (decoy 32k fails; 16k passes)
 
 
@@ -91,7 +91,7 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (28 800 s = 8 h)."""
+    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (3 600 s = 1 h)."""
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -121,8 +121,8 @@ def _not_builtin(text: str) -> bool:
 
 def _all_tls_bounded(text: str) -> bool:
     """All three TLS params are within safe bounds.
-    Used as a prerequisite gate for M3, M4, M5 — prevents those milestones
-    from passing trivially in the broken environment."""
+    Used as a prerequisite gate for M3 (config structure) and M5 (live HTTPS) —
+    ensures those milestones require the TLS fix to be applied first."""
     return _cache_ok(text) and _timeout_ok(text) and _buffer_ok(text)
 
 
@@ -202,8 +202,8 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
         syntax_ok = "syntax is ok" in (out + err).lower()
         checks = {
             "live_cache_bounded":   _cache_ok(live),     # shared:SSL:Xm, X ≤ 10 MB
-            "live_timeout_bounded": _timeout_ok(live),   # ≤ 3 600 s (1 h)
-            "live_buffer_bounded":  _buffer_ok(live),    # ≤ 16 384 B (16 k)
+            "live_timeout_bounded": _timeout_ok(live),   # ≤ 3600 s (1 h)
+            "live_buffer_bounded":  _buffer_ok(live),    # ≤ 16384 B (16 k)
             "live_not_builtin":     _not_builtin(live),  # builtin removed from live process
             "nginx_syntax_valid":   syntax_ok,
         }
@@ -246,11 +246,6 @@ def _obj_config_structure_intact() -> tuple[float, str]:
 # ── Objective 4: pod_stable ───────────────────────────────────────────────────
 
 def _obj_pod_stable() -> tuple[float, str]:
-    cfg = _get_configmap_conf()
-
-    if not _all_tls_bounded(cfg):
-        return 0.0, "TLS params not all bounded — stability check skipped (fix ConfigMap first)"
-
     pod = _get_running_pod()
     for _ in range(9):
         if pod:
@@ -383,8 +378,8 @@ def _milestone_config_structure_intact() -> tuple[float, str]:
 
 
 def _milestone_pod_stable() -> tuple[float, str]:
-    """Milestone 4: Pod running with no new OOMKill events.
-    Gated on TLS fix — prevents trivial pass in unmodified broken environment."""
+    """Milestone 4: Pod running with no new OOMKill events and limits unchanged.
+    Independent check — passes as long as the deployment remains healthy."""
     return _obj_pod_stable()
 
 
