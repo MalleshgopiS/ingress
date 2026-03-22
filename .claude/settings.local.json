@@ -12,7 +12,17 @@
       "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout7.txt\")",
       "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout8.txt\")",
       "Bash(tail -100 \"C:/Users/malle/Downloads/rollouts-05a05142 \\(2\\)/rollout9.txt\")",
-      "Bash(python -c \"MAX_TIMEOUT_S=3600; MAX_CACHE_MB=10.0; timeout_s=20*60; cache_mb=5.0; buf=4096; print\\(''cache pass:'', cache_mb<=MAX_CACHE_MB\\); print\\(''timeout pass:'', timeout_s<=MAX_TIMEOUT_S\\); print\\(''buffer pass:'', buf<=16384\\)\")"
+      "Bash(python -c \"MAX_TIMEOUT_S=3600; MAX_CACHE_MB=10.0; timeout_s=20*60; cache_mb=5.0; buf=4096; print\\(''cache pass:'', cache_mb<=MAX_CACHE_MB\\); print\\(''timeout pass:'', timeout_s<=MAX_TIMEOUT_S\\); print\\(''buffer pass:'', buf<=16384\\)\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout1.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout2.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout3.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout4.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout5.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout6.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout7.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout8.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout9.txt\")",
+      "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout11.txt\")"
     ]
   }
 }

@@ -146,10 +146,12 @@ def _obj_cache_corrected() -> tuple[float, str]:
     for attempt in range(3):
         cfg = _get_configmap_conf()
         checks = {
-            "cache_is_shared_zone": bool(re.search(
+            "cache_is_shared_zone":       bool(re.search(
                 r'ssl_session_cache\s+shared:SSL:', cfg or "", re.IGNORECASE)),
-            "cache_size_bounded":   _cache_ok(cfg),
-            "builtin_removed":      _not_builtin(cfg),
+            "cache_size_bounded":         _cache_ok(cfg),
+            "builtin_removed":            _not_builtin(cfg),
+            "config_structure_preserved": bool(re.search(
+                r'keepalive_timeout\s+\d+', cfg or "")),
         }
         if all(checks.values()):
             break
