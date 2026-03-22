@@ -9,7 +9,7 @@ echo "=== Applying TLS memory leak remediation ==="
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
 SSL_CACHE="shared:SSL:5m"
-SSL_TIMEOUT="1h"
+SSL_TIMEOUT="15m"
 SSL_BUFFER="4k"
 
 echo "[Step 1] Bounded replacement values:"

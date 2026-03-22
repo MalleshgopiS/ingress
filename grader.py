@@ -11,7 +11,7 @@ SVC    = "ingress-controller-svc"
 
 
 MAX_CACHE_MB  = 10.0   
-MAX_TIMEOUT_S = 1800   
+MAX_TIMEOUT_S = 1200   # session timeout ≤ 20 min  (30m = 1800 > 1200 → FAIL)
 MAX_BUFFER_B  = 16384 
 
 
