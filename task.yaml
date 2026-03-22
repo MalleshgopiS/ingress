@@ -10,7 +10,7 @@ prompt: |
   - Restarts occur every few hours
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
-  - The pod's OOM history annotation records repeated worker memory exhaustion under sustained HTTPS load
+  - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
 
   Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
 
@@ -27,7 +27,7 @@ prompt: |
   [Constraints]
   - Do not increase memory limits
   - Do not replace the deployment
-  - Any configuration changes must be applied by restarting the existing deployment
+  - Do not delete and recreate the deployment
 
 metadata:
   category: kubernetes

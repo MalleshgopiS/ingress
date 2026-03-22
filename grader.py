@@ -275,10 +275,10 @@ def _obj_https_operational() -> tuple[float, str]:
         cache_ok   = _cache_ok(live)
         timeout_ok = _timeout_ok(live)
         return 0.0, (
-            f"Live nginx TLS not fully bounded — "
-            f"cache {'≤10m ✓' if cache_ok else '>10m ✗'}, "
-            f"timeout {'≤1h ✓' if timeout_ok else '>1h ✗'} — "
-            f"must fix both independently and rollout restart"
+            f"Live nginx TLS parameters not within safe bounds — "
+            f"cache {'within budget ✓' if cache_ok else 'exceeds budget ✗'}, "
+            f"timeout {'within budget ✓' if timeout_ok else 'exceeds budget ✗'} — "
+            f"review platform limits and ensure deployment is restarted"
         )
 
     ip = _get_cluster_ip()
