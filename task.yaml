@@ -1,31 +1,44 @@
+id: ingress-tls-memory-leak
 prompt: |
   [Context]
-  You are an SRE on-call for a Kubernetes cluster running an nginx-based ingress controller.
+  You are an SRE on-call responsible for maintaining the ingress layer of a Kubernetes cluster.
 
   [Incident]
-  Over the past few days, the ingress controller pod in the `ingress-system` namespace has been restarting periodically.
+  The ingress controller in the `ingress-system` namespace has been experiencing periodic restarts over the past few days.
 
-  Initial observations:
-  - Restarts happen every few hours
-  - No recent deployment changes were made
-  - HTTPS traffic briefly drops during restarts
+  Observations from the team:
+  - Restarts occur every few hours
+  - No recent deployments were made
+  - HTTPS traffic is intermittently unavailable during restarts
 
-  [Available Signals]
-  - Kubernetes events and pod status
-  - nginx configuration inside the cluster
-  - Existing cluster configuration objects (ConfigMaps, Secrets)
+  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
 
-  Some configuration references exist in the cluster, but not all of them are reliable or up to date.
+  There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date.
 
   [Objective]
-  Identify the root cause of the instability and restore stable operation of the ingress controller.
+  Investigate the issue and restore stable operation of the ingress controller.
 
   The system should:
-  - Stop restarting unexpectedly
-  - Continue serving HTTPS traffic correctly
-  - Preserve existing configuration structure
+  - Run without unexpected restarts
+  - Serve HTTPS traffic reliably
+  - Maintain existing configuration structure
 
   [Constraints]
   - Do not increase memory limits
   - Do not replace the deployment
-  - Fix the issue through configuration investigation and correction
+  - Focus on diagnosing and fixing the root cause
+  
+metadata:
+  category: kubernetes
+  difficulty: hard
+  estimated_time: 1H
+  tags:
+    - kubernetes
+    - ingress
+    - nginx
+    - tls
+    - memory-leak
+    - incident-response
+
+allowed_namespaces:
+  - ingress-system
