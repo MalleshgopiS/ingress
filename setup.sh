@@ -72,15 +72,6 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
   2>/dev/null || true
 sleep 2
 
-# ── Platform configuration reference ──────────────────────────────────────────
-
-kubectl create secret generic platform-nginx-config -n $NS \
-  --from-literal=ssl_session_cache="shared:SSL:5m" \
-  --from-literal=ssl_session_timeout="1h" \
-  --from-literal=ssl_buffer_size="4k" \
-  2>/dev/null || true
-sleep 2
-
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
@@ -126,8 +117,7 @@ metadata:
   annotations:
     app.kubernetes.io/managed-by: "platform-ops"
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
-    incident.platform.io/oom-reason: "nginx worker memory growth under sustained TLS load — root cause under investigation"
-    incident.platform.io/investigation-notes: "ssl_session_cache type identified as growth source — sessions accumulating without bound in worker heap"
+    incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
 spec:
   replicas: 1
   selector:
@@ -231,12 +221,6 @@ OOM_HIST=$(kubectl get deployment ingress-controller -n ingress-system \
     -o jsonpath='{.metadata.annotations.incident\.platform\.io/oom-history}' 2>/dev/null || echo "")
 if [ -z "$OOM_HIST" ]; then
     echo "ERROR: OOM history annotation not set on deployment"
-    exit 1
-fi
-
-# 7. Confirm platform-nginx-config Secret exists (platform config reference)
-if ! kubectl get secret platform-nginx-config -n ingress-system >/dev/null 2>&1; then
-    echo "ERROR: platform-nginx-config Secret was not created"
     exit 1
 fi
 
