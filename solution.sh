@@ -7,20 +7,6 @@ DEPLOY=ingress-controller
 echo "=== Applying TLS memory leak remediation ==="
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
-# The three nginx TLS parameters in the ConfigMap are misconfigured:
-#   ssl_session_cache builtin    — per-worker, no size limit → unbounded heap growth
-#   ssl_session_timeout 86400    — 24-hour sessions → stale sessions never evicted
-#   ssl_buffer_size 64k          — 64 KB per connection → excessive per-connection cost
-#
-# Correct bounded values that eliminate the memory leak:
-#   ssl_session_cache shared:SSL:5m  — single shared zone capped at 5 MB
-#   ssl_session_timeout 1h           — 1-hour session lifetime (3600 s ≤ limit)
-#   ssl_buffer_size 4k               — 4 KB per connection (standard recommendation)
-#
-# NOTE: There is no authoritative Secret containing correct values — these
-# values are derived from nginx operational best practices for a 300 Mi pod.
-# Do NOT use the tls-session-params Secret — it contains legacy/excessive values
-# (shared:SSL:32m, 8h, 32k) that exceed safe bounds and will not fix the OOM.
 
 SSL_CACHE="shared:SSL:5m"
 SSL_TIMEOUT="1h"
@@ -32,10 +18,6 @@ echo "    ssl_session_timeout = $SSL_TIMEOUT  (replaces: 86400 — 24-hour sessi
 echo "    ssl_buffer_size     = $SSL_BUFFER    (replaces: 64k — excessive per-connection)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
-# Read the existing nginx.conf and replace ONLY the three broken TLS directives.
-# This preserves all other original directives (keepalive_timeout, server_tokens,
-# worker_connections, server block, etc).
-# IMPORTANT: Do NOT reconstruct the entire nginx.conf — that loses existing config.
 
 echo "[Step 2] Reading current nginx.conf from ConfigMap..."
 CURRENT_CONF=$(kubectl get configmap ingress-nginx-config -n $NS \
@@ -54,9 +36,7 @@ kubectl create configmap ingress-nginx-config -n $NS \
 echo "[Step 2] ConfigMap patched (original structure preserved)."
 
 # ── Step 3: Rollout restart ────────────────────────────────────────────────────
-# nginx.conf is mounted with subPath — kubelet does NOT auto-sync on ConfigMap
-# change (documented Kubernetes behaviour for subPath mounts). A rollout restart
-# is required so the new pod mounts the updated ConfigMap fresh at startup.
+
 
 echo "[Step 3] Performing rollout restart to apply new TLS configuration..."
 kubectl rollout restart deployment/$DEPLOY -n $NS

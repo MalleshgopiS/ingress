@@ -1,39 +1,4 @@
 #!/usr/bin/env python3
-"""Grader: ingress-tls-memory-leak
-
-Verifies that the agent correctly identified and fixed the three broken nginx
-TLS session parameters causing periodic OOMKill restarts.
-
-Five milestones × 0.20 weight = 1.0 maximum score.  Every milestone is
-BINARY (0.0 or 1.0) — all sub-checks within a milestone must pass.
-
-Grading strategy:
-  • tls_params_corrected    — ConfigMap TLS values are within safe bounds
-  • nginx_live_updated      — Live nginx process reflects bounded TLS values
-                              (requires rollout restart; subPath blocks auto-sync)
-  • config_structure_intact — Original nginx directives preserved; ONLY passes
-                              after TLS fix is confirmed in the ConfigMap
-  • pod_stable              — No new OOMKill; deployment limits unchanged; ONLY
-                              passes after TLS fix is confirmed in the ConfigMap
-  • https_operational       — HTTPS endpoint responds with valid TLS; ONLY passes
-                              after live nginx is confirmed to have bounded values
-
-TLS value bounds (any values within these ranges pass):
-  ssl_session_cache  : shared:SSL:Xm  where X ≤ 10  (eliminates unbounded builtin)
-  ssl_session_timeout: ≤  3 600 s (1 h)              (prevents long-lived accumulation;
-                                                       nginx best practice is 1 h or less)
-  ssl_buffer_size    : ≤ 16 384 B (16 k)             (nginx documented default; ≤ 16 k passes)
-
-Decoy trap analysis:
-  tls-session-params  (32m / 8h / 32k)  — cache 32m >10 MB, timeout 8h >1h  → M1 FAILS
-  nginx-ssl-defaults  (20m / 4h / 16k)  — cache 20m >10 MB, timeout 4h >1h  → M1 FAILS
-  Agents who reason from nginx best practices (≤10MB, ≤1h, ≤16k)             → M1 PASSES
-
-Score distribution:
-  0.00 — no fix, or used decoy values (4h/8h timeout, 20m/32m cache all fail)
-  0.60 — ConfigMap patched correctly but rollout restart not performed
-  1.00 — all three TLS params fixed + rollout restart + structure preserved
-"""
 
 import datetime
 import json
@@ -52,9 +17,9 @@ BROKEN_TIMEOUT = "86400"
 BROKEN_BUFFER  = "64k"
 
 # Maximum acceptable TLS values (range-based bounds, any value within range passes)
-MAX_CACHE_MB  = 10.0   # shared SSL zone must be ≤ 10 MB  (decoy nginx-ssl-defaults=20m fails)
-MAX_TIMEOUT_S = 3600   # session lifetime must be ≤ 1 h   (decoy nginx-ssl-defaults=4h fails)
-MAX_BUFFER_B  = 16384  # per-connection buffer must be ≤ 16 k (nginx documented default)
+MAX_CACHE_MB  = 10.0   
+MAX_TIMEOUT_S = 3600   
+MAX_BUFFER_B  = 16384  
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -191,20 +156,16 @@ def _get_restart_count() -> str:
 
 
 # ── Objective 1: tls_params_corrected ─────────────────────────────────────────
-# ConfigMap TLS values must all be within safe operational bounds.
-# Any bounded shared-zone cache ≤ 10 MB, timeout ≤ 1 h, buffer ≤ 16 k passes.
-# builtin cache, decoy tls-session-params (32m/8h/32k), and decoy
-# nginx-ssl-defaults (20m/4h/16k) all fail at least one check.
 
 def _obj_tls_params_corrected() -> tuple[float, str]:
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
         checks = {
-            "cache_bounded":   _cache_ok(cfg),     # shared:SSL:Xm, X ≤ 10 MB
-            "timeout_bounded": _timeout_ok(cfg),   # ≤ 3 600 s (1 h)
-            "buffer_bounded":  _buffer_ok(cfg),    # ≤ 16 384 B (16 k)
-            "not_builtin":     _not_builtin(cfg),  # builtin is unbounded — must be gone
+            "cache_bounded":   _cache_ok(cfg),     
+            "timeout_bounded": _timeout_ok(cfg),   
+            "buffer_bounded":  _buffer_ok(cfg),    
+            "not_builtin":     _not_builtin(cfg),  
         }
         if all(checks.values()):
             break
@@ -217,10 +178,6 @@ def _obj_tls_params_corrected() -> tuple[float, str]:
 
 
 # ── Objective 2: nginx_live_updated ───────────────────────────────────────────
-# Live nginx process must reflect bounded TLS values.
-# ConfigMap update alone is insufficient — nginx.conf uses a subPath mount so
-# the kubelet does NOT auto-sync on ConfigMap change. A rollout restart is
-# required so the new pod mounts the updated ConfigMap fresh at start-up.
 
 def _obj_nginx_live_updated() -> tuple[float, str]:
     pod = _get_running_pod()
@@ -256,14 +213,6 @@ def _obj_nginx_live_updated() -> tuple[float, str]:
 
 
 # ── Objective 3: config_structure_intact ──────────────────────────────────────
-# The original nginx.conf contained directives beyond the broken TLS parameters.
-# A correct fix patches only the broken values in-place — it does NOT rebuild the
-# entire nginx.conf from scratch, which would lose these original directives.
-#
-# PREREQUISITE: all 3 TLS params must be bounded in the ConfigMap first.
-# Without the fix, keepalive/server_tokens/worker_connections trivially pass
-# because the original broken config already contains them — this gate prevents
-# a do-nothing agent from scoring this milestone.
 
 def _obj_config_structure_intact() -> tuple[float, str]:
     cfg = _get_configmap_conf()
@@ -290,13 +239,6 @@ def _obj_config_structure_intact() -> tuple[float, str]:
 
 
 # ── Objective 4: pod_stable ───────────────────────────────────────────────────
-# Pod is running normally, no new OOMKill events, and deployment resource
-# limits have not been modified (constraint: do not modify pod memory limits).
-#
-# PREREQUISITE: all 3 TLS params must be bounded in the ConfigMap first.
-# Without the fix the pod is trivially stable during the short observation
-# window (OOMKills occur every 4-6 hours, not within seconds) — this gate
-# prevents a do-nothing agent from scoring this milestone.
 
 def _obj_pod_stable() -> tuple[float, str]:
     cfg = _get_configmap_conf()
@@ -363,12 +305,6 @@ def _obj_pod_stable() -> tuple[float, str]:
 
 
 # ── Objective 5: https_operational ────────────────────────────────────────────
-# HTTPS endpoint responds with valid TLS and correct syntax.
-#
-# PREREQUISITE: live nginx must have all 3 TLS params bounded.
-# Without the rollout restart the live nginx still runs with builtin cache —
-# this gate ensures HTTPS operational credit requires the full fix (patch +
-# restart), not just the ConfigMap update.
 
 def _obj_https_operational() -> tuple[float, str]:
     pod = _get_running_pod()
@@ -454,14 +390,6 @@ def _milestone_https_operational() -> tuple[float, str]:
 
 
 # ── Grade ──────────────────────────────────────────────────────────────────────
-# Five milestones × 0.20 weight = 1.0 maximum score.
-# Every milestone is BINARY (0.0 or 1.0).
-#
-# Expected score distribution:
-#   0.00 — no fix, or all-wrong decoy values
-#   0.60 — ConfigMap patched correctly but no rollout restart
-#           (M1 + M3 + M4 pass; M2 + M5 fail — live nginx still broken)
-#   1.00 — all params fixed + rollout restart + structure preserved
 
 OBJECTIVES = [
     ("tls_params_corrected",    _milestone_tls_params_corrected),

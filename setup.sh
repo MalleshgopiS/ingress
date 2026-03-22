@@ -53,12 +53,7 @@ echo "TLS secret created."
 sleep 2
 
 # ── Decoy Secret: tls-session-params ──────────────────────────────────────────
-# Contains plausible-looking values that are far too large for a 300Mi pod:
-#   ssl_session_cache shared:SSL:32m  — 32 MB SSL zone (excessive; causes OOM)
-#   ssl_session_timeout 8h            — 8-hour sessions (28800 s; still unbounded)
-#   ssl_buffer_size 32k               — 32 KB per-connection (2x nginx default)
-# Agents who treat this Secret as the fix source will apply values that are
-# still too large and will fail the range-bounded grading checks.
+
 
 kubectl create secret generic tls-session-params -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:32m" \
@@ -68,9 +63,6 @@ kubectl create secret generic tls-session-params -n $NS \
 sleep 2
 
 # ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
-# "Legacy SSL tuning defaults" — explicitly labelled non-authoritative.
-# Still has a too-long timeout (4h > 1h limit) so agents who apply these
-# values verbatim will fail the timeout range check.
 
 kubectl create configmap nginx-ssl-defaults -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:20m" \
@@ -81,9 +73,6 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
 sleep 2
 
 # ── Platform configuration reference ──────────────────────────────────────────
-# Stores current platform-approved TLS parameters for the ingress tier.
-# Agents must investigate which configuration objects in the namespace
-# reflect current platform standards versus legacy or decoy values.
 
 kubectl create secret generic platform-nginx-config -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:5m" \
@@ -93,12 +82,6 @@ kubectl create secret generic platform-nginx-config -n $NS \
 sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
-# Three TLS parameters are set to values that cause unbounded memory accumulation:
-#   ssl_session_cache builtin         — OpenSSL per-worker cache; NO size limit
-#   ssl_session_timeout 86400         — 24-hour sessions; stale sessions never evicted
-#   ssl_buffer_size 64k               — 64 KB per-connection buffer (4–16× too large)
-# keepalive_timeout and server_tokens are original config directives that must
-# be preserved by any correct fix (surgical patch, not a full rebuild).
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
@@ -133,11 +116,6 @@ http {
 sleep 2
 
 # ── nginx Deployment ───────────────────────────────────────────────────────────
-# Memory limit 300Mi: enough to start, but exhausted under TLS load when the
-# builtin per-worker cache grows without bound (OOMKill every 4–6 hours).
-# OOMKill history is documented in the deployment annotations.
-# NOTE: No annotation names a "correct" Secret — the agent must diagnose from
-# the nginx configuration itself what bounded values are appropriate.
 
 kubectl apply -n $NS -f - <<EOF
 apiVersion: apps/v1
