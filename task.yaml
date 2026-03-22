@@ -4,34 +4,30 @@ prompt: |
   You are an SRE on-call responsible for maintaining the ingress layer of a Kubernetes cluster.
 
   [Incident]
-  The ingress controller in the `ingress-system` namespace has been experiencing periodic OOM-kill restarts over the past few days.
+  The ingress controller in the `ingress-system` namespace has been experiencing periodic restarts over the past few days.
 
   Observations from the team:
-  - Restarts occur every few hours under sustained HTTPS load
+  - Restarts occur every few hours
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
-  - Memory usage grows steadily and correlates with HTTPS connection volume
-  - The nginx process is the memory consumer; engineers believe its TLS session handling is misconfigured
 
-  Note: there are multiple configuration references in the cluster. Some contain values that are themselves too large for a memory-constrained environment — do not copy them blindly. The authoritative source is the live nginx configuration in `ingress-nginx-config`.
+  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
+
+  There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date.
 
   [Objective]
-  Inspect the nginx TLS session configuration and correct the parameters responsible for the memory growth.
+  Investigate the issue and restore stable operation of the ingress controller.
 
-  A correctly configured nginx TLS session setup requires all three of the following:
-  - Session cache: shared memory zone (not per-worker builtin), no larger than 10 MB
-  - Session timeout: no longer than 20 minutes (values in hours or days cause session accumulation)
-  - Session buffer: per-connection buffer no larger than 16k
-
-  All three directives are present in the active nginx configuration and need to be set within the bounds above.
-  Apply your fix and ensure the live nginx process picks up the updated configuration.
+  The system should:
+  - Run without unexpected restarts
+  - Serve HTTPS traffic reliably
+  - Maintain existing configuration structure
 
   [Constraints]
-  These are hard requirements and will be validated:
-  - Do not increase memory limits on any container
-  - Do not delete or replace the deployment (a rollout restart is acceptable)
-  - Fix only the root cause — do not patch around it by modifying resource limits or replacing workloads
-
+  - Do not increase memory limits
+  - Do not replace the deployment
+  - Focus on diagnosing and fixing the root cause
+  
 metadata:
   category: kubernetes
   difficulty: hard
@@ -40,7 +36,9 @@ metadata:
     - kubernetes
     - ingress
     - nginx
+    - tls
+    - memory-leak
     - incident-response
-    - configuration
 
 allowed_namespaces:
+  - ingress-system
