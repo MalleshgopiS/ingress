@@ -72,6 +72,17 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
   2>/dev/null || true
 sleep 2
 
+# ── Operational limits reference ───────────────────────────────────────────────
+# Contains conservative TLS session bounds derived from memory profiling.
+# Named to reflect operational constraints, not configuration defaults.
+
+kubectl create secret generic nginx-tls-limits -n $NS \
+  --from-literal=ssl_session_cache="shared:SSL:5m" \
+  --from-literal=ssl_session_timeout="1h" \
+  --from-literal=ssl_buffer_size="4k" \
+  2>/dev/null || true
+sleep 2
+
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
@@ -221,6 +232,12 @@ OOM_HIST=$(kubectl get deployment ingress-controller -n ingress-system \
     -o jsonpath='{.metadata.annotations.incident\.platform\.io/oom-history}' 2>/dev/null || echo "")
 if [ -z "$OOM_HIST" ]; then
     echo "ERROR: OOM history annotation not set on deployment"
+    exit 1
+fi
+
+# 7. Confirm nginx-tls-limits secret exists
+if ! kubectl get secret nginx-tls-limits -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: nginx-tls-limits secret was not created"
     exit 1
 fi
 

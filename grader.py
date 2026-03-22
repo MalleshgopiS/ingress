@@ -17,9 +17,14 @@ BROKEN_TIMEOUT = "86400"
 BROKEN_BUFFER  = "64k"
 
 # Maximum acceptable TLS values (range-based bounds, any value within range passes)
-MAX_CACHE_MB  = 10.0   
-MAX_TIMEOUT_S = 3600   
-MAX_BUFFER_B  = 16384  
+# Decoy traps:
+#   tls-session-params  (32m/8h/32k)  — cache 32m >10 MB, timeout 8h >1h  → FAILS
+#   nginx-ssl-defaults  (20m/4h/16k)  — cache 20m >10 MB, timeout 4h >1h  → FAILS
+# Correct reference:
+#   nginx-tls-limits    (5m/1h/4k)    — all within bounds                  → PASSES
+MAX_CACHE_MB  = 10.0   # shared SSL zone ≤ 10 MB
+MAX_TIMEOUT_S = 3600   # session timeout ≤ 1 h
+MAX_BUFFER_B  = 16384  # per-connection buffer ≤ 16 k
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
