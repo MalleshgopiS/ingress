@@ -119,7 +119,7 @@ metadata:
     app.kubernetes.io/managed-by: "platform-ops"
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
-    incident.platform.io/ssl-budget: "cache<=10m, timeout<=1h for 300Mi memory limit"
+    incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
 spec:
   replicas: 1
   selector:

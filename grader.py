@@ -10,7 +10,7 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 
-MAX_CACHE_MB  = 10.0  
+MAX_CACHE_MB  = 8.0
 MAX_TIMEOUT_S = 3600   
 MAX_BUFFER_B  = 16384  
 

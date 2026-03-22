@@ -11,6 +11,7 @@ prompt: |
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
+  - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
 
   Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
 
