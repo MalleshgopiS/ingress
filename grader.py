@@ -9,26 +9,10 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# ── Grading thresholds ─────────────────────────────────────────────────────────
-#
-# Environment decoys:
-#   tls-session-params  Secret    → cache=32m  timeout=8h  buffer=32k  (ALL wrong)
-#   nginx-ssl-defaults  ConfigMap → cache=20m  timeout=30m buffer=16k  (MIXED: timeout ok, cache wrong)
-#
-# Natural agent variance per rollout:
-#   Cache   : ~40% independently choose ≤10m  |  ~60% copy 20m/32m from decoys  → FAIL M1+M3
-#   Timeout : ~50% read nginx-ssl-defaults→30m |  ~50% read tls-session-params→8h → FAIL M2+M4
-#
-# This creates 4 independent score patterns:
-#   cache=10m, timeout=30m → M1=1 M2=1 M3=1 M4=1 M5=1 → 1.00  (~20% of rollouts)
-#   cache=10m, timeout=8h  → M1=1 M2=0 M3=1 M4=0 M5=0 → 0.40  (~20%)
-#   cache=20m, timeout=30m → M1=0 M2=1 M3=0 M4=1 M5=0 → 0.40  (~40%)
-#   cache=20m, timeout=8h  → M1=0 M2=0 M3=0 M4=0 M5=0 → 0.00  (~20%)
-#   → Expected mean ≈ 0.44,  CV ≈ 0.73
 
-MAX_CACHE_MB  = 10.0   # shared SSL zone ≤ 10 MB  (decoys: 20m, 32m — both fail)
-MAX_TIMEOUT_S = 3600   # session timeout ≤ 1 h    (decoy tls-session-params: 8h — fails; nginx-ssl-defaults: 30m — passes)
-MAX_BUFFER_B  = 16384  # per-connection buffer ≤ 16 k (decoy tls-session-params: 32k — fails; nginx-ssl-defaults: 16k — passes)
+MAX_CACHE_MB  = 10.0  
+MAX_TIMEOUT_S = 3600   
+MAX_BUFFER_B  = 16384  
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -46,7 +30,7 @@ def run(cmd: str, timeout: int = 30):
 # ── nginx value parsers ────────────────────────────────────────────────────────
 
 def _parse_nginx_time(s: str) -> int:
-    """Convert nginx time string to seconds: 1h→3600, 30m→1800, 3600→3600."""
+    
     s = s.strip().lower()
     if s.endswith('h'):
         return int(s[:-1]) * 3600
@@ -58,7 +42,7 @@ def _parse_nginx_time(s: str) -> int:
 
 
 def _parse_nginx_size(s: str) -> int:
-    """Convert nginx size string to bytes: 4k→4096, 16m→16777216."""
+
     s = s.strip().lower()
     if s.endswith('k'):
         return int(s[:-1]) * 1024
@@ -70,7 +54,7 @@ def _parse_nginx_size(s: str) -> int:
 
 
 def _parse_cache_mb(val: str) -> float:
-    """Extract MB from shared:SSL:5m → 5.0, shared:SSL:1g → 1024.0."""
+    
     m = re.search(r'shared:SSL:(\d+)(k|m|g)', val, re.IGNORECASE)
     if not m:
         return -1.0
@@ -85,8 +69,7 @@ def _parse_cache_mb(val: str) -> float:
 # ── Range-bounded TLS checks ───────────────────────────────────────────────────
 
 def _cache_ok(text: str) -> bool:
-    """ssl_session_cache must be shared:SSL:Xm where X ≤ MAX_CACHE_MB (10).
-    'builtin' never matches the shared:SSL: pattern so always fails."""
+    
     m = re.search(r'ssl_session_cache\s+(shared:SSL:\S+)\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
@@ -95,8 +78,7 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (3600 s = 1 h).
-    nginx-ssl-defaults decoy (30m=1800s) passes; tls-session-params (8h=28800s) fails."""
+    
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -156,14 +138,10 @@ def _get_cluster_ip() -> str:
 
 
 # ── Objective 1: cache_corrected ──────────────────────────────────────────────
-# ConfigMap check. ~40% pass: agents who choose ≤10m independently.
-# ~60% fail: agents who copy nginx-ssl-defaults (20m) or tls-session-params (32m).
+
 
 def _obj_cache_corrected() -> tuple[float, str]:
-    """ConfigMap ssl_session_cache is shared:SSL:Xm where X ≤ 10 MB (not builtin).
-    nginx-ssl-defaults: 20m — FAILS (too large).
-    tls-session-params: 32m — FAILS (too large).
-    Must independently choose ≤10m."""
+    
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -184,14 +162,10 @@ def _obj_cache_corrected() -> tuple[float, str]:
 
 
 # ── Objective 2: timeout_corrected ────────────────────────────────────────────
-# ConfigMap check. ~50% pass: agents who read nginx-ssl-defaults (30m ≤ 3600s).
-# ~50% fail: agents who read tls-session-params (8h = 28800s > 3600s).
+
 
 def _obj_timeout_corrected() -> tuple[float, str]:
-    """ConfigMap ssl_session_timeout ≤ 3600 s (1 h).
-    nginx-ssl-defaults: 30m = 1800s — PASSES (≤1h).
-    tls-session-params: 8h = 28800s — FAILS (>1h).
-    Split: ~50% pass (read configmap decoy), ~50% fail (read secret decoy)."""
+    
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -211,14 +185,10 @@ def _obj_timeout_corrected() -> tuple[float, str]:
 
 
 # ── Objective 3: live_cache_reloaded ──────────────────────────────────────────
-# Live-process check. ~40% pass: same agents who pass M1 AND did rollout restart.
-# Distinct from M1: checks the RUNNING nginx process via `nginx -T`, not the ConfigMap.
-# Requires rollout restart to load new subPath-mounted ConfigMap value.
+
 
 def _obj_live_cache_reloaded() -> tuple[float, str]:
-    """Live nginx (nginx -T) shows bounded ssl_session_cache (≤10m, not builtin) and valid syntax.
-    Correlated with M1 — passes only when agent chose ≤10m AND performed rollout restart.
-    ~40% of rollouts pass."""
+    
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -227,7 +197,7 @@ def _obj_live_cache_reloaded() -> tuple[float, str]:
             if pod:
                 break
     if not pod:
-        return 0.0, "No running nginx pod found — cannot verify live config"
+        return 0.0, 
 
     checks = {}
     for attempt in range(3):
@@ -251,14 +221,10 @@ def _obj_live_cache_reloaded() -> tuple[float, str]:
 
 
 # ── Objective 4: live_timeout_reloaded ────────────────────────────────────────
-# Live-process check. ~50% pass: same agents who pass M2 AND did rollout restart.
-# Distinct from M2: checks the RUNNING nginx process via `nginx -T`, not the ConfigMap.
-# Requires rollout restart to load new subPath-mounted ConfigMap value.
+
 
 def _obj_live_timeout_reloaded() -> tuple[float, str]:
-    """Live nginx (nginx -T) shows bounded ssl_session_timeout (≤1h) and valid syntax.
-    Correlated with M2 — passes only when agent chose ≤1h AND performed rollout restart.
-    ~50% of rollouts pass (agents who copied nginx-ssl-defaults timeout=30m)."""
+    
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -290,13 +256,10 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
 
 
 # ── Objective 5: https_operational ────────────────────────────────────────────
-# Gated: passes only when live nginx has ALL TLS params bounded (cache+timeout+buffer).
-# ~20% pass: agents who independently chose ≤10m cache AND got timeout ≤1h.
+
 
 def _obj_https_operational() -> tuple[float, str]:
-    """Live nginx has all bounded TLS values AND HTTPS endpoint is reachable.
-    Gate: live nginx must show cache ≤10m AND timeout ≤1h AND buffer ≤16k.
-    Requires correct values for BOTH cache and timeout — not achievable by copying one decoy."""
+    
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -356,36 +319,27 @@ def _obj_https_operational() -> tuple[float, str]:
 # ── Grouped milestone functions ────────────────────────────────────────────────
 
 def _milestone_cache_corrected() -> tuple[float, str]:
-    """Milestone 1 — ConfigMap: ssl_session_cache ≤10m, not builtin.
-    ~40% pass. Decoys (20m, 32m) both fail. Agent must choose independently."""
+
     return _obj_cache_corrected()
 
 
 def _milestone_timeout_corrected() -> tuple[float, str]:
-    """Milestone 2 — ConfigMap: ssl_session_timeout ≤1h.
-    ~50% pass. nginx-ssl-defaults (30m) passes; tls-session-params (8h) fails.
-    Natural split: agents who read configmap vs those who read secret."""
+
     return _obj_timeout_corrected()
 
 
 def _milestone_live_cache_reloaded() -> tuple[float, str]:
-    """Milestone 3 — Live nginx: ssl_session_cache ≤10m after rollout restart.
-    ~40% pass. Checks RUNNING PROCESS via nginx -T — distinct from M1 (ConfigMap).
-    Requires rollout restart (subPath mount blocks kubelet auto-sync)."""
+    
     return _obj_live_cache_reloaded()
 
 
 def _milestone_live_timeout_reloaded() -> tuple[float, str]:
-    """Milestone 4 — Live nginx: ssl_session_timeout ≤1h after rollout restart.
-    ~50% pass. Checks RUNNING PROCESS via nginx -T — distinct from M2 (ConfigMap).
-    M3 and M4 can independently pass/fail: e.g. cache wrong + timeout right → M3=0, M4=1."""
+    
     return _obj_live_timeout_reloaded()
 
 
 def _milestone_https_operational() -> tuple[float, str]:
-    """Milestone 5 — HTTPS: live nginx has ALL bounded TLS values + endpoint responds.
-    ~20% pass. Gate requires BOTH cache ≤10m AND timeout ≤1h in live nginx.
-    No single decoy gives both correct values — forces independent reasoning."""
+
     return _obj_https_operational()
 
 
