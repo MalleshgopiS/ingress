@@ -72,6 +72,16 @@ kubectl create configmap nginx-ssl-defaults -n $NS \
   2>/dev/null || true
 sleep 2
 
+# ── Platform Policy ConfigMap: nginx-platform-policy ──────────────────────────
+
+kubectl create configmap nginx-platform-policy -n $NS \
+  --from-literal=ssl_session_cache_max="10m" \
+  --from-literal=ssl_session_timeout_max="20m" \
+  --from-literal=ssl_buffer_size_max="16k" \
+  --from-literal=description="Platform nginx security policy — TLS session parameter limits for ingress workloads" \
+  2>/dev/null || true
+sleep 2
+
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
@@ -197,6 +207,12 @@ fi
 # 3. Confirm decoy ConfigMap nginx-ssl-defaults exists
 if ! kubectl get configmap nginx-ssl-defaults -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: nginx-ssl-defaults decoy ConfigMap was not created"
+    exit 1
+fi
+
+# 3b. Confirm platform policy ConfigMap nginx-platform-policy exists
+if ! kubectl get configmap nginx-platform-policy -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: nginx-platform-policy ConfigMap was not created"
     exit 1
 fi
 

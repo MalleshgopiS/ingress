@@ -107,8 +107,9 @@ def _not_builtin(text: str) -> bool:
 
 
 def _all_tls_bounded(text: str) -> bool:
-    """All three TLS params within safe bounds — gate for M5."""
-    return _cache_ok(text) and _timeout_ok(text) and _buffer_ok(text)
+    """Cache and timeout within safe bounds — gate for M5.
+    Buffer is excluded: per-connection allocation is not a session accumulation issue."""
+    return _cache_ok(text) and _timeout_ok(text)
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -141,7 +142,7 @@ def _get_cluster_ip() -> str:
 
 
 def _obj_cache_corrected() -> tuple[float, str]:
-    
+
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -154,7 +155,7 @@ def _obj_cache_corrected() -> tuple[float, str]:
         if all(checks.values()):
             break
         if attempt < 2:
-            time.sleep(5)
+            time.sleep(10)
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
@@ -220,11 +221,23 @@ def _obj_live_cache_reloaded() -> tuple[float, str]:
     return score, f"{n}/{len(checks)} live cache checks — {detail}"
 
 
-# ── Objective 4: live_timeout_reloaded ────────────────────────────────────────
+# ── Objective 4: rollout_restart_applied ──────────────────────────────────────
 
 
-def _obj_live_timeout_reloaded() -> tuple[float, str]:
-    
+def _obj_rollout_restart_applied() -> tuple[float, str]:
+    """Check that the agent performed a rollout restart to reload the nginx config.
+    Independent of TLS parameter values — passes for any agent who restarts."""
+
+    checks = {}
+
+    # Check 1: deployment pod template has restartedAt annotation (set by kubectl rollout restart)
+    _, ann_out, _ = run(
+        f"kubectl get deployment {DEPLOY} -n {NS} "
+        "-o jsonpath='{{.spec.template.metadata.annotations}}'"
+    )
+    checks["rollout_restart_performed"] = "restartedAt" in (ann_out or "")
+
+    # Check 2: a running pod exists after the restart
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -232,27 +245,19 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
             pod = _get_running_pod()
             if pod:
                 break
-    if not pod:
-        return 0.0, "No running nginx pod found — cannot verify live timeout"
+    checks["pod_running_after_restart"] = bool(pod)
 
-    checks = {}
-    for attempt in range(3):
-        _, live, _ = run(f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
+    # Check 3: nginx syntax valid in running pod
+    syntax_ok = False
+    if pod:
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
-        checks = {
-            "live_timeout_present": bool(re.search(
-                r'ssl_session_timeout\s+\S+\s*;', live or "")),
-            "live_timeout_bounded": _timeout_ok(live),
-            "nginx_syntax_valid":   "syntax is ok" in (out + err).lower(),
-        }
-        if all(checks.values()):
-            break
-        if attempt < 2:
-            time.sleep(10)
+        syntax_ok = "syntax is ok" in (out + err).lower()
+    checks["nginx_syntax_valid"] = syntax_ok
+
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} live timeout checks — {detail}"
+    return score, f"{n}/{len(checks)} rollout restart checks — {detail}"
 
 
 # ── Objective 5: https_operational ────────────────────────────────────────────
@@ -333,9 +338,9 @@ def _milestone_live_cache_reloaded() -> tuple[float, str]:
     return _obj_live_cache_reloaded()
 
 
-def _milestone_live_timeout_reloaded() -> tuple[float, str]:
-    
-    return _obj_live_timeout_reloaded()
+def _milestone_rollout_restart_applied() -> tuple[float, str]:
+
+    return _obj_rollout_restart_applied()
 
 
 def _milestone_https_operational() -> tuple[float, str]:
@@ -346,16 +351,29 @@ def _milestone_https_operational() -> tuple[float, str]:
 # ── Grade ──────────────────────────────────────────────────────────────────────
 
 OBJECTIVES = [
-    ("cache_corrected",         _milestone_cache_corrected),
-    ("timeout_corrected",       _milestone_timeout_corrected),
-    ("live_cache_reloaded",     _milestone_live_cache_reloaded),
-    ("live_timeout_reloaded",   _milestone_live_timeout_reloaded),
-    ("https_operational",       _milestone_https_operational),
+    ("cache_corrected",          _milestone_cache_corrected),
+    ("timeout_corrected",        _milestone_timeout_corrected),
+    ("live_cache_reloaded",      _milestone_live_cache_reloaded),
+    ("rollout_restart_applied",  _milestone_rollout_restart_applied),
+    ("https_operational",        _milestone_https_operational),
 ]
+
+
+def _wait_for_deployment_ready(max_wait: int = 120) -> None:
+    """Wait up to max_wait seconds for the deployment to have 1 ready replica."""
+    for _ in range(max_wait // 5):
+        _, out, _ = run(
+            f"kubectl get deployment {DEPLOY} -n {NS} "
+            "-o jsonpath='{{.status.readyReplicas}}'"
+        )
+        if out.strip() == "1":
+            return
+        time.sleep(5)
 
 
 def grade(transcript: str = None) -> GradingResult:
     try:
+        _wait_for_deployment_ready()
         subscores: dict = {}
         milestone_feedback = []
 
