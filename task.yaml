@@ -33,7 +33,7 @@ prompt: |
 metadata:
   category: kubernetes
   difficulty: hard
-  estimated_time: 1H
+  estimated_time: 45M
   tags:
     - kubernetes
     - ingress
