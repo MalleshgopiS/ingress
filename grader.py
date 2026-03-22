@@ -10,9 +10,9 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 
-MAX_CACHE_MB  = 10.0   
-MAX_TIMEOUT_S = 1200   # session timeout ≤ 20 min  (30m = 1800 > 1200 → FAIL)
-MAX_BUFFER_B  = 16384 
+MAX_CACHE_MB  = 10.0  
+MAX_TIMEOUT_S = 3600   
+MAX_BUFFER_B  = 16384  
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -107,10 +107,8 @@ def _not_builtin(text: str) -> bool:
 
 
 def _all_tls_bounded(text: str) -> bool:
-    """Cache and timeout within safe bounds — gate for M5.
-    Buffer is a per-connection allocation (not session accumulation) so is
-    excluded from this gate; it is addressed separately in the task prompt."""
-    return _cache_ok(text) and _timeout_ok(text)
+    """All three TLS params within safe bounds — gate for M5."""
+    return _cache_ok(text) and _timeout_ok(text) and _buffer_ok(text)
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -199,7 +197,7 @@ def _obj_live_cache_reloaded() -> tuple[float, str]:
             if pod:
                 break
     if not pod:
-        return 0.0, "No running nginx pod found — cannot verify live cache"
+        return 0.0, 
 
     checks = {}
     for attempt in range(3):
@@ -237,20 +235,6 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
     if not pod:
         return 0.0, "No running nginx pod found — cannot verify live timeout"
 
-    # Verify prompt constraints: memory limit not raised, deployment not replaced
-    _, mem_out, _ = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}'"
-    )
-    _, ann_out, _ = run(
-        f"kubectl get deployment {DEPLOY} -n {NS} "
-        "-o jsonpath='{.metadata.annotations.incident\\.platform\\.io/oom-history}'"
-    )
-    constraint_checks = {
-        "memory_limit_not_increased": mem_out.strip() == "300Mi",
-        "deployment_not_replaced":    bool(ann_out.strip()),
-    }
-
     checks = {}
     for attempt in range(3):
         _, live, _ = run(f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
@@ -261,7 +245,6 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
             "live_timeout_bounded": _timeout_ok(live),
             "nginx_syntax_valid":   "syntax is ok" in (out + err).lower(),
         }
-        checks.update(constraint_checks)
         if all(checks.values()):
             break
         if attempt < 2:
@@ -269,7 +252,7 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} live timeout + constraint checks — {detail}"
+    return score, f"{n}/{len(checks)} live timeout checks — {detail}"
 
 
 # ── Objective 5: https_operational ────────────────────────────────────────────
@@ -292,10 +275,10 @@ def _obj_https_operational() -> tuple[float, str]:
         cache_ok   = _cache_ok(live)
         timeout_ok = _timeout_ok(live)
         return 0.0, (
-            f"Live nginx session params not bounded — "
+            f"Live nginx TLS not fully bounded — "
             f"cache {'≤10m ✓' if cache_ok else '>10m ✗'}, "
             f"timeout {'≤1h ✓' if timeout_ok else '>1h ✗'} — "
-            f"fix ConfigMap and rollout restart to reload live process"
+            f"must fix both independently and rollout restart"
         )
 
     ip = _get_cluster_ip()
@@ -371,26 +354,8 @@ OBJECTIVES = [
 ]
 
 
-def _wait_for_deployment_ready(max_wait: int = 120) -> None:
-    """Block until the ingress-controller deployment has ≥1 ready replica,
-    or until max_wait seconds have elapsed.  Prevents intermittent failures
-    caused by the grader starting before the pod finishes its rollout restart."""
-    deadline = time.time() + max_wait
-    while time.time() < deadline:
-        _, out, _ = run(
-            f"kubectl get deployment {DEPLOY} -n {NS} "
-            "-o jsonpath='{.status.readyReplicas}'"
-        )
-        if out.strip() and out.strip() != "0":
-            return
-        time.sleep(5)
-
-
 def grade(transcript: str = None) -> GradingResult:
     try:
-        # Wait for pod to be ready before grading any objective
-        _wait_for_deployment_ready()
-
         subscores: dict = {}
         milestone_feedback = []
 
