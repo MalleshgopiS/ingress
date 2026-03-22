@@ -9,12 +9,12 @@ echo "=== Applying TLS memory leak remediation ==="
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
 SSL_CACHE="shared:SSL:5m"
-SSL_TIMEOUT="20m"
+SSL_TIMEOUT="1h"
 SSL_BUFFER="4k"
 
 echo "[Step 1] Bounded replacement values:"
-echo "    ssl_session_cache   = $SSL_CACHE   (replaces: builtin — unbounded per-worker)"
-echo "    ssl_session_timeout = $SSL_TIMEOUT  (replaces: 86400 — 24-hour accumulation)"
+echo "    ssl_session_cache   = $SSL_CACHE   (replaces: builtin — unbounded)"
+echo "    ssl_session_timeout = $SSL_TIMEOUT  (replaces: 86400 — 24-hour sessions)"
 echo "    ssl_buffer_size     = $SSL_BUFFER    (replaces: 64k — excessive per-connection)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
@@ -71,5 +71,5 @@ fi
 echo ""
 echo "=== Remediation complete ==="
 echo "    ssl_session_cache   → $SSL_CACHE   (was: builtin — unbounded per-worker)"
-echo "    ssl_session_timeout → $SSL_TIMEOUT   (was: 86400 — 24-hour accumulation)"
+echo "    ssl_session_timeout → $SSL_TIMEOUT  (was: 86400 — 24-hour accumulation)"
 echo "    ssl_buffer_size     → $SSL_BUFFER    (was: 64k — 16x recommended size)"

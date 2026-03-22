@@ -44,4 +44,3 @@ metadata:
     - configuration
 
 allowed_namespaces:
-  - ingress-system

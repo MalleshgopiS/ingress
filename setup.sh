@@ -64,8 +64,10 @@ sleep 2
 
 # ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
 
+
 kubectl create configmap nginx-ssl-defaults -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:20m" \
+  --from-literal=ssl_session_timeout="30m" \
   --from-literal=ssl_buffer_size="16k" \
   --from-literal=description="Legacy SSL tuning defaults — not authoritative for production workloads" \
   2>/dev/null || true
