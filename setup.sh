@@ -63,11 +63,13 @@ kubectl create secret generic tls-session-params -n $NS \
 sleep 2
 
 # ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
-# NOTE: Only contains cache and buffer values — no session timeout.
-# Agents must derive ssl_session_timeout independently from first principles.
+# Partial trap: timeout=30m is acceptable (≤1h), but cache=20m is too large (>10m).
+# Agents who copy this get ONE param right (timeout) and ONE wrong (cache).
+# Forces agents to reason about each parameter independently — not copy blindly.
 
 kubectl create configmap nginx-ssl-defaults -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:20m" \
+  --from-literal=ssl_session_timeout="30m" \
   --from-literal=ssl_buffer_size="16k" \
   --from-literal=description="Legacy SSL tuning defaults — not authoritative for production workloads" \
   2>/dev/null || true
