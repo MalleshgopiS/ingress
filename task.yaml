@@ -20,7 +20,7 @@ prompt: |
 
   A correctly configured nginx TLS session setup requires all three of the following:
   - Session cache: shared memory zone (not per-worker builtin), no larger than 10 MB
-  - Session timeout: no longer than 30 minutes (values in hours or days cause session accumulation)
+  - Session timeout: no longer than 20 minutes (values in hours or days cause session accumulation)
   - Session buffer: per-connection buffer no larger than 16k
 
   All three directives are present in the active nginx configuration and need to be set within the bounds above.
