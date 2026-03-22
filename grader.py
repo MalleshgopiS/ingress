@@ -18,13 +18,13 @@ BROKEN_BUFFER  = "64k"
 
 # Maximum acceptable TLS values (range-based bounds, any value within range passes)
 # Decoy traps:
-#   tls-session-params  (32m/8h/32k)  — cache 32m >10 MB, timeout 8h >1h  → FAILS
-#   nginx-ssl-defaults  (20m/4h/16k)  — cache 20m >10 MB, timeout 4h >1h  → FAILS
-# Correct reference:
-#   nginx-tls-limits    (5m/1h/4k)    — all within bounds                  → PASSES
-MAX_CACHE_MB  = 10.0   # shared SSL zone ≤ 10 MB
-MAX_TIMEOUT_S = 3600   # session timeout ≤ 1 h
-MAX_BUFFER_B  = 16384  # per-connection buffer ≤ 16 k
+#   tls-session-params  (32m/8h/32k)  — cache 32m >10 MB, buffer 32k >16k → FAILS
+#   nginx-ssl-defaults  (20m/4h/16k)  — cache 20m >10 MB                  → FAILS
+# Key discriminator: cache size — agents must independently choose ≤10 MB.
+# Copying either decoy cache (20m or 32m) fails. Timeout is permissive (≤8h).
+MAX_CACHE_MB  = 10.0   # shared SSL zone ≤ 10 MB  (decoys: 20m, 32m — both fail)
+MAX_TIMEOUT_S = 28800  # session timeout ≤ 8 h    (decoys: 4h, 8h — both pass)
+MAX_BUFFER_B  = 16384  # per-connection buffer ≤ 16 k (decoy 32k fails; 16k passes)
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (3 600 s = 1 h)."""
+    """ssl_session_timeout must be ≤ MAX_TIMEOUT_S (28 800 s = 8 h)."""
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
