@@ -10,8 +10,8 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 
-MAX_CACHE_MB  = 5.0    # shared:SSL:Xm — X must be ≤ 5 for this instance class
-MAX_TIMEOUT_S = 1800   # ssl_session_timeout — must be ≤ 30 min to prevent session accumulation
+MAX_CACHE_MB  = 10.0   # shared:SSL:Xm — X must be ≤ 10 for this instance class
+MAX_TIMEOUT_S = 3600   # ssl_session_timeout — must be ≤ 1 h to prevent session accumulation
 MAX_BUFFER_B  = 16384  # ssl_buffer_size — per-connection buffer ≤ 16k
 
 
