@@ -66,6 +66,7 @@ sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
+kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='events {
     worker_connections 1024;
@@ -75,26 +76,14 @@ http {
     keepalive_timeout 75;
     server_tokens off;
 
-    # --- unrelated / noise configs (important for variance) ---
-    gzip on;
-    gzip_types text/plain application/json;
-    client_max_body_size 1m;
-    sendfile on;
-
-    # --- SSL config (partially incorrect, but not obvious) ---
-    ssl_session_cache shared:SSL:8m;
-
-    tcp_nopush on;
-    tcp_nodelay on;
+    ssl_session_cache   builtin;
+    ssl_session_timeout 86400;
+    ssl_buffer_size     64k;
 
     server {
         listen 443 ssl;
-
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
-
-        ssl_session_timeout 6h;
-        ssl_buffer_size 24k;
 
         location /healthz {
             return 200 "ok";
@@ -106,8 +95,6 @@ http {
             add_header Content-Type text/plain;
         }
     }
-
-    keepalive_requests 100;
 }'
 sleep 2
 
@@ -120,14 +107,13 @@ metadata:
   name: ingress-controller
   namespace: $NS
   annotations:
-    app.kubernetes.io/managed-by: platform-ops
-
-    incident.platform.io/oom-cause: sustained memory growth observed under encrypted traffic patterns; exact trigger unclear
-    incident.platform.io/oom-history: 2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z
-    incident.platform.io/oom-reason: nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed
-    incident.platform.io/ssl-budget: memory allocation must remain within the 300Mi limit under peak load; configuration choices should account for sustained traffic behavior
-    incident.platform.io/ssl-buffer-overhead: connection-level resource usage may contribute to memory pressure under high concurrency
-    incident.platform.io/ssl-session-retention: connection lifetime and reuse behavior may influence memory retention patterns
+    app.kubernetes.io/managed-by: "platform-ops"
+    incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
+    incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
+    incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
+    incident.platform.io/ssl-budget: "ssl session cache zone must be sized to hold expected concurrent sessions without exceeding the 300Mi instance memory limit — the observed traffic profile sustains high concurrent TLS session load; under-sizing the zone causes excessive eviction churn, while over-sizing causes OOM; choose a shared zone size appropriate for this instance memory budget"
+    incident.platform.io/ssl-session-retention: "ssl_session_timeout controls how long individual sessions persist in the cache; incidents recur every ~6 hours — sessions must expire well within the incident recurrence window to prevent unbounded session accumulation between OOM cycles"
+    incident.platform.io/ssl-buffer-overhead: "ssl_buffer_size is a per-connection allocation — at peak connection load on this 300Mi instance, cumulative buffer overhead is a significant contributor to worker RSS growth; the current value in the config was set for a larger instance class"
 spec:
   replicas: 1
   selector:
@@ -193,23 +179,8 @@ echo "Verifying broken state was successfully applied..."
 CM_CACHE=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
     | grep -o 'ssl_session_cache[^;]*' | head -n1 || echo "")
-
-if ! echo "$CM_CACHE" | grep -q "ssl_session_cache"; then
-    echo "ERROR: nginx ConfigMap missing ssl_session_cache"
-    exit 1
-fi
-
-# 🔥 ADD THIS BLOCK HERE
-CM_CONF=$(kubectl get configmap ingress-nginx-config -n ingress-system \
-    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
-
-if ! echo "$CM_CONF" | grep -q "ssl_session_timeout 6h"; then
-    echo "ERROR: expected timeout misconfiguration not found"
-    exit 1
-fi
-
-if ! echo "$CM_CONF" | grep -q "ssl_buffer_size 24k"; then
-    echo "ERROR: expected buffer misconfiguration not found"
+if ! echo "$CM_CACHE" | grep -q "builtin"; then
+    echo "ERROR: nginx ConfigMap does not have broken ssl_session_cache builtin (found: '$CM_CACHE')"
     exit 1
 fi
 

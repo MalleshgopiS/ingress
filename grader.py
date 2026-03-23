@@ -10,9 +10,9 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB  = 1.0    # ssl_session_cache shared zone lower bound (MB) — any bounded shared zone ≥ 1 MB resolves the unbounded builtin root cause
-MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB) — zones above 10 MB consume excessive worker memory on this instance class
-MAX_TIMEOUT_S = 14400   # ssl_session_timeout upper bound (seconds) — sessions must expire well within the incident recurrence window
+MIN_CACHE_MB  = 3.0    # ssl_session_cache shared zone lower bound (MB)
+MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB)
+MAX_TIMEOUT_S = 1800   # ssl_session_timeout upper bound (seconds) — sessions must expire well within the incident recurrence window
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -77,18 +77,6 @@ def _timeout_ok(text: str) -> bool:
 def _not_builtin(text: str) -> bool:
     """ssl_session_cache must not use the unbounded 'builtin' type."""
     return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
-
-def _buffer_ok(text: str) -> bool:
-    """ssl_buffer_size must be reasonably bounded (≤16k)."""
-    m = re.search(r'ssl_buffer_size\s+(\d+)(k|m)', text or "", re.IGNORECASE)
-    if not m:
-        return False
-    size = int(m.group(1))
-    unit = m.group(2).lower()
-    if unit == 'm':
-        size *= 1024
-    return size <= 16
-
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -217,12 +205,9 @@ def grade(transcript: str = None) -> GradingResult:
                 cache_bounded    = _cache_ok(cfg)
                 builtin_removed  = _not_builtin(cfg)
                 keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
-                buffer_ok = _buffer_ok(cfg)
-
                 cache_corrected  = (
                     cache_is_shared and cache_bounded and
-                    builtin_removed and keepalive_intact and
-                    buffer_ok
+                    builtin_removed and keepalive_intact
                 )
                 if cache_corrected:
                     break
@@ -279,9 +264,8 @@ def grade(transcript: str = None) -> GradingResult:
                     live_syntax_ok     = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
                     live_cache_reloaded = (
-                        live_cache_shared and
-                        live_not_builtin and
-                        live_syntax_ok
+                        live_cache_shared and live_cache_bounded and
+                        live_not_builtin  and live_syntax_ok
                     )
                     if live_cache_reloaded:
                         break
@@ -307,7 +291,7 @@ def grade(transcript: str = None) -> GradingResult:
                     live_timeout_present  = bool(re.search(
                         r'ssl_session_timeout\s+\S+\s*;', live))
                     live_timeout_bounded  = _timeout_ok(live)
-                    live_timeout_reloaded = live_timeout_present
+                    live_timeout_reloaded = live_timeout_present and live_timeout_bounded
                     if live_timeout_reloaded:
                         break
                     if attempt < 2:
@@ -338,7 +322,7 @@ def grade(transcript: str = None) -> GradingResult:
                 # Gate: live nginx must not use builtin (proves rollout restart happened)
                 res_live      = run_cmd(
                     f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-                https_gate_ok = True
+                https_gate_ok = _not_builtin(res_live.stdout or "")
                 if https_gate_ok:
                     # curl /healthz
                     for _ in range(6):

@@ -1,5 +1,4 @@
 id: ingress-controller-oom-restart
-
 prompt: |
   [Context]
   You are an SRE on-call responsible for maintaining the ingress layer of a Kubernetes cluster.
@@ -12,13 +11,11 @@ prompt: |
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
-  - Memory usage increases gradually over time during active traffic and resets after each pod restart
+  - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
 
-  Some engineers suspect this may be related to configuration behavior under sustained load or how resources are managed over time, but no clear root cause has been identified yet.
+  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet. Investigate the TLS session parameters — session cache configuration and session lifetime are relevant areas to examine.
 
-  You may want to explore how different parts of the system behave under sustained load, and whether any patterns in resource usage or runtime behavior could explain the gradual increase in memory consumption.
-
-  The active nginx configuration is managed via the ingress-nginx-config ConfigMap in the ingress-system namespace. Check the ingress-controller deployment annotations for operational context about traffic profile and resource constraints that should inform your investigation.
+  The active nginx configuration is managed via the ingress-nginx-config ConfigMap in the ingress-system namespace. Check the ingress-controller deployment annotations for operational context about traffic profile and resource constraints that should inform your configuration choices.
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
