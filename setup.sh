@@ -63,15 +63,6 @@ kubectl create secret generic tls-session-params -n $NS \
   2>/dev/null || true
 sleep 2
 
-# ── Decoy ConfigMap: nginx-ssl-defaults ───────────────────────────────────────
-
-kubectl create configmap nginx-ssl-defaults -n $NS \
-  --from-literal=ssl_session_cache="shared:SSL:5m" \
-  --from-literal=ssl_session_timeout="20m" \
-  --from-literal=ssl_buffer_size="8k" \
-  --from-literal=description="Legacy SSL tuning defaults — not authoritative for production workloads" \
-  2>/dev/null || true
-sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
@@ -120,7 +111,7 @@ metadata:
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
-    incident.platform.io/ssl-budget: "ssl session parameters linked to OOM pattern — ssl_session_cache and ssl_session_timeout must be reduced to conservative levels for this 300Mi instance"
+    incident.platform.io/ssl-budget: "session cache size and session lifetime directly control memory footprint — size the shared zone conservatively and keep session lifetime short for this 300Mi instance"
 spec:
   replicas: 1
   selector:
@@ -197,13 +188,7 @@ if ! kubectl get secret tls-session-params -n ingress-system >/dev/null 2>&1; th
     exit 1
 fi
 
-# 3. Confirm decoy ConfigMap nginx-ssl-defaults exists
-if ! kubectl get configmap nginx-ssl-defaults -n ingress-system >/dev/null 2>&1; then
-    echo "ERROR: nginx-ssl-defaults decoy ConfigMap was not created"
-    exit 1
-fi
-
-# 4. Confirm keepalive_timeout is in the nginx ConfigMap (must survive patching)
+# 3. Confirm keepalive_timeout is in the nginx ConfigMap (must survive patching)
 CM_CONF=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
 if ! echo "$CM_CONF" | grep -q "keepalive_timeout"; then
