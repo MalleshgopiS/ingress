@@ -12,7 +12,7 @@ SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB  = 3.0    # ssl_session_cache shared zone lower bound (MB)
 MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB)
-MAX_TIMEOUT_S = 3600   # ssl_session_timeout upper bound (seconds)
+MAX_TIMEOUT_S = 1800   # ssl_session_timeout upper bound (seconds) — sessions must expire well within the incident recurrence window
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -300,8 +300,9 @@ def grade(transcript: str = None) -> GradingResult:
             live_timeout_reloaded = False
 
         # ── Milestone 5: https_operational ────────────────────────────────────
-        # Gate: session cache must be corrected before running the HTTPS check
-        # (ensures the agent fixed the root cause, not just restarted the pod).
+        # Gate: builtin cache type must be removed before running the HTTPS check
+        # (ensures the agent at minimum replaced the unbounded builtin cache type;
+        # any shared:SSL zone — regardless of size — satisfies the gate).
         # Verifies the ingress controller responds to HTTPS requests with a valid
         # TLS handshake and passes nginx config syntax validation.
         https_gate_ok     = False
@@ -311,7 +312,7 @@ def grade(transcript: str = None) -> GradingResult:
         https_operational = False
 
         try:
-            https_gate_ok = _cache_ok(get_configmap_conf())
+            https_gate_ok = _not_builtin(get_configmap_conf())
             if https_gate_ok:
                 pod = wait_for_pod()
                 ip  = get_cluster_ip()

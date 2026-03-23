@@ -13,9 +13,11 @@ prompt: |
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
 
-  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet. Investigate all TLS session parameters — session cache configuration and session lifetime may be relevant.
+  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet. Investigate the TLS session parameters — session cache configuration and session lifetime are relevant areas to examine.
 
-  There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date.
+  The active nginx configuration is managed via the ingress-nginx-config ConfigMap in the ingress-system namespace. Check the ingress-controller deployment annotations for operational context about traffic profile and resource constraints that should inform your configuration choices.
+
+  There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
