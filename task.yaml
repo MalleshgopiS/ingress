@@ -16,7 +16,7 @@ prompt: |
 
   Some engineers suspect this may be related to configuration behavior under sustained load or how resources are managed over time, but no clear root cause has been identified yet.
 
-  You may want to investigate how connection handling, resource allocation, and lifecycle-related configuration could contribute to gradual memory growth in long-running processes.
+  You may want to explore how different parts of the system behave under sustained load, and whether any patterns in resource usage or runtime behavior could explain the gradual increase in memory consumption.
 
   The active nginx configuration is managed via the ingress-nginx-config ConfigMap in the ingress-system namespace. Check the ingress-controller deployment annotations for operational context about traffic profile and resource constraints that should inform your investigation.
 
