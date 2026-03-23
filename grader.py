@@ -139,6 +139,7 @@ def _obj_cache_corrected() -> tuple[float, str]:
                 r'ssl_session_cache\s+shared:SSL:', cfg or "", re.IGNORECASE)),
             "cache_size_bounded":         _cache_ok(cfg),
             "builtin_removed":            _not_builtin(cfg),
+            "buffer_size_bounded":        _buffer_ok(cfg),
             "config_structure_preserved": bool(re.search(
                 r'keepalive_timeout\s+\d+', cfg or "")),
         }
@@ -237,7 +238,12 @@ def _obj_live_params_reloaded() -> tuple[float, str]:
 
 
 def _obj_https_operational() -> tuple[float, str]:
-    """nginx is reachable over HTTPS with a valid TLS handshake."""
+    """nginx is reachable over HTTPS with a valid TLS handshake.
+    Cache and buffer must be within safe bounds before this check runs."""
+    cfg = _get_configmap_conf()
+    if not (_cache_ok(cfg) and _buffer_ok(cfg)):
+        return 0.0, "TLS cache or buffer parameters not within safe bounds — correct config before HTTPS check"
+
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
