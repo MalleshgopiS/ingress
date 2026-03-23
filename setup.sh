@@ -111,8 +111,8 @@ metadata:
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
-    incident.platform.io/ssl-budget: "ssl session cache zone must be sized to hold expected concurrent sessions without exceeding the 300Mi instance memory limit — the observed traffic profile sustains high concurrent TLS session load; under-sizing the zone causes excessive eviction churn, while over-sizing causes OOM; choose a shared zone size appropriate for this instance memory budget"
-    incident.platform.io/ssl-session-retention: "ssl_session_timeout controls how long individual sessions persist in the cache; incidents recur every ~6 hours — sessions must expire well within the incident recurrence window to prevent unbounded session accumulation between OOM cycles"
+    incident.platform.io/ssl-budget: "ssl session cache zone must be sized to hold expected concurrent sessions without exceeding the 300Mi instance memory limit — under-sizing causes eviction churn, over-sizing causes OOM; choose a conservatively sized shared zone appropriate for this instance class"
+    incident.platform.io/ssl-session-retention: "ssl_session_timeout controls how long individual sessions persist in the cache — review the OOM incident timestamps to determine the recurrence interval, then set the session timeout to a small fraction of that interval so multiple eviction cycles can occur between OOM events"
     incident.platform.io/ssl-buffer-overhead: "ssl_buffer_size is a per-connection allocation — at peak connection load on this 300Mi instance, cumulative buffer overhead is a significant contributor to worker RSS growth; the current value in the config was set for a larger instance class"
 spec:
   replicas: 1

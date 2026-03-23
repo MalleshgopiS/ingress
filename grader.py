@@ -10,8 +10,8 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB  = 3.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB)
+MIN_CACHE_MB  = 1.0    # ssl_session_cache shared zone lower bound (MB) — any bounded shared zone ≥ 1 MB resolves the unbounded builtin root cause
+MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB) — zones above 10 MB consume excessive worker memory on this instance class
 MAX_TIMEOUT_S = 1800   # ssl_session_timeout upper bound (seconds) — sessions must expire well within the incident recurrence window
 
 
