@@ -40,7 +40,7 @@ def _parse_nginx_time(s: str) -> int:
 
 
 def _parse_cache_mb(val: str) -> float:
-    m = re.search(r'shared:SSL:(\d+)(k|m|g)', val, re.IGNORECASE)
+    m = re.search(r'shared:\w+:(\d+)(k|m|g)', val, re.IGNORECASE)
     if not m:
         return -1.0
     n, unit = int(m.group(1)), m.group(2).lower()
@@ -54,8 +54,8 @@ def _parse_cache_mb(val: str) -> float:
 # ── Range-bounded TLS checks ───────────────────────────────────────────────────
 
 def _cache_ok(text: str) -> bool:
-    """ssl_session_cache must be a shared:SSL zone within the accepted size range."""
-    m = re.search(r'ssl_session_cache\s+(shared:SSL:\S+)\s*;', text or "", re.IGNORECASE)
+    """ssl_session_cache must be a shared zone (any zone name) within the accepted size range."""
+    m = re.search(r'ssl_session_cache\s+(shared:\w+:\S+)\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
     mb = _parse_cache_mb(m.group(1))
@@ -201,7 +201,7 @@ def grade(transcript: str = None) -> GradingResult:
             for attempt in range(5):
                 cfg = get_configmap_conf()
                 cache_is_shared  = bool(re.search(
-                    r'ssl_session_cache\s+shared:SSL:', cfg or "", re.IGNORECASE))
+                    r'ssl_session_cache\s+shared:\w+:', cfg or "", re.IGNORECASE))
                 cache_bounded    = _cache_ok(cfg)
                 builtin_removed  = _not_builtin(cfg)
                 keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
@@ -258,7 +258,7 @@ def grade(transcript: str = None) -> GradingResult:
                         f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
                     live = res_T.stdout or ""
                     live_cache_shared  = bool(re.search(
-                        r'ssl_session_cache\s+shared:SSL:', live, re.IGNORECASE))
+                        r'ssl_session_cache\s+shared:\w+:', live, re.IGNORECASE))
                     live_cache_bounded = _cache_ok(live)
                     live_not_builtin   = _not_builtin(live)
                     live_syntax_ok     = "syntax is ok" in (
@@ -300,9 +300,10 @@ def grade(transcript: str = None) -> GradingResult:
             live_timeout_reloaded = False
 
         # ── Milestone 5: https_operational ────────────────────────────────────
-        # Gate: builtin cache type must be removed before running the HTTPS check
-        # (ensures the agent at minimum replaced the unbounded builtin cache type;
-        # any shared:SSL zone — regardless of size — satisfies the gate).
+        # Gate: both root causes must be fully corrected in the ConfigMap before
+        # the HTTPS check runs — cache must be a properly bounded shared zone AND
+        # session timeout must be within the acceptable range. This ensures the
+        # agent fixed both issues, not just one.
         # Verifies the ingress controller responds to HTTPS requests with a valid
         # TLS handshake and passes nginx config syntax validation.
         https_gate_ok     = False
@@ -312,7 +313,8 @@ def grade(transcript: str = None) -> GradingResult:
         https_operational = False
 
         try:
-            https_gate_ok = _not_builtin(get_configmap_conf())
+            _cfg_gate     = get_configmap_conf()
+            https_gate_ok = _cache_ok(_cfg_gate) and _timeout_ok(_cfg_gate)
             if https_gate_ok:
                 pod = wait_for_pod()
                 ip  = get_cluster_ip()
