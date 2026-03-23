@@ -300,10 +300,13 @@ def grade(transcript: str = None) -> GradingResult:
             live_timeout_reloaded = False
 
         # ── Milestone 5: https_operational ────────────────────────────────────
-        # Gate: both root causes must be fully corrected in the ConfigMap before
-        # the HTTPS check runs — cache must be a properly bounded shared zone AND
-        # session timeout must be within the acceptable range. This ensures the
-        # agent fixed both issues, not just one.
+        # Gate: the live running nginx must no longer use the builtin cache type.
+        # Checked against nginx -T output (the actually loaded config), NOT the
+        # ConfigMap. This makes M5 independent of cache size / timeout thresholds:
+        # any shared zone proves the agent performed a rollout restart so the new
+        # config was loaded. Agents who only edit the ConfigMap without restarting
+        # still fail (live nginx still shows builtin). Agents who restart with any
+        # shared zone pass the gate regardless of which size or timeout they chose.
         # Verifies the ingress controller responds to HTTPS requests with a valid
         # TLS handshake and passes nginx config syntax validation.
         https_gate_ok     = False
@@ -313,12 +316,14 @@ def grade(transcript: str = None) -> GradingResult:
         https_operational = False
 
         try:
-            _cfg_gate     = get_configmap_conf()
-            https_gate_ok = _cache_ok(_cfg_gate) and _timeout_ok(_cfg_gate)
-            if https_gate_ok:
-                pod = wait_for_pod()
-                ip  = get_cluster_ip()
-                if pod and ip:
+            pod = wait_for_pod()
+            ip  = get_cluster_ip()
+            if pod and ip:
+                # Gate: live nginx must not use builtin (proves rollout restart happened)
+                res_live      = run_cmd(
+                    f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
+                https_gate_ok = _not_builtin(res_live.stdout or "")
+                if https_gate_ok:
                     # curl /healthz
                     for _ in range(6):
                         res = run_cmd(f"curl -k -s --max-time 5 https://{ip}/healthz")
