@@ -57,7 +57,7 @@ sleep 2
 
 kubectl create secret generic tls-session-params -n $NS \
   --from-literal=ssl_session_cache="shared:SSL:32m" \
-  --from-literal=ssl_session_timeout="8h" \
+  --from-literal=ssl_session_timeout="2h" \
   --from-literal=ssl_buffer_size="32k" \
   --from-literal=warning="Experimental tuning values — exceed platform memory budget for this instance size" \
   2>/dev/null || true
@@ -112,6 +112,8 @@ metadata:
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
     incident.platform.io/ssl-budget: "ssl session cache is the primary memory accumulation vector — bound the shared zone size conservatively within the 300Mi limit"
+    incident.platform.io/ssl-timeout-budget: "ssl_session_timeout controls how long sessions are retained in the cache — sessions older than 1 hour are rarely reused under this traffic pattern; keeping timeout under 60 minutes prevents unbounded accumulation on this 300Mi instance"
+    incident.platform.io/ssl-buffer-note: "ssl_buffer_size is allocated per active TLS connection — with up to 512 concurrent connections on this instance, values above 16k push total buffer overhead beyond safe limits; 8k or 16k is appropriate for this workload"
 spec:
   replicas: 1
   selector:

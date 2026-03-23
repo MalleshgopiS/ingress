@@ -30,7 +30,6 @@ def run(cmd: str, timeout: int = 30):
 # ── nginx value parsers ────────────────────────────────────────────────────────
 
 def _parse_nginx_time(s: str) -> int:
-    
     s = s.strip().lower()
     if s.endswith('h'):
         return int(s[:-1]) * 3600
@@ -42,7 +41,6 @@ def _parse_nginx_time(s: str) -> int:
 
 
 def _parse_nginx_size(s: str) -> int:
-
     s = s.strip().lower()
     if s.endswith('k'):
         return int(s[:-1]) * 1024
@@ -54,7 +52,6 @@ def _parse_nginx_size(s: str) -> int:
 
 
 def _parse_cache_mb(val: str) -> float:
-    
     m = re.search(r'shared:SSL:(\d+)(k|m|g)', val, re.IGNORECASE)
     if not m:
         return -1.0
@@ -69,7 +66,6 @@ def _parse_cache_mb(val: str) -> float:
 # ── Range-bounded TLS checks ───────────────────────────────────────────────────
 
 def _cache_ok(text: str) -> bool:
-    
     m = re.search(r'ssl_session_cache\s+(shared:SSL:\S+)\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
@@ -78,7 +74,6 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -104,11 +99,6 @@ def _buffer_ok(text: str) -> bool:
 def _not_builtin(text: str) -> bool:
     """ssl_session_cache must not be 'builtin'."""
     return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
-
-
-def _all_tls_bounded(text: str) -> bool:
-    """All three TLS params within safe bounds — gate for M5."""
-    return _cache_ok(text) and _timeout_ok(text) and _buffer_ok(text)
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -141,7 +131,6 @@ def _get_cluster_ip() -> str:
 
 
 def _obj_cache_corrected() -> tuple[float, str]:
-    
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -167,7 +156,6 @@ def _obj_cache_corrected() -> tuple[float, str]:
 
 
 def _obj_timeout_corrected() -> tuple[float, str]:
-    
     checks = {}
     for attempt in range(3):
         cfg = _get_configmap_conf()
@@ -186,47 +174,35 @@ def _obj_timeout_corrected() -> tuple[float, str]:
     return score, f"{n}/{len(checks)} timeout checks — {detail}"
 
 
-# ── Objective 3: live_cache_reloaded ──────────────────────────────────────────
+# ── Objective 3: buffer_corrected ─────────────────────────────────────────────
 
 
-def _obj_live_cache_reloaded() -> tuple[float, str]:
-    
-    pod = _get_running_pod()
-    if not pod:
-        for _ in range(6):
-            time.sleep(10)
-            pod = _get_running_pod()
-            if pod:
-                break
-    if not pod:
-        return 0.0, "No running nginx pod found — cannot verify live cache"
-
+def _obj_buffer_corrected() -> tuple[float, str]:
+    """ssl_buffer_size in ConfigMap must be ≤ MAX_BUFFER_B (16 k)."""
     checks = {}
     for attempt in range(3):
-        _, live, _ = run(f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-        _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
+        cfg = _get_configmap_conf()
         checks = {
-            "live_cache_shared":  bool(re.search(
-                r'ssl_session_cache\s+shared:SSL:', live or "", re.IGNORECASE)),
-            "live_cache_bounded": _cache_ok(live),
-            "live_not_builtin":   _not_builtin(live),
-            "nginx_syntax_valid": "syntax is ok" in (out + err).lower(),
+            "buffer_present": bool(re.search(
+                r'ssl_buffer_size\s+\S+\s*;', cfg or "")),
+            "buffer_bounded": _buffer_ok(cfg),
         }
         if all(checks.values()):
             break
         if attempt < 2:
-            time.sleep(10)
+            time.sleep(5)
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} live cache checks — {detail}"
+    return score, f"{n}/{len(checks)} buffer checks — {detail}"
 
 
-# ── Objective 4: live_timeout_reloaded ────────────────────────────────────────
+# ── Objective 4: live_params_reloaded ─────────────────────────────────────────
 
 
-def _obj_live_timeout_reloaded() -> tuple[float, str]:
-    
+def _obj_live_params_reloaded() -> tuple[float, str]:
+    """All three TLS params (cache + timeout + buffer) must be within bounds
+    in the live nginx process after a rollout restart."""
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -235,16 +211,16 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
             if pod:
                 break
     if not pod:
-        return 0.0, "No running nginx pod found — cannot verify live timeout"
+        return 0.0, "No running nginx pod found — cannot verify live params"
 
     checks = {}
     for attempt in range(3):
         _, live, _ = run(f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
         _, out, err = run(f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
         checks = {
-            "live_timeout_present": bool(re.search(
-                r'ssl_session_timeout\s+\S+\s*;', live or "")),
+            "live_cache_bounded":   _cache_ok(live),
             "live_timeout_bounded": _timeout_ok(live),
+            "live_buffer_bounded":  _buffer_ok(live),
             "nginx_syntax_valid":   "syntax is ok" in (out + err).lower(),
         }
         if all(checks.values()):
@@ -254,14 +230,14 @@ def _obj_live_timeout_reloaded() -> tuple[float, str]:
     n      = sum(checks.values())
     detail = ", ".join(f"{'✓' if ok else '✗'} {k}" for k, ok in checks.items())
     score  = 1.0 if all(checks.values()) else 0.0
-    return score, f"{n}/{len(checks)} live timeout checks — {detail}"
+    return score, f"{n}/{len(checks)} live param checks — {detail}"
 
 
 # ── Objective 5: https_operational ────────────────────────────────────────────
 
 
 def _obj_https_operational() -> tuple[float, str]:
-    
+    """nginx is reachable over HTTPS with a valid TLS handshake."""
     pod = _get_running_pod()
     if not pod:
         for _ in range(6):
@@ -271,17 +247,6 @@ def _obj_https_operational() -> tuple[float, str]:
                 break
     if not pod:
         return 0.0, "No running nginx pod found — cannot verify HTTPS"
-
-    _, live, _ = run(f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-    if not _all_tls_bounded(live):
-        cache_ok   = _cache_ok(live)
-        timeout_ok = _timeout_ok(live)
-        return 0.0, (
-            f"Live nginx TLS parameters not within safe bounds — "
-            f"cache {'within budget ✓' if cache_ok else 'exceeds budget ✗'}, "
-            f"timeout {'within budget ✓' if timeout_ok else 'exceeds budget ✗'} — "
-            f"review platform limits and ensure deployment is restarted"
-        )
 
     ip = _get_cluster_ip()
     if not ip:
@@ -318,41 +283,14 @@ def _obj_https_operational() -> tuple[float, str]:
     return score, f"{n}/{len(checks)} HTTPS operational checks — {detail}"
 
 
-# ── Grouped milestone functions ────────────────────────────────────────────────
-
-def _milestone_cache_corrected() -> tuple[float, str]:
-
-    return _obj_cache_corrected()
-
-
-def _milestone_timeout_corrected() -> tuple[float, str]:
-
-    return _obj_timeout_corrected()
-
-
-def _milestone_live_cache_reloaded() -> tuple[float, str]:
-    
-    return _obj_live_cache_reloaded()
-
-
-def _milestone_live_timeout_reloaded() -> tuple[float, str]:
-    
-    return _obj_live_timeout_reloaded()
-
-
-def _milestone_https_operational() -> tuple[float, str]:
-
-    return _obj_https_operational()
-
-
 # ── Grade ──────────────────────────────────────────────────────────────────────
 
 OBJECTIVES = [
-    ("cache_corrected",         _milestone_cache_corrected),
-    ("timeout_corrected",       _milestone_timeout_corrected),
-    ("live_cache_reloaded",     _milestone_live_cache_reloaded),
-    ("live_timeout_reloaded",   _milestone_live_timeout_reloaded),
-    ("https_operational",       _milestone_https_operational),
+    ("cache_corrected",       _obj_cache_corrected),
+    ("timeout_corrected",     _obj_timeout_corrected),
+    ("buffer_corrected",      _obj_buffer_corrected),
+    ("live_params_reloaded",  _obj_live_params_reloaded),
+    ("https_operational",     _obj_https_operational),
 ]
 
 
@@ -360,19 +298,27 @@ OBJECTIVES = [
 
 _CHEAT_SIGNALS = [
     # Internal grader.py constant names — no legitimate reason to appear in transcript
-    (r'\bMAX_TIMEOUT_S\b',                                  "grader internal constant MAX_TIMEOUT_S"),
-    (r'\bMAX_CACHE_MB\b',                                   "grader internal constant MAX_CACHE_MB"),
-    (r'\bMAX_BUFFER_B\b',                                   "grader internal constant MAX_BUFFER_B"),
-    (r'\b_all_tls_bounded\b',                               "grader internal function _all_tls_bounded"),
-    (r'\b_obj_cache_corrected\b',                           "grader internal function _obj_cache_corrected"),
-    # Direct file-read commands targeting restricted files
-    (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py', "direct read of grader.py"),
+    (r'\bMAX_TIMEOUT_S\b',                                        "grader internal constant MAX_TIMEOUT_S"),
+    (r'\bMAX_CACHE_MB\b',                                         "grader internal constant MAX_CACHE_MB"),
+    (r'\bMAX_BUFFER_B\b',                                         "grader internal constant MAX_BUFFER_B"),
+    (r'\b_obj_cache_corrected\b',                                 "grader internal function _obj_cache_corrected"),
+    (r'\b_obj_live_params_reloaded\b',                            "grader internal function _obj_live_params_reloaded"),
+    # Direct file reads — common commands
+    (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py',   "direct read of grader.py"),
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*solution\.sh', "direct read of solution.sh"),
-    (r'ls\s+/grader\b',                                     "directory listing of /grader"),
-    # Solution variable names with assignment (only exist in solution.sh)
-    (r'\bSSL_CACHE\s*=',                                    "solution.sh variable SSL_CACHE"),
-    (r'\bSSL_TIMEOUT\s*=',                                  "solution.sh variable SSL_TIMEOUT"),
-    (r'\bSSL_BUFFER\s*=',                                   "solution.sh variable SSL_BUFFER"),
+    (r'ls\s+/grader\b',                                           "directory listing of /grader"),
+    # Python open() bypass
+    (r'python[23]?\s[^\n]*open\s*\([^\n]*grader',                 "python file read of grader.py"),
+    (r'python[23]?\s[^\n]*open\s*\([^\n]*solution',               "python file read of solution.sh"),
+    # cp / base64 bypass
+    (r'\bcp\b\s+[^\n]*grader\.py',                                "cp of grader.py"),
+    (r'\bcp\b\s+[^\n]*solution\.sh',                              "cp of solution.sh"),
+    (r'\bbase64\b\s+[^\n]*grader',                                "base64 read of grader.py"),
+    (r'\bbase64\b\s+[^\n]*solution',                              "base64 read of solution.sh"),
+    # Solution variable names (only exist inside solution.sh)
+    (r'\bSSL_CACHE\s*=',                                          "solution.sh variable SSL_CACHE"),
+    (r'\bSSL_TIMEOUT\s*=',                                        "solution.sh variable SSL_TIMEOUT"),
+    (r'\bSSL_BUFFER\s*=',                                         "solution.sh variable SSL_BUFFER"),
 ]
 
 

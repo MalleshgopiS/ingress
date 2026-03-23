@@ -13,7 +13,7 @@ prompt: |
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
 
-  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet.
+  Some engineers suspect this might be related to configuration drift or resource usage patterns, but no clear root cause has been identified yet. Investigate all TLS session parameters — session cache type, session lifetime, and per-connection buffer sizing may all be relevant.
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date.
 
