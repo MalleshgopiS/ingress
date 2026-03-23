@@ -10,7 +10,7 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 
-MAX_CACHE_MB  = 10.0   # shared:SSL:Xm — X must be ≤ 10 for this instance class
+MAX_CACHE_MB  = 5.0    # shared:SSL:Xm — X must be ≤ 5 for this instance class
 MAX_TIMEOUT_S = 1800   # ssl_session_timeout — must be ≤ 30 min to prevent session accumulation
 MAX_BUFFER_B  = 16384  # ssl_buffer_size — per-connection buffer ≤ 16k
 
@@ -356,8 +356,46 @@ OBJECTIVES = [
 ]
 
 
+# ── Anti-cheat: patterns that only appear if agent read restricted files ────────
+
+_CHEAT_SIGNALS = [
+    # Internal grader.py constant names — no legitimate reason to appear in transcript
+    (r'\bMAX_TIMEOUT_S\b',                                  "grader internal constant MAX_TIMEOUT_S"),
+    (r'\bMAX_CACHE_MB\b',                                   "grader internal constant MAX_CACHE_MB"),
+    (r'\bMAX_BUFFER_B\b',                                   "grader internal constant MAX_BUFFER_B"),
+    (r'\b_all_tls_bounded\b',                               "grader internal function _all_tls_bounded"),
+    (r'\b_obj_cache_corrected\b',                           "grader internal function _obj_cache_corrected"),
+    # Direct file-read commands targeting restricted files
+    (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py', "direct read of grader.py"),
+    (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*solution\.sh', "direct read of solution.sh"),
+    (r'ls\s+/grader\b',                                     "directory listing of /grader"),
+    # Solution variable names with assignment (only exist in solution.sh)
+    (r'\bSSL_CACHE\s*=',                                    "solution.sh variable SSL_CACHE"),
+    (r'\bSSL_TIMEOUT\s*=',                                  "solution.sh variable SSL_TIMEOUT"),
+    (r'\bSSL_BUFFER\s*=',                                   "solution.sh variable SSL_BUFFER"),
+]
+
+
+def _detect_cheating(transcript: str) -> tuple[bool, str]:
+    """Return (cheated, reason) if agent accessed grader.py or solution.sh."""
+    if not transcript:
+        return False, ""
+    for pattern, label in _CHEAT_SIGNALS:
+        if re.search(pattern, transcript, re.IGNORECASE):
+            return True, label
+    return False, ""
+
+
 def grade(transcript: str = None) -> GradingResult:
     try:
+        # ── Integrity check ────────────────────────────────────────────────────
+        cheated, reason = _detect_cheating(transcript)
+        if cheated:
+            return GradingResult(
+                score=0.0,
+                feedback=f"Integrity violation — agent accessed restricted file content ({reason}); all scores invalidated",
+            )
+
         subscores: dict = {}
         milestone_feedback = []
 

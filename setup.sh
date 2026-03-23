@@ -111,7 +111,7 @@ metadata:
     incident.platform.io/oom-history: "2026-03-20T16:11:44Z,2026-03-20T09:58:22Z,2026-03-20T03:45:01Z,2026-03-19T21:33:17Z"
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
-    incident.platform.io/ssl-budget: "session cache size and session lifetime directly control memory footprint — size the shared zone conservatively and keep session lifetime short for this 300Mi instance"
+    incident.platform.io/ssl-budget: "ssl session cache is the primary memory accumulation vector — bound the shared zone size conservatively within the 300Mi limit"
 spec:
   replicas: 1
   selector:
