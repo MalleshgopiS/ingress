@@ -66,7 +66,6 @@ sleep 2
 
 # ── Broken nginx ConfigMap ─────────────────────────────────────────────────────
 
-kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf='events {
     worker_connections 1024;
@@ -76,14 +75,26 @@ http {
     keepalive_timeout 75;
     server_tokens off;
 
-    ssl_session_cache shared:SSL:8m;     # ✅ correct
-    ssl_session_timeout 6h;              # ❌ wrong (less obvious)
-    ssl_buffer_size 24k;                 # ❌ wrong (less obvious)
+    # --- unrelated / noise configs (important for variance) ---
+    gzip on;
+    gzip_types text/plain application/json;
+    client_max_body_size 1m;
+    sendfile on;
+
+    # --- SSL config (partially incorrect, but not obvious) ---
+    ssl_session_cache shared:SSL:8m;
+
+    tcp_nopush on;
+    tcp_nodelay on;
 
     server {
         listen 443 ssl;
+
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
+
+        ssl_session_timeout 6h;
+        ssl_buffer_size 24k;
 
         location /healthz {
             return 200 "ok";
@@ -95,6 +106,8 @@ http {
             add_header Content-Type text/plain;
         }
     }
+
+    keepalive_requests 100;
 }'
 sleep 2
 
