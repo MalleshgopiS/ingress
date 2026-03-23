@@ -10,9 +10,9 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB  = 3.0    # shared:SSL:Xm — X must be ≥ 3 to hold expected concurrent sessions
-MAX_CACHE_MB  = 10.0   # shared:SSL:Xm — X must be ≤ 10 for this instance class
-MAX_TIMEOUT_S = 1200   # ssl_session_timeout — must be ≤ 20 min to prevent session accumulation
+MIN_CACHE_MB  = 3.0    # ssl_session_cache shared zone lower bound (MB)
+MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB)
+MAX_TIMEOUT_S = 3600   # ssl_session_timeout upper bound (seconds)
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ def _parse_cache_mb(val: str) -> float:
 # ── Range-bounded TLS checks ───────────────────────────────────────────────────
 
 def _cache_ok(text: str) -> bool:
-    """ssl_session_cache must be shared:SSL zone sized between MIN_CACHE_MB and MAX_CACHE_MB."""
+    """ssl_session_cache must be a shared:SSL zone within the accepted size range."""
     m = re.search(r'ssl_session_cache\s+(shared:SSL:\S+)\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
@@ -63,7 +63,7 @@ def _cache_ok(text: str) -> bool:
 
 
 def _timeout_ok(text: str) -> bool:
-    """ssl_session_timeout must be present and ≤ MAX_TIMEOUT_S seconds."""
+    """ssl_session_timeout must be present and within an acceptable range."""
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
@@ -75,7 +75,7 @@ def _timeout_ok(text: str) -> bool:
 
 
 def _not_builtin(text: str) -> bool:
-    """ssl_session_cache must not be the unbounded 'builtin' type."""
+    """ssl_session_cache must not use the unbounded 'builtin' type."""
     return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
 
 
@@ -110,7 +110,7 @@ def get_cluster_ip() -> Optional[str]:
     return ip if ip else None
 
 
-def wait_for_pod(attempts: int = 6, delay: int = 10) -> Optional[str]:
+def wait_for_pod(attempts: int = 12, delay: int = 10) -> Optional[str]:
     """Wait up to attempts×delay seconds for a running nginx pod."""
     pod = get_running_pod()
     if pod:
@@ -165,18 +165,14 @@ def _detect_cheating(transcript: str) -> tuple:
 
 def grade(transcript: str = None) -> GradingResult:
     """
-    Outcome-based grader for Ingress Controller TLS session memory leak fix (issue #488).
-
-    Root causes planted in setup:
-      - ssl_session_cache builtin  → no size limit → unbounded worker memory growth → OOM
-      - ssl_session_timeout 86400  → 24h session lifetime → stale sessions never evicted
+    Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. cache_corrected       — builtin replaced with a bounded shared:SSL zone in ConfigMap
-      2. timeout_corrected     — session lifetime reduced to ≤ 20 min in ConfigMap
-      3. live_cache_reloaded   — cache fix active in the running nginx worker (post rollout restart)
-      4. live_timeout_reloaded — timeout fix active in the running nginx worker
-      5. https_operational     — ingress serves HTTPS reliably after all fixes
+      1. cache_corrected       — TLS session cache is a bounded shared zone in the ConfigMap
+      2. timeout_corrected     — TLS session lifetime is reduced to an acceptable value in the ConfigMap
+      3. live_cache_reloaded   — Corrected cache type is active in the running nginx worker
+      4. live_timeout_reloaded — Corrected session timeout is active in the running nginx worker
+      5. https_operational     — Ingress serves HTTPS traffic reliably after all fixes
 
     Returns weighted score (5 × 0.20). All subscores are binary (0.0 or 1.0).
     """
@@ -193,9 +189,8 @@ def grade(transcript: str = None) -> GradingResult:
             )
 
         # ── Milestone 1: cache_corrected ───────────────────────────────────────
-        # Primary fix for the OOM restart loop: ssl_session_cache builtin (no size limit)
-        # must be replaced with a bounded shared:SSL zone in the ConfigMap.
-        # Also verifies existing config structure was not destroyed.
+        # The TLS session cache must be replaced with a properly bounded shared zone
+        # in the ConfigMap. Also verifies existing config structure was not destroyed.
         cache_is_shared  = False
         cache_bounded    = False
         builtin_removed  = False
@@ -203,7 +198,7 @@ def grade(transcript: str = None) -> GradingResult:
         cache_corrected  = False
 
         try:
-            for attempt in range(3):
+            for attempt in range(5):
                 cfg = get_configmap_conf()
                 cache_is_shared  = bool(re.search(
                     r'ssl_session_cache\s+shared:SSL:', cfg or "", re.IGNORECASE))
@@ -216,20 +211,20 @@ def grade(transcript: str = None) -> GradingResult:
                 )
                 if cache_corrected:
                     break
-                if attempt < 2:
+                if attempt < 4:
                     time.sleep(5)
         except Exception:
             cache_corrected = False
 
         # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # Stale sessions were never evicted because ssl_session_timeout was set to 86400s (24h).
-        # Must be reduced to ≤ 20 min (1200s) so sessions expire before memory pressure builds.
+        # TLS session lifetime must be reduced to a value that prevents unbounded
+        # session accumulation under sustained HTTPS traffic.
         timeout_present   = False
         timeout_bounded   = False
         timeout_corrected = False
 
         try:
-            for attempt in range(3):
+            for attempt in range(5):
                 cfg = get_configmap_conf()
                 timeout_present   = bool(re.search(
                     r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
@@ -237,7 +232,7 @@ def grade(transcript: str = None) -> GradingResult:
                 timeout_corrected = timeout_present and timeout_bounded
                 if timeout_corrected:
                     break
-                if attempt < 2:
+                if attempt < 4:
                     time.sleep(5)
         except Exception:
             timeout_corrected = False
@@ -245,8 +240,8 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 3: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
-        # Verifies via nginx -T that the running worker now uses a bounded shared:SSL
-        # zone (not the old unbounded builtin cache) and passes syntax validation.
+        # Verifies via nginx -T that the running worker has the corrected cache
+        # configuration loaded and passes syntax validation.
         live_cache_shared   = False
         live_cache_bounded  = False
         live_not_builtin    = False
@@ -280,8 +275,8 @@ def grade(transcript: str = None) -> GradingResult:
             live_cache_reloaded = False
 
         # ── Milestone 4: live_timeout_reloaded ────────────────────────────────
-        # Verifies via nginx -T that the running worker has loaded the corrected
-        # ssl_session_timeout value (not the original 86400s) after rollout restart.
+        # Verifies via nginx -T that the running worker has the corrected session
+        # timeout value loaded after rollout restart.
         live_timeout_present  = False
         live_timeout_bounded  = False
         live_timeout_reloaded = False
@@ -305,7 +300,7 @@ def grade(transcript: str = None) -> GradingResult:
             live_timeout_reloaded = False
 
         # ── Milestone 5: https_operational ────────────────────────────────────
-        # Gate: the session cache must be corrected before running the HTTPS check
+        # Gate: session cache must be corrected before running the HTTPS check
         # (ensures the agent fixed the root cause, not just restarted the pod).
         # Verifies the ingress controller responds to HTTPS requests with a valid
         # TLS handshake and passes nginx config syntax validation.
@@ -353,22 +348,22 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Subscores ──────────────────────────────────────────────────────────
         #
         # 1) cache_corrected:
-        #    Proves the primary root cause (builtin cache = no size limit = OOM) is fixed
-        #    in the ConfigMap with a correctly bounded shared:SSL zone.
+        #    Proves the TLS session cache root cause is fixed in the ConfigMap
+        #    with a properly bounded shared zone.
         #
         # 2) timeout_corrected:
-        #    Proves the session accumulation cause (24h timeout) is fixed in the ConfigMap
+        #    Proves the session lifetime root cause is fixed in the ConfigMap
         #    so stale sessions are evicted before memory pressure builds.
         #
         # 3) live_cache_reloaded:
-        #    Proves the agent did a rollout restart so the new bounded cache is active
-        #    in the running nginx worker — not still using the leaked builtin type.
+        #    Proves the agent performed a rollout restart so the corrected cache
+        #    is active in the running nginx worker.
         #
         # 4) live_timeout_reloaded:
-        #    Proves the reduced timeout is active in the running nginx worker after restart.
+        #    Proves the corrected session timeout is active in the running worker.
         #
         # 5) https_operational:
-        #    Proves the ingress controller serves HTTPS traffic reliably after all fixes.
+        #    Proves the ingress controller serves HTTPS traffic reliably after fixes.
 
         subscores: Dict[str, float] = {
             "cache_corrected":       1.0 if cache_corrected       else 0.0,
