@@ -10,9 +10,10 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB  = 3.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB  = 10.0   # ssl_session_cache shared zone upper bound (MB)
-MAX_TIMEOUT_S = 1800   # ssl_session_timeout upper bound (seconds) — sessions must expire well within the incident recurrence window
+MIN_CACHE_MB    = 3.0    # ssl_session_cache shared zone lower bound (MB)
+MAX_CACHE_MB    = 10.0   # ssl_session_cache shared zone upper bound (MB)
+MAX_TIMEOUT_S   = 3600   # ssl_session_timeout upper bound (seconds) — 1 hour is well within the 6-hour OOM recurrence window
+MAX_BUFFER_BYTES = 8192  # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -79,6 +80,21 @@ def _not_builtin(text: str) -> bool:
     return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
 
 
+def _buffer_size_ok(text: str) -> bool:
+    """ssl_buffer_size must be present and within the per-connection allocation limit for this instance class."""
+    m = re.search(r'ssl_buffer_size\s+(\d+)(k|m|)?\s*;', text or "", re.IGNORECASE)
+    if not m:
+        return False
+    n, unit = int(m.group(1)), (m.group(2) or "").lower()
+    if unit == 'k':
+        bytes_val = n * 1024
+    elif unit == 'm':
+        bytes_val = n * 1024 * 1024
+    else:
+        bytes_val = n
+    return 0 < bytes_val <= MAX_BUFFER_BYTES
+
+
 # ── Cluster helpers ────────────────────────────────────────────────────────────
 
 def get_configmap_conf() -> str:
@@ -130,8 +146,10 @@ _CHEAT_SIGNALS = [
     (r'\bMIN_CACHE_MB\b',                                          "grader internal constant MIN_CACHE_MB"),
     (r'\bMAX_CACHE_MB\b',                                          "grader internal constant MAX_CACHE_MB"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
+    (r'\bMAX_BUFFER_BYTES\b',                                      "grader internal constant MAX_BUFFER_BYTES"),
     (r'\b_cache_ok\b',                                             "grader internal function _cache_ok"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
+    (r'\b_buffer_size_ok\b',                                       "grader internal function _buffer_size_ok"),
     # Direct file reads
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py',   "direct read of grader.py"),
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*solution\.sh', "direct read of solution.sh"),
@@ -190,11 +208,14 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Milestone 1: cache_corrected ───────────────────────────────────────
         # The TLS session cache must be replaced with a properly bounded shared zone
-        # in the ConfigMap. Also verifies existing config structure was not destroyed.
+        # in the ConfigMap AND the per-connection buffer allocation must be reduced
+        # to fit within the 300Mi instance memory budget.
+        # Also verifies existing config structure was not destroyed.
         cache_is_shared  = False
         cache_bounded    = False
         builtin_removed  = False
         keepalive_intact = False
+        buffer_ok        = False
         cache_corrected  = False
 
         try:
@@ -205,9 +226,10 @@ def grade(transcript: str = None) -> GradingResult:
                 cache_bounded    = _cache_ok(cfg)
                 builtin_removed  = _not_builtin(cfg)
                 keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
+                buffer_ok        = _buffer_size_ok(cfg)
                 cache_corrected  = (
                     cache_is_shared and cache_bounded and
-                    builtin_removed and keepalive_intact
+                    builtin_removed and keepalive_intact and buffer_ok
                 )
                 if cache_corrected:
                     break
@@ -246,6 +268,7 @@ def grade(transcript: str = None) -> GradingResult:
         live_cache_bounded  = False
         live_not_builtin    = False
         live_syntax_ok      = False
+        live_buffer_ok      = False
         live_cache_reloaded = False
 
         try:
@@ -263,9 +286,10 @@ def grade(transcript: str = None) -> GradingResult:
                     live_not_builtin   = _not_builtin(live)
                     live_syntax_ok     = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
+                    live_buffer_ok     = _buffer_size_ok(live)
                     live_cache_reloaded = (
                         live_cache_shared and live_cache_bounded and
-                        live_not_builtin  and live_syntax_ok
+                        live_not_builtin  and live_syntax_ok and live_buffer_ok
                     )
                     if live_cache_reloaded:
                         break
@@ -394,6 +418,7 @@ def grade(transcript: str = None) -> GradingResult:
             f"CacheSizeBounded: {'✓' if cache_bounded       else '✗'}",
             f"BuiltinRemoved: {'✓' if builtin_removed       else '✗'}",
             f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
+            f"BufferSizeOk: {'✓' if buffer_ok               else '✗'}",
             # Milestone 2 detail
             f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
             f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
@@ -402,6 +427,7 @@ def grade(transcript: str = None) -> GradingResult:
             f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
             f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
+            f"LiveBufferOk: {'✓' if live_buffer_ok          else '✗'}",
             # Milestone 4 detail
             f"LiveTimeoutPresent: {'✓' if live_timeout_present else '✗'}",
             f"LiveTimeoutBounded: {'✓' if live_timeout_bounded else '✗'}",
