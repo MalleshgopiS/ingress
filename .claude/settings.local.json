@@ -24,7 +24,9 @@
       "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout9.txt\")",
       "Bash(head -5 grep -n \"Score:\" \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(8\\)\\\\rollout11.txt\")",
       "Bash(for i:*)",
-      "Bash(do 'f=C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(9\\)\\\\rollout$i.txt' echo '=== rollout$i ===' grep -h \"Score:\\\\|ssl_session_cache.*5m\\\\|ssl_session_timeout.*20m\\\\|nginx-ssl-defaults.*conservative\\\\|nginx-ssl-defaults.*appropriate\\\\|nginx-ssl-defaults.*values\\\\|copied.*nginx-ssl\\\\|use.*nginx-ssl\" $f)"
+      "Bash(do 'f=C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(9\\)\\\\rollout$i.txt' echo '=== rollout$i ===' grep -h \"Score:\\\\|ssl_session_cache.*5m\\\\|ssl_session_timeout.*20m\\\\|nginx-ssl-defaults.*conservative\\\\|nginx-ssl-defaults.*appropriate\\\\|nginx-ssl-defaults.*values\\\\|copied.*nginx-ssl\\\\|use.*nginx-ssl\" $f)",
+      "Bash(ls -la \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(24\\)\" \")",
+      "Bash(ls -la \"/c/Users/malle/Downloads/rollouts-05a05142 \\(24\\)/\")"
     ]
   }
 }

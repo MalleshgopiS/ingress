@@ -12,8 +12,9 @@ SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB    = 3.0    # ssl_session_cache shared zone lower bound (MB)
 MAX_CACHE_MB    = 10.0   # ssl_session_cache shared zone upper bound (MB)
-MAX_TIMEOUT_S   = 3600   # ssl_session_timeout upper bound (seconds) — 1 hour is well within the 6-hour OOM recurrence window
-MAX_BUFFER_BYTES = 8192  # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
+MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h is within the 6-hour OOM recurrence window
+MAX_LIVE_TIMEOUT_S = 1800   # ssl_session_timeout live upper bound — must allow multiple eviction cycles within 6-hour OOM window
+MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -63,14 +64,16 @@ def _cache_ok(text: str) -> bool:
     return MIN_CACHE_MB <= mb <= MAX_CACHE_MB
 
 
-def _timeout_ok(text: str) -> bool:
+def _timeout_ok(text: str, max_s: int = None) -> bool:
     """ssl_session_timeout must be present and within an acceptable range."""
+    if max_s is None:
+        max_s = MAX_TIMEOUT_S
     m = re.search(r'ssl_session_timeout\s+(\S+)\s*;', text or "")
     if not m:
         return False
     try:
         s = _parse_nginx_time(m.group(1))
-        return 0 < s <= MAX_TIMEOUT_S
+        return 0 < s <= max_s
     except (ValueError, TypeError):
         return False
 
@@ -146,6 +149,7 @@ _CHEAT_SIGNALS = [
     (r'\bMIN_CACHE_MB\b',                                          "grader internal constant MIN_CACHE_MB"),
     (r'\bMAX_CACHE_MB\b',                                          "grader internal constant MAX_CACHE_MB"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
+    (r'\bMAX_LIVE_TIMEOUT_S\b',                                    "grader internal constant MAX_LIVE_TIMEOUT_S"),
     (r'\bMAX_BUFFER_BYTES\b',                                      "grader internal constant MAX_BUFFER_BYTES"),
     (r'\b_cache_ok\b',                                             "grader internal function _cache_ok"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
@@ -262,8 +266,9 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 3: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
-        # Verifies via nginx -T that the running worker has the corrected cache
-        # configuration loaded and passes syntax validation.
+        # Verifies via nginx -T that the running worker has a corrected shared
+        # cache zone loaded and passes syntax validation.
+        # Note: does NOT check buffer size — that is M1's concern only.
         live_cache_shared   = False
         live_cache_bounded  = False
         live_not_builtin    = False
@@ -289,7 +294,7 @@ def grade(transcript: str = None) -> GradingResult:
                     live_buffer_ok     = _buffer_size_ok(live)
                     live_cache_reloaded = (
                         live_cache_shared and live_cache_bounded and
-                        live_not_builtin  and live_syntax_ok and live_buffer_ok
+                        live_not_builtin  and live_syntax_ok
                     )
                     if live_cache_reloaded:
                         break
@@ -301,6 +306,8 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 4: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
         # timeout value loaded after rollout restart.
+        # Uses MAX_LIVE_TIMEOUT_S (1800s / 30m) — stricter than M2's ConfigMap
+        # check — ensuring sessions expire well within the 6-hour OOM window.
         live_timeout_present  = False
         live_timeout_bounded  = False
         live_timeout_reloaded = False
@@ -314,7 +321,7 @@ def grade(transcript: str = None) -> GradingResult:
                     live = res_T.stdout or ""
                     live_timeout_present  = bool(re.search(
                         r'ssl_session_timeout\s+\S+\s*;', live))
-                    live_timeout_bounded  = _timeout_ok(live)
+                    live_timeout_bounded  = _timeout_ok(live, max_s=MAX_LIVE_TIMEOUT_S)
                     live_timeout_reloaded = live_timeout_present and live_timeout_bounded
                     if live_timeout_reloaded:
                         break

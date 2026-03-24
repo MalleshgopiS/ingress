@@ -113,7 +113,6 @@ metadata:
     incident.platform.io/oom-cause: "ssl session accumulation — ssl_session_cache builtin type causes unbounded per-worker memory growth under persistent HTTPS connections"
     incident.platform.io/ssl-budget: "ssl session cache zone must be sized to hold expected concurrent sessions without exceeding the 300Mi instance memory limit — the observed traffic profile sustains high concurrent TLS session load; under-sizing the zone causes excessive eviction churn, while over-sizing causes OOM; choose a shared zone size appropriate for this instance memory budget"
     incident.platform.io/ssl-session-retention: "ssl_session_timeout controls how long individual sessions persist in the cache; incidents recur every ~6 hours — sessions must expire well within the incident recurrence window to prevent unbounded session accumulation between OOM cycles"
-    incident.platform.io/ssl-buffer-overhead: "memory growth under HTTPS load includes a per-connection component — at peak TLS connection load on this 300Mi instance, cumulative per-connection buffer allocation is a measurable contributor to worker RSS growth; the value in the current config was provisioned for a larger instance class"
 spec:
   replicas: 1
   selector:
