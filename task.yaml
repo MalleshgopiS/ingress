@@ -19,7 +19,7 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  The ingress pod is limited to 300Mi. The TLS session cache should be sized proportionally for this instance class
+  For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
