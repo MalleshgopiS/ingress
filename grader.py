@@ -104,7 +104,7 @@ def _protocols_secure(text: str) -> bool:
     if not m:
         return True  # Not set = nginx defaults (TLSv1.2 TLSv1.3) = OK
     protocols = m.group(1).lower()
-    return 'sslv3' not in protocols and 'tlsv1 ' not in protocols
+    return 'sslv3' not in protocols and not re.search(r'\btlsv1\b(?!\.)', protocols)
 
 
 def _postmortem_exists() -> bool:
@@ -357,7 +357,7 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             live_cache_reloaded = False
 
-        # ── Milestone 4: live_timeout_reloaded ────────────────────────────────
+        # ── Milestone 5: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
         # timeout value loaded after rollout restart.
         # Uses MAX_LIVE_TIMEOUT_S (1800s / 30m) — stricter than M2's ConfigMap
@@ -470,7 +470,7 @@ def grade(transcript: str = None) -> GradingResult:
 
         weight_val   = round(1.0 / len(subscores), 6)
         weights: Dict[str, float] = {k: weight_val for k in subscores}
-        final_score  = sum(v * weights[k] for k, v in subscores.items())
+        final_score  = sum(subscores.values()) / len(subscores)
         passed_count = sum(1 for v in subscores.values() if v >= 1.0)
 
         feedback_parts = [
