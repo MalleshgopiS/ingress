@@ -11,17 +11,9 @@ echo "=== Applying TLS memory leak remediation ==="
 # ConfigMap every 3 minutes, simulating configuration drift. It must be deleted
 # before any ConfigMap edits will stick permanently.
 
-echo "[Step 0] Checking for active configuration watchdog..."
-if kubectl get cronjob ingress-config-watchdog -n $NS >/dev/null 2>&1; then
-    echo "[Step 0] Found ingress-config-watchdog CronJob — deleting to stop drift..."
-    kubectl delete cronjob ingress-config-watchdog -n $NS
-    # Also clean up any in-flight jobs spawned by the CronJob
-    kubectl delete jobs -n $NS -l "job-name" --field-selector=status.active!=0 \
-      2>/dev/null || true
-    echo "[Step 0] Configuration watchdog stopped."
-else
-    echo "[Step 0] No active watchdog found — continuing."
-fi
+echo "[Step 0] Stopping configuration watchdog to prevent further config drift..."
+kubectl delete cronjob ingress-config-watchdog -n $NS --ignore-not-found
+echo "[Step 0] Configuration watchdog stopped."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
