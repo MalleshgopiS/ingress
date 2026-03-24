@@ -11,9 +11,9 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB    = 3.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB    = 10.0   # ssl_session_cache shared zone upper bound (MB)
-MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h is within the 6-hour OOM recurrence window
-MAX_LIVE_TIMEOUT_S = 1800   # ssl_session_timeout live upper bound — must allow multiple eviction cycles within 6-hour OOM window
+MAX_CACHE_MB    = 7.0    # ssl_session_cache shared zone upper bound (MB) — must fit within 300Mi with headroom for worker RSS
+MAX_TIMEOUT_S      = 1800   # ssl_session_timeout ConfigMap upper bound — 30min allows multiple eviction cycles within 6-hour OOM window
+MAX_LIVE_TIMEOUT_S = 1200   # ssl_session_timeout live upper bound — 20min ensures sessions expire well before next OOM cycle
 MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
@@ -384,7 +384,7 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             live_timeout_reloaded = False
 
-        # ── Milestone 5: https_operational ────────────────────────────────────
+        # ── Milestone 6: https_operational ────────────────────────────────────
         # Gate: the live running nginx must no longer use the builtin cache type.
         # Checked against nginx -T output (the actually loaded config), NOT the
         # ConfigMap. This makes M5 independent of cache size / timeout thresholds:

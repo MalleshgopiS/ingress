@@ -28,6 +28,7 @@ echo "Importing pre-cached images into containerd..."
 k3s ctr -n k8s.io images import --local --snapshotter=native --platform linux/amd64 /images/nginx_1.27-alpine.oci.tar
 k3s ctr -n k8s.io images tag nginx:1.27-alpine docker.io/library/nginx:1.27-alpine 2>/dev/null || true
 k3s ctr -n k8s.io images import --local --snapshotter=native --platform linux/amd64 /images/alpine_k8s_1.30.4.oci.tar
+k3s ctr -n k8s.io images tag alpine/k8s:1.30.4 docker.io/alpine/k8s:1.30.4 2>/dev/null || true
 
 NS="ingress-system"
 
@@ -68,6 +69,43 @@ sleep 2
 
 kubectl delete configmap ingress-nginx-config -n $NS --ignore-not-found
 kubectl create configmap ingress-nginx-config -n $NS \
+  --from-literal=nginx.conf='events {
+    worker_connections 1024;
+}
+
+http {
+    keepalive_timeout 75;
+    server_tokens off;
+
+    ssl_session_cache   builtin;
+    ssl_session_timeout 86400;
+    ssl_buffer_size     64k;
+    ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
+
+    server {
+        listen 443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+
+        location /healthz {
+            return 200 "ok";
+            add_header Content-Type text/plain;
+        }
+
+        location / {
+            return 200 "Ingress Controller Running";
+            add_header Content-Type text/plain;
+        }
+    }
+}'
+sleep 2
+
+# ── Reference ConfigMap: broken config snapshot ───────────────────────────────
+# Used by the config watchdog CronJob to restore the broken state after any
+# agent edits — simulates active configuration drift in the environment.
+
+kubectl delete configmap ingress-config-broken -n $NS --ignore-not-found
+kubectl create configmap ingress-config-broken -n $NS \
   --from-literal=nginx.conf='events {
     worker_connections 1024;
 }
@@ -173,6 +211,85 @@ sleep 2
 kubectl rollout status deployment/ingress-controller -n $NS --timeout=90s || true
 echo "Ingress controller deployed."
 
+# ── Config Watchdog RBAC ───────────────────────────────────────────────────────
+# ServiceAccount + Role + RoleBinding for the CronJob that actively re-corrupts
+# the nginx ConfigMap to simulate ongoing configuration drift.
+
+kubectl apply -n $NS -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: config-watchdog-sa
+  namespace: $NS
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: config-watchdog-role
+  namespace: $NS
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: config-watchdog-rb
+  namespace: $NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: config-watchdog-role
+subjects:
+- kind: ServiceAccount
+  name: config-watchdog-sa
+  namespace: $NS
+EOF
+sleep 2
+
+# ── Config Watchdog CronJob ────────────────────────────────────────────────────
+# Runs every 3 minutes and restores the broken nginx ConfigMap from the reference
+# snapshot. This simulates a misconfigured config management system re-applying
+# stale configuration — an agent must discover and stop this watchdog to
+# permanently stabilise the ingress configuration.
+
+kubectl apply -n $NS -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingress-config-watchdog
+  namespace: $NS
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "config-drift-controller"
+spec:
+  schedule: "*/3 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: config-watchdog-sa
+          restartPolicy: Never
+          containers:
+          - name: watchdog
+            image: alpine/k8s:1.30.4
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl get cm ingress-config-broken -n $NS -o json \
+                | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "$NS"}, data: .data}' \
+                | kubectl apply -f - \
+              && echo "Config watchdog: ingress-nginx-config restored to reference broken state."
+EOF
+sleep 2
+echo "Config watchdog CronJob deployed."
+
 echo "Verifying broken state was successfully applied..."
 
 # 1. Confirm broken ssl_session_cache builtin is in the nginx ConfigMap
@@ -220,6 +337,18 @@ CM_PROTO=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     | grep -o 'ssl_protocols[^;]*' | head -n1 || echo "")
 if ! echo "$CM_PROTO" | grep -qi "TLSv1 "; then
     echo "ERROR: nginx ConfigMap does not have broken ssl_protocols with TLSv1 (found: '$CM_PROTO')"
+    exit 1
+fi
+
+# 8. Confirm config watchdog CronJob is present
+if ! kubectl get cronjob ingress-config-watchdog -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ingress-config-watchdog CronJob was not created"
+    exit 1
+fi
+
+# 9. Confirm reference broken ConfigMap exists
+if ! kubectl get configmap ingress-config-broken -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ingress-config-broken reference ConfigMap was not created"
     exit 1
 fi
 
