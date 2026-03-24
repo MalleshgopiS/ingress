@@ -11,9 +11,9 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB    = 3.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB    = 20.0   # ssl_session_cache shared zone upper bound (MB) — accepts standard 10m recommendation; 300Mi pod has ample headroom
-MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h is a valid engineering choice ("well within 6-hour incident window")
-MAX_LIVE_TIMEOUT_S = 1800   # ssl_session_timeout live upper bound — disclosed in task: live check uses stricter 30min bound (multiple eviction cycles)
+MAX_CACHE_MB    = 8.0    # ssl_session_cache shared zone upper bound (MB) — must be conservative for 300Mi instance class
+MAX_TIMEOUT_S      = 1200   # ssl_session_timeout ConfigMap upper bound — 20min maximum to ensure multiple eviction cycles within the OOM window
+MAX_LIVE_TIMEOUT_S = 1200   # ssl_session_timeout live upper bound — must match ConfigMap bound (restart propagation check)
 MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
@@ -212,7 +212,7 @@ def grade(transcript: str = None) -> GradingResult:
 
     Milestones verified:
       1. cache_corrected       — TLS session cache is a bounded shared zone + deprecated protocols removed (ConfigMap)
-      2. timeout_corrected     — TLS session lifetime is within acceptable range in the ConfigMap (≤ 1h)
+      2. timeout_corrected     — TLS session lifetime is within acceptable range in the ConfigMap (≤ 20min)
       3. buffer_corrected      — ssl_buffer_size is within per-connection allocation budget for this instance class (ConfigMap)
       4. live_cache_reloaded   — Bounded shared cache + secure protocols active in running nginx worker (restart proof; mirrors M1 bounds exactly)
       5. live_timeout_reloaded — Corrected session timeout active in running nginx worker (≤ 30min live check)
@@ -293,8 +293,8 @@ def grade(transcript: str = None) -> GradingResult:
             cache_corrected = False
 
         # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # TLS session lifetime must be reduced to a value that prevents unbounded
-        # session accumulation under sustained HTTPS traffic.
+        # TLS session lifetime must be reduced to a value that ensures multiple
+        # eviction cycles within the ~6-hour OOM window (≤ 20min / 1200s).
         timeout_present   = False
         timeout_bounded   = False
         timeout_corrected = False
@@ -382,9 +382,9 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 5: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
         # timeout value loaded after rollout restart.
-        # Uses MAX_LIVE_TIMEOUT_S (1200s / 20m) — stricter than M2's ConfigMap
-        # check (1800s / 30m) — ensuring sessions expire well before the next
-        # OOM cycle and confirming the restart propagated correctly.
+        # Uses MAX_LIVE_TIMEOUT_S (1200s / 20m) — consistent with M2's ConfigMap
+        # bound — ensuring sessions expire well before the next OOM cycle and
+        # confirming the rollout restart propagated the new config correctly.
         live_timeout_present  = False
         live_timeout_bounded  = False
         live_timeout_reloaded = False
@@ -474,10 +474,10 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Subscores ──────────────────────────────────────────────────────────
         #
         # 1) cache_corrected:       ConfigMap cache is bounded shared zone + deprecated protocols removed
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 1h (MAX_TIMEOUT_S=3600 — 1h is valid: "well within 6-hour window")
+        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200 — must ensure multiple eviction cycles)
         # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone — not bundled into M1 or M4)
         # 4) live_cache_reloaded:   Live nginx: same cache bounds as M1 + protocols (restart proof; M1⟺M4 consistency)
-        # 5) live_timeout_reloaded: Live nginx timeout ≤ 30min (MAX_LIVE_TIMEOUT_S=1800; stricter live check disclosed)
+        # 5) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200; consistent with ConfigMap bound)
         # 6) https_operational:     Ingress serves HTTPS reliably after all fixes
         # 7) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines)
 

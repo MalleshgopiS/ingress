@@ -151,7 +151,7 @@ metadata:
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/incident-notes: "Memory exhaustion under HTTPS load. Correlates with sustained TLS traffic. Prior investigation ruled out request handling and upstream connections. OOM pattern shows gradual growth over hours, not sudden spikes."
     incident.platform.io/traffic-profile: "High session reuse rate. Connections persist for extended periods. Cache hit ratio matters for this workload."
-    incident.platform.io/memory-profile: "Worker RSS grows linearly with active TLS connection count. Growth rate suggests per-session memory allocation. Pattern is consistent with accumulation rather than fragmentation. Each TLS connection reserves dedicated per-session buffers — under high concurrency this per-connection overhead compounds and becomes a significant factor in worker RSS growth on memory-constrained instances."
+    incident.platform.io/memory-profile: "Worker RSS grows gradually under sustained HTTPS load and fully resets after each pod restart. Growth rate correlates with active TLS connection count. Pattern is consistent with accumulation over time rather than sudden spikes or fragmentation."
 spec:
   replicas: 1
   selector:
