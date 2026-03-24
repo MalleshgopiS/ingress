@@ -27,7 +27,7 @@ prompt: |
   - Serve HTTPS traffic reliably
   - Maintain existing configuration structure
 
-  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in `/workdir/postmortem.md`.
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report.
 
   [Constraints]
   - Do not increase memory limits
