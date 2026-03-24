@@ -468,7 +468,7 @@ def grade(transcript: str = None) -> GradingResult:
             "postmortem_complete":   1.0 if postmortem_complete   else 0.0,
         }
 
-        weight_val   = round(1.0 / len(subscores), 6)
+        weight_val   = 1.0 / len(subscores)
         weights: Dict[str, float] = {k: weight_val for k in subscores}
         final_score  = sum(subscores.values()) / len(subscores)
         passed_count = sum(1 for v in subscores.values() if v >= 1.0)
