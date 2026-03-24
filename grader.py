@@ -98,6 +98,25 @@ def _buffer_size_ok(text: str) -> bool:
     return 0 < bytes_val <= MAX_BUFFER_BYTES
 
 
+def _protocols_secure(text: str) -> bool:
+    """ssl_protocols must not include deprecated protocols (SSLv3, standalone TLSv1)."""
+    m = re.search(r'ssl_protocols\s+([^;]+);', text or "")
+    if not m:
+        return True  # Not set = nginx defaults (TLSv1.2 TLSv1.3) = OK
+    protocols = m.group(1).lower()
+    return 'sslv3' not in protocols and 'tlsv1 ' not in protocols
+
+
+def _postmortem_exists() -> bool:
+    """Agent must create /workdir/postmortem.md with at least 10 lines."""
+    res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
+    if res.returncode != 0:
+        return False
+    parts = res.stdout.strip().split()
+    lines = int(parts[0]) if parts else 0
+    return lines >= 10
+
+
 # ── Cluster helpers ────────────────────────────────────────────────────────────
 
 def get_configmap_conf() -> str:
@@ -154,6 +173,8 @@ _CHEAT_SIGNALS = [
     (r'\b_cache_ok\b',                                             "grader internal function _cache_ok"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
     (r'\b_buffer_size_ok\b',                                       "grader internal function _buffer_size_ok"),
+    (r'\b_protocols_secure\b',                                     "grader internal function _protocols_secure"),
+    (r'\b_postmortem_exists\b',                                    "grader internal function _postmortem_exists"),
     # Direct file reads
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py',   "direct read of grader.py"),
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*solution\.sh', "direct read of solution.sh"),
@@ -192,11 +213,13 @@ def grade(transcript: str = None) -> GradingResult:
     Milestones verified:
       1. cache_corrected       — TLS session cache is a bounded shared zone in the ConfigMap
       2. timeout_corrected     — TLS session lifetime is reduced to an acceptable value in the ConfigMap
-      3. live_cache_reloaded   — Corrected cache type is active in the running nginx worker
-      4. live_timeout_reloaded — Corrected session timeout is active in the running nginx worker
-      5. https_operational     — Ingress serves HTTPS traffic reliably after all fixes
+      3. protocols_secure      — ssl_protocols does not include deprecated protocols (ConfigMap + live)
+      4. live_cache_reloaded   — Corrected cache type is active in the running nginx worker
+      5. live_timeout_reloaded — Corrected session timeout is active in the running nginx worker
+      6. https_operational     — Ingress serves HTTPS traffic reliably after all fixes
+      7. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines)
 
-    Returns weighted score (5 × 0.20). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (7 × 1/7). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
@@ -263,7 +286,38 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             timeout_corrected = False
 
-        # ── Milestone 3: live_cache_reloaded ──────────────────────────────────
+        # ── Milestone 3: protocols_secure ─────────────────────────────────────
+        # The nginx config includes deprecated ssl_protocols (TLSv1) which exposes
+        # clients to downgrade attacks. The agent must remove deprecated protocols
+        # from both the ConfigMap and the running nginx worker (via rollout restart).
+        proto_cm_secure   = False
+        proto_live_secure = False
+        protocols_secure  = False
+
+        try:
+            for attempt in range(5):
+                cfg = get_configmap_conf()
+                proto_cm_secure = _protocols_secure(cfg)
+                if proto_cm_secure:
+                    break
+                if attempt < 4:
+                    time.sleep(5)
+            pod = wait_for_pod()
+            if pod:
+                for attempt in range(3):
+                    res_T = run_cmd(
+                        f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
+                    live_p = res_T.stdout or ""
+                    proto_live_secure = _protocols_secure(live_p)
+                    if proto_live_secure:
+                        break
+                    if attempt < 2:
+                        time.sleep(10)
+            protocols_secure = proto_cm_secure and proto_live_secure
+        except Exception:
+            protocols_secure = False
+
+        # ── Milestone 4: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
         # Verifies via nginx -T that the running worker has a corrected shared
@@ -384,40 +438,43 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             https_operational = False
 
+        # ── Milestone 7: postmortem_complete ──────────────────────────────────
+        # Agent must document their investigation by creating /workdir/postmortem.md
+        # with at least 10 lines explaining the root cause and remediation steps.
+        postmortem_complete = False
+
+        try:
+            postmortem_complete = _postmortem_exists()
+        except Exception:
+            postmortem_complete = False
+
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) cache_corrected:
-        #    Proves the TLS session cache root cause is fixed in the ConfigMap
-        #    with a properly bounded shared zone.
-        #
-        # 2) timeout_corrected:
-        #    Proves the session lifetime root cause is fixed in the ConfigMap
-        #    so stale sessions are evicted before memory pressure builds.
-        #
-        # 3) live_cache_reloaded:
-        #    Proves the agent performed a rollout restart so the corrected cache
-        #    is active in the running nginx worker.
-        #
-        # 4) live_timeout_reloaded:
-        #    Proves the corrected session timeout is active in the running worker.
-        #
-        # 5) https_operational:
-        #    Proves the ingress controller serves HTTPS traffic reliably after fixes.
+        # 1) cache_corrected:       ConfigMap cache is bounded shared zone + buffer OK
+        # 2) timeout_corrected:     ConfigMap timeout is within acceptable range
+        # 3) protocols_secure:      ConfigMap + live nginx have no deprecated protocols
+        # 4) live_cache_reloaded:   Shared cache zone active in running worker (restart proof)
+        # 5) live_timeout_reloaded: Corrected timeout active in running worker
+        # 6) https_operational:     Ingress serves HTTPS reliably after all fixes
+        # 7) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines)
 
         subscores: Dict[str, float] = {
             "cache_corrected":       1.0 if cache_corrected       else 0.0,
             "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
+            "protocols_secure":      1.0 if protocols_secure      else 0.0,
             "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
             "live_timeout_reloaded": 1.0 if live_timeout_reloaded else 0.0,
             "https_operational":     1.0 if https_operational     else 0.0,
+            "postmortem_complete":   1.0 if postmortem_complete   else 0.0,
         }
 
-        weights: Dict[str, float] = {k: 0.20 for k in subscores}
+        weight_val   = round(1.0 / len(subscores), 6)
+        weights: Dict[str, float] = {k: weight_val for k in subscores}
         final_score  = sum(v * weights[k] for k, v in subscores.items())
         passed_count = sum(1 for v in subscores.values() if v >= 1.0)
 
         feedback_parts = [
-            f"Score={final_score:.2f}",
+            f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
             # Milestone 1 detail
@@ -430,19 +487,24 @@ def grade(transcript: str = None) -> GradingResult:
             f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
             f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
             # Milestone 3 detail
+            f"ProtoCmSecure: {'✓' if proto_cm_secure        else '✗'}",
+            f"ProtoLiveSecure: {'✓' if proto_live_secure    else '✗'}",
+            # Milestone 4 detail
             f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
             f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
             f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
             f"LiveBufferOk: {'✓' if live_buffer_ok          else '✗'}",
-            # Milestone 4 detail
+            # Milestone 5 detail
             f"LiveTimeoutPresent: {'✓' if live_timeout_present else '✗'}",
             f"LiveTimeoutBounded: {'✓' if live_timeout_bounded else '✗'}",
-            # Milestone 5 detail
+            # Milestone 6 detail
             f"HttpsGate: {'✓' if https_gate_ok              else '✗'}",
             f"HttpsResponds: {'✓' if https_responds         else '✗'}",
             f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
             f"NginxSyntax: {'✓' if nginx_syntax_ok          else '✗'}",
+            # Milestone 7 detail
+            f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]
 
         return GradingResult(
