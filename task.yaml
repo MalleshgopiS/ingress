@@ -21,6 +21,8 @@ prompt: |
 
   For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
 
+  Memory profiling shows RSS grows proportionally with concurrent TLS connections — examine per-connection buffer sizing in addition to session cache settings.
+
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
 
