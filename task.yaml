@@ -19,7 +19,11 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
+  When reviewing the TLS configuration, apply the following guidance for this instance class:
+  - Session cache: a 5m shared TLS session cache is appropriate for the workload profile
+  - Session timeout: set to no more than 20 minutes to allow multiple expiry cycles under load
+  - Record buffer: reduce to 8k or less to limit per-connection memory overhead
+  - Protocols: deprecated versions (TLSv1 and earlier) should not be enabled
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
@@ -27,9 +31,9 @@ prompt: |
   The system should:
   - Run without unexpected restarts
   - Serve HTTPS traffic reliably
-  - Maintain existing configuration structure
+  - Preserve the overall nginx configuration while updating TLS parameters as needed
 
-  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report.
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md
 
   [Constraints]
   - Do not increase memory limits

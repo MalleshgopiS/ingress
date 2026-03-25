@@ -108,13 +108,24 @@ def _protocols_secure(text: str) -> bool:
 
 
 def _postmortem_exists() -> bool:
-    """Agent must create /workdir/postmortem.md with at least 10 lines."""
+    """Agent must create /workdir/postmortem.md with ≥10 lines and relevant technical content."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
     parts = res.stdout.strip().split()
     lines = int(parts[0]) if parts else 0
-    return lines >= 10
+    if lines < 10:
+        return False
+    # Must reference at least one nginx TLS directive that was changed — filters filler content
+    res2 = run_cmd(
+        r"grep -icE 'ssl_session|ssl_buffer|ssl_protocol|tls|cache|memory|nginx' "
+        "/workdir/postmortem.md"
+    )
+    try:
+        relevant = int(res2.stdout.strip())
+    except (ValueError, TypeError):
+        return False
+    return relevant >= 3
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -211,15 +222,16 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. cache_corrected       — TLS session cache is a bounded shared zone + deprecated protocols removed (ConfigMap)
-      2. timeout_corrected     — TLS session lifetime is within acceptable range in the ConfigMap (≤ 20min)
-      3. buffer_corrected      — ssl_buffer_size is within per-connection allocation budget for this instance class (ConfigMap)
-      4. live_cache_reloaded   — Bounded shared cache + secure protocols active in running nginx worker (restart proof; mirrors M1 bounds exactly)
-      5. live_timeout_reloaded — Corrected session timeout active in running nginx worker (≤ 30min live check)
-      6. https_operational     — Ingress serves HTTPS traffic reliably after all fixes
-      7. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines)
+      1. cache_corrected       — TLS session cache is a bounded shared zone in ConfigMap (protocols graded separately in M4)
+      2. timeout_corrected     — TLS session lifetime ≤ 20min in the ConfigMap
+      3. buffer_corrected      — ssl_buffer_size ≤ 8k in ConfigMap (per-connection allocation budget)
+      4. protocols_corrected   — Deprecated TLS protocols removed from both ConfigMap and live nginx worker
+      5. live_cache_reloaded   — Bounded shared cache active in running nginx worker (restart proof; mirrors M1 bounds)
+      6. live_timeout_reloaded — Corrected session timeout ≤ 20min active in running nginx worker
+      7. https_operational     — Ingress serves HTTPS reliably and OOM restart loop has stopped (restartCount ≤ 1)
+      8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines with relevant technical content)
 
-    Returns weighted score (7 × 1/7). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (8 × 1/8). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
@@ -262,8 +274,8 @@ def grade(transcript: str = None) -> GradingResult:
             pass
 
         # ── Milestone 1: cache_corrected ───────────────────────────────────────
-        # The TLS session cache must be replaced with a properly bounded shared zone
-        # and deprecated ssl_protocols must be removed from the ConfigMap.
+        # The TLS session cache must be replaced with a properly bounded shared zone.
+        # Deprecated ssl_protocols are graded independently in M4 (protocols_corrected).
         # Buffer sizing is graded independently in M3 and must NOT be bundled here.
         # Also verifies existing config structure was not destroyed (keepalive intact).
         cache_is_shared  = False
@@ -282,8 +294,7 @@ def grade(transcript: str = None) -> GradingResult:
                 keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
                 cache_corrected  = (
                     cache_is_shared and cache_bounded and
-                    builtin_removed and keepalive_intact and
-                    proto_cm_secure
+                    builtin_removed and keepalive_intact
                 )
                 if cache_corrected:
                     break
@@ -337,15 +348,22 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             buffer_corrected = False
 
-        # ── Milestone 4: live_cache_reloaded ──────────────────────────────────
+        # ── Milestone 4: protocols_corrected ──────────────────────────────────
+        # Deprecated TLS protocol versions must be removed from both the ConfigMap
+        # and the running nginx worker. SSLv3 and standalone TLSv1 are rejected;
+        # TLSv1.2 and TLSv1.3 are the required minimum. Graded as a standalone
+        # milestone so agents who fix the cache correctly but miss the protocol
+        # update are not double-penalised across M1 and M5.
+        protocols_corrected = proto_cm_secure and proto_live_secure
+
+        # ── Milestone 5: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
         # Verifies via nginx -T that the running worker has: a corrected shared
         # cache zone within the same size bounds as M1 (proves restart happened
-        # AND the correct config was loaded), no builtin cache, secure protocols,
-        # and passes nginx config syntax validation.
-        # Buffer sizing is graded independently in M3 — not bundled here.
-        # Checking live cache bounds mirrors M1 exactly, so M1 pass ↔ M4 pass
+        # AND the correct config was loaded), no builtin cache, and passes nginx
+        # config syntax validation. Protocols are graded separately in M4.
+        # Checking live cache bounds mirrors M1 exactly, so M1 pass ↔ M5 pass
         # (eliminates ConfigMap-passes-but-live-fails inconsistency).
         live_cache_shared   = False
         live_cache_bounded  = False
@@ -370,7 +388,7 @@ def grade(transcript: str = None) -> GradingResult:
                         res_t.stdout + res_t.stderr).lower()
                     live_cache_reloaded = (
                         live_cache_shared and live_cache_bounded and
-                        live_not_builtin  and live_syntax_ok and proto_live_secure
+                        live_not_builtin  and live_syntax_ok
                     )
                     if live_cache_reloaded:
                         break
@@ -379,7 +397,7 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             live_cache_reloaded = False
 
-        # ── Milestone 5: live_timeout_reloaded ────────────────────────────────
+        # ── Milestone 6: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
         # timeout value loaded after rollout restart.
         # Uses MAX_LIVE_TIMEOUT_S (1200s / 20m) — consistent with M2's ConfigMap
@@ -407,20 +425,18 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             live_timeout_reloaded = False
 
-        # ── Milestone 6: https_operational ────────────────────────────────────
+        # ── Milestone 7: https_operational ────────────────────────────────────
         # Gate: the live running nginx must no longer use the builtin cache type.
         # Checked against nginx -T output (the actually loaded config), NOT the
-        # ConfigMap. This makes M6 independent of cache size / timeout thresholds:
-        # any shared zone proves the agent performed a rollout restart so the new
-        # config was loaded. Agents who only edit the ConfigMap without restarting
-        # still fail (live nginx still shows builtin). Agents who restart with any
-        # shared zone pass the gate regardless of which size or timeout they chose.
-        # Verifies the ingress controller responds to HTTPS requests with a valid
-        # TLS handshake and passes nginx config syntax validation.
+        # ConfigMap. Verifies the ingress controller responds to HTTPS requests with
+        # a valid TLS handshake and passes nginx config syntax validation.
+        # Also checks that the pod restart count is ≤1 since the rollout — proving
+        # the OOM crash loop has actually stopped (the core stated objective).
         https_gate_ok     = False
         https_responds    = False
         tls_handshake_ok  = False
         nginx_syntax_ok   = False
+        restart_count_ok  = False
         https_operational = False
 
         try:
@@ -455,15 +471,27 @@ def grade(transcript: str = None) -> GradingResult:
                         f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
                     nginx_syntax_ok = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
+                    # OOM restart verification: pod must not be crash-looping after fix
+                    res_rc = run_cmd(
+                        f"kubectl get pods -n {NS} -l app=ingress-controller "
+                        "--field-selector=status.phase=Running "
+                        "-o jsonpath='{.items[0].status.containerStatuses[0].restartCount}'"
+                    )
+                    try:
+                        restart_count_ok = int(res_rc.stdout.strip()) <= 1
+                    except (ValueError, TypeError):
+                        restart_count_ok = False
                     https_operational = (
-                        https_responds and tls_handshake_ok and nginx_syntax_ok
+                        https_responds and tls_handshake_ok and
+                        nginx_syntax_ok and restart_count_ok
                     )
         except Exception:
             https_operational = False
 
-        # ── Milestone 7: postmortem_complete ──────────────────────────────────
+        # ── Milestone 8: postmortem_complete ──────────────────────────────────
         # Agent must document their investigation by creating /workdir/postmortem.md
-        # with at least 10 lines explaining the root cause and remediation steps.
+        # with at least 10 lines containing relevant technical content (ssl/tls/cache
+        # keywords) — not just filler text.
         postmortem_complete = False
 
         try:
@@ -473,18 +501,20 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) cache_corrected:       ConfigMap cache is bounded shared zone + deprecated protocols removed
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200 — must ensure multiple eviction cycles)
-        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone — not bundled into M1 or M4)
-        # 4) live_cache_reloaded:   Live nginx: same cache bounds as M1 + protocols (restart proof; M1⟺M4 consistency)
-        # 5) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200; consistent with ConfigMap bound)
-        # 6) https_operational:     Ingress serves HTTPS reliably after all fixes
-        # 7) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines)
+        # 1) cache_corrected:       ConfigMap cache is bounded shared zone (protocols graded in M4)
+        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200)
+        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone)
+        # 4) protocols_corrected:   No deprecated TLS protocols in ConfigMap AND live nginx
+        # 5) live_cache_reloaded:   Live nginx cache within M1 bounds (restart proof; M1⟺M5 consistency)
+        # 6) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200)
+        # 7) https_operational:     HTTPS works + OOM restart loop stopped (restartCount ≤ 1)
+        # 8) postmortem_complete:   /workdir/postmortem.md ≥10 lines with technical content
 
         subscores: Dict[str, float] = {
             "cache_corrected":       1.0 if cache_corrected       else 0.0,
             "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
             "buffer_corrected":      1.0 if buffer_corrected      else 0.0,
+            "protocols_corrected":   1.0 if protocols_corrected   else 0.0,
             "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
             "live_timeout_reloaded": 1.0 if live_timeout_reloaded else 0.0,
             "https_operational":     1.0 if https_operational     else 0.0,
@@ -500,33 +530,35 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # Milestone 1 detail (cache + protocols — buffer graded separately in M3)
+            # M1: cache_corrected (protocols graded separately in M4)
             f"CacheIsSharedZone: {'✓' if cache_is_shared   else '✗'}",
             f"CacheSizeBounded: {'✓' if cache_bounded       else '✗'}",
             f"BuiltinRemoved: {'✓' if builtin_removed       else '✗'}",
             f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
-            f"ProtoCmSecure: {'✓' if proto_cm_secure        else '✗'}",
-            # Milestone 2 detail
+            # M2: timeout_corrected
             f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
             f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
-            # Milestone 3 detail (buffer — standalone, not bundled into M1 or M4)
+            # M3: buffer_corrected
             f"BufferPresent: {'✓' if buffer_present         else '✗'}",
             f"BufferBounded: {'✓' if buffer_bounded         else '✗'}",
-            # Milestone 4 detail (live cache bounds + protocols — mirrors M1, no buffer)
+            # M4: protocols_corrected (standalone — not bundled into M1 or M5)
+            f"ProtoCmSecure: {'✓' if proto_cm_secure        else '✗'}",
+            f"ProtoLiveSecure: {'✓' if proto_live_secure    else '✗'}",
+            # M5: live_cache_reloaded (mirrors M1 bounds; no protocol check)
             f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
             f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
             f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
-            f"ProtoLiveSecure: {'✓' if proto_live_secure    else '✗'}",
-            # Milestone 5 detail
+            # M6: live_timeout_reloaded
             f"LiveTimeoutPresent: {'✓' if live_timeout_present else '✗'}",
             f"LiveTimeoutBounded: {'✓' if live_timeout_bounded else '✗'}",
-            # Milestone 6 detail
+            # M7: https_operational (HTTPS + OOM restart count)
             f"HttpsGate: {'✓' if https_gate_ok              else '✗'}",
             f"HttpsResponds: {'✓' if https_responds         else '✗'}",
             f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
             f"NginxSyntax: {'✓' if nginx_syntax_ok          else '✗'}",
-            # Milestone 7 detail
+            f"RestartCountOk: {'✓' if restart_count_ok      else '✗'}",
+            # M8: postmortem_complete (≥10 lines + technical keywords)
             f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]
 
