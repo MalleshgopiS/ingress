@@ -19,11 +19,11 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  When reviewing the TLS configuration, apply the following guidance for this instance class:
-  - Session cache: a 5m shared TLS session cache is appropriate for the workload profile
-  - Session timeout: set to no more than 20 minutes to allow multiple expiry cycles under load
-  - Record buffer: reduce to 8k or less to limit per-connection memory overhead
-  - Protocols: deprecated versions (TLSv1 and earlier) should not be enabled
+  When investigating, review the following TLS parameters in the ConfigMap and consult available cluster resources for platform-specific guidance on appropriate values for this instance class:
+  - ssl_session_cache type and sizing
+  - ssl_session_timeout duration
+  - ssl_buffer_size per-connection allocation
+  - ssl_protocols version selection
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
