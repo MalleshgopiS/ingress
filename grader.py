@@ -222,7 +222,7 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. cache_corrected       — TLS session cache is a bounded shared zone in ConfigMap (protocols graded separately in M4)
+      1. cache_corrected       — TLS session cache switched from builtin to shared zone in ConfigMap (type check only; size graded in M5)
       2. timeout_corrected     — TLS session lifetime ≤ 20min in the ConfigMap
       3. buffer_corrected      — ssl_buffer_size ≤ 8k in ConfigMap (per-connection allocation budget)
       4. protocols_corrected   — Deprecated TLS protocols removed from both ConfigMap and live nginx worker
@@ -274,12 +274,14 @@ def grade(transcript: str = None) -> GradingResult:
             pass
 
         # ── Milestone 1: cache_corrected ───────────────────────────────────────
-        # The TLS session cache must be replaced with a properly bounded shared zone.
-        # Deprecated ssl_protocols are graded independently in M4 (protocols_corrected).
-        # Buffer sizing is graded independently in M3 and must NOT be bundled here.
-        # Also verifies existing config structure was not destroyed (keepalive intact).
+        # The TLS session cache must be switched from the unbounded 'builtin' type
+        # to a shared zone (any size). Size bounds are NOT checked here — they are
+        # graded in M5 (live_cache_reloaded) after a rollout restart, so M1 and M5
+        # can diverge independently. An agent who switches type but picks the wrong
+        # size passes M1 but fails M5; an agent who does not restart fails M5 even
+        # if the ConfigMap is correct. This makes M1 a pure type-check milestone.
+        # Protocols graded in M4; buffer graded in M3.
         cache_is_shared  = False
-        cache_bounded    = False
         builtin_removed  = False
         keepalive_intact = False
         cache_corrected  = False
@@ -289,12 +291,10 @@ def grade(transcript: str = None) -> GradingResult:
                 cfg = get_configmap_conf()
                 cache_is_shared  = bool(re.search(
                     r'ssl_session_cache\s+shared:\w+:', cfg or "", re.IGNORECASE))
-                cache_bounded    = _cache_ok(cfg)
                 builtin_removed  = _not_builtin(cfg)
                 keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
                 cache_corrected  = (
-                    cache_is_shared and cache_bounded and
-                    builtin_removed and keepalive_intact
+                    cache_is_shared and builtin_removed and keepalive_intact
                 )
                 if cache_corrected:
                     break
@@ -359,12 +359,12 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 5: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
-        # Verifies via nginx -T that the running worker has: a corrected shared
-        # cache zone within the same size bounds as M1 (proves restart happened
-        # AND the correct config was loaded), no builtin cache, and passes nginx
-        # config syntax validation. Protocols are graded separately in M4.
-        # Checking live cache bounds mirrors M1 exactly, so M1 pass ↔ M5 pass
-        # (eliminates ConfigMap-passes-but-live-fails inconsistency).
+        # Verifies via nginx -T that the running worker has: a shared cache zone
+        # within the accepted size bounds (3–8MB), no builtin cache, and passes
+        # nginx config syntax validation. Protocols are graded separately in M4.
+        # Size bounds are checked HERE (not in M1) so M1 and M5 are independent:
+        # agents who switch to shared but pick the wrong size pass M1 but fail M5;
+        # agents who never restart fail M5 even if the ConfigMap is correct.
         live_cache_shared   = False
         live_cache_bounded  = False
         live_not_builtin    = False
@@ -501,7 +501,7 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) cache_corrected:       ConfigMap cache is bounded shared zone (protocols graded in M4)
+        # 1) cache_corrected:       ConfigMap cache switched to shared zone + not builtin + keepalive (no size check — size graded in M5)
         # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200)
         # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone)
         # 4) protocols_corrected:   No deprecated TLS protocols in ConfigMap AND live nginx
@@ -530,9 +530,8 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # M1: cache_corrected (protocols graded separately in M4)
+            # M1: cache_corrected — type check only (size bound graded in M5)
             f"CacheIsSharedZone: {'✓' if cache_is_shared   else '✗'}",
-            f"CacheSizeBounded: {'✓' if cache_bounded       else '✗'}",
             f"BuiltinRemoved: {'✓' if builtin_removed       else '✗'}",
             f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
             # M2: timeout_corrected
