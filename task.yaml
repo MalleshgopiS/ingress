@@ -19,6 +19,8 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
+  For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
+
   When investigating, review the following TLS parameters in the ConfigMap and consult available cluster resources for platform-specific guidance on appropriate values for this instance class:
   - ssl_session_cache type and sizing
   - ssl_session_timeout duration
