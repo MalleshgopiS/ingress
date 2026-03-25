@@ -19,13 +19,7 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  The TLS session cache size directly impacts per-worker memory footprint — refer to the deployment resource annotations for instance-specific sizing guidance.
-
-  When investigating, review the following TLS parameters in the ConfigMap and consult available cluster resources for platform-specific guidance on appropriate values for this instance class:
-  - ssl_session_cache type and sizing
-  - ssl_session_timeout duration
-  - ssl_buffer_size per-connection allocation
-  - ssl_protocols version selection
+  For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
@@ -33,9 +27,9 @@ prompt: |
   The system should:
   - Run without unexpected restarts
   - Serve HTTPS traffic reliably
-  - Preserve the overall nginx configuration while updating TLS parameters as needed
+  - Maintain existing configuration structure
 
-  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report.
 
   [Constraints]
   - Do not increase memory limits
