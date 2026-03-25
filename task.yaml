@@ -31,9 +31,9 @@ prompt: |
   The system should:
   - Run without unexpected restarts
   - Serve HTTPS traffic reliably
-  - Maintain existing configuration structure
+  - Preserve the overall nginx configuration structure while updating TLS parameters as needed
 
-  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report.
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md.
 
   [Constraints]
   - Do not increase memory limits

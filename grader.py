@@ -113,13 +113,24 @@ def _protocols_secure(text: str) -> bool:
 
 
 def _postmortem_exists() -> bool:
-    """Agent must create /workdir/postmortem.md with at least 10 lines."""
+    """Agent must create /workdir/postmortem.md with ≥10 lines and relevant technical content."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
     parts = res.stdout.strip().split()
     lines = int(parts[0]) if parts else 0
-    return lines >= 10
+    if lines < 10:
+        return False
+    # Must reference at least 3 lines with relevant technical terms — not gameable with filler
+    res2 = run_cmd(
+        "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol' "
+        "/workdir/postmortem.md"
+    )
+    try:
+        relevant = int(res2.stdout.strip())
+    except (ValueError, TypeError):
+        return False
+    return relevant >= 3
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -469,8 +480,13 @@ def grade(transcript: str = None) -> GradingResult:
                         f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
                     nginx_syntax_ok = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
+                    # Live buffer check — proves per-connection allocation was reduced
+                    # Uses same MAX_BUFFER_BYTES threshold as M3 (ConfigMap check).
+                    # Requires rollout restart to propagate — independent of M3.
+                    live_buffer_ok = _buffer_size_ok(res_live.stdout or "")
                     https_operational = (
-                        https_responds and tls_handshake_ok and nginx_syntax_ok
+                        https_responds and tls_handshake_ok and
+                        nginx_syntax_ok and live_buffer_ok
                     )
         except Exception:
             https_operational = False
@@ -543,6 +559,7 @@ def grade(transcript: str = None) -> GradingResult:
             f"HttpsResponds: {'✓' if https_responds         else '✗'}",
             f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
             f"NginxSyntax: {'✓' if nginx_syntax_ok          else '✗'}",
+            f"LiveBufferOk: {'✓' if live_buffer_ok          else '✗'}",
             # Milestone 8 detail
             f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]
