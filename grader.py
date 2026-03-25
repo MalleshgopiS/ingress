@@ -11,9 +11,10 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB    = 3.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB    = 8.0    # ssl_session_cache shared zone upper bound (MB) — must be conservative for 300Mi instance class
-MAX_TIMEOUT_S      = 1200   # ssl_session_timeout ConfigMap upper bound — 20min maximum to ensure multiple eviction cycles within the OOM window
-MAX_LIVE_TIMEOUT_S = 1200   # ssl_session_timeout live upper bound — must match ConfigMap bound (restart propagation check)
+CM_MAX_CACHE_MB = 8.0    # ssl_session_cache strict upper bound for ConfigMap check (M1) — 10m (10MB) fails here
+MAX_CACHE_MB    = 12.0   # ssl_session_cache permissive upper bound for live check (M5) — accepts standard 10m recommendation
+MAX_TIMEOUT_S      = 1200   # ssl_session_timeout upper bound (default for _timeout_ok)
+MAX_LIVE_TIMEOUT_S = 1200   # ssl_session_timeout live upper bound — ≤20min enforced in M6
 MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
@@ -55,13 +56,15 @@ def _parse_cache_mb(val: str) -> float:
 
 # ── Range-bounded TLS checks ───────────────────────────────────────────────────
 
-def _cache_ok(text: str) -> bool:
+def _cache_ok(text: str, max_mb: float = None) -> bool:
     """ssl_session_cache must be a shared zone (any zone name) within the accepted size range."""
+    if max_mb is None:
+        max_mb = MAX_CACHE_MB
     m = re.search(r'ssl_session_cache\s+(shared:\w+:\S+)\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
     mb = _parse_cache_mb(m.group(1))
-    return MIN_CACHE_MB <= mb <= MAX_CACHE_MB
+    return MIN_CACHE_MB <= mb <= max_mb
 
 
 def _timeout_ok(text: str, max_s: int = None) -> bool:
@@ -222,11 +225,11 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. cache_corrected       — TLS session cache switched from builtin to shared zone in ConfigMap (type check only; size graded in M5)
-      2. timeout_corrected     — TLS session timeout reduced from broken 86400s in ConfigMap (any value < 86400s; strict bound in M6)
-      3. buffer_corrected      — ssl_buffer_size ≤ 8k in ConfigMap (per-connection allocation budget)
+      1. cache_size_corrected  — ConfigMap cache is shared zone within strict size bound ≤8MB (10m fails)
+      2. live_buffer_reloaded  — Live nginx buffer ≤ 8k after rollout restart (proves buffer fix AND restart)
+      3. buffer_corrected      — ssl_buffer_size ≤ 8k in ConfigMap (standalone; no restart required)
       4. protocols_corrected   — Deprecated TLS protocols removed from both ConfigMap and live nginx worker
-      5. live_cache_reloaded   — Bounded shared cache active in running nginx worker (restart proof; mirrors M1 bounds)
+      5. live_cache_reloaded   — Live nginx cache shared + ≤12MB after rollout restart (permissive; accepts 10m)
       6. live_timeout_reloaded — Corrected session timeout ≤ 20min active in running nginx worker
       7. https_operational     — Ingress serves HTTPS reliably and OOM restart loop has stopped (restartCount ≤ 1)
       8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines with relevant technical content)
@@ -245,10 +248,10 @@ def grade(transcript: str = None) -> GradingResult:
                 ),
             )
 
-        # ── Pre-compute: TLS protocol security (shared by M1 and M4) ──────────────
-        # Computed once here; used in M1 (ConfigMap protocols check) and M4 (live
-        # protocols check). Deprecated TLSv1 must be removed from both the ConfigMap
-        # and the running nginx worker (requires rollout restart).
+        # ── Pre-compute: TLS protocol security (used by M4) ───────────────────────
+        # Computed once here; used in M4 (protocols_corrected — both ConfigMap and
+        # live). Deprecated TLSv1 must be removed from both the ConfigMap and the
+        # running nginx worker (requires rollout restart).
         proto_cm_secure   = False
         proto_live_secure = False
 
@@ -273,66 +276,67 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             pass
 
-        # ── Milestone 1: cache_corrected ───────────────────────────────────────
-        # The TLS session cache must be switched from the unbounded 'builtin' type
-        # to a shared zone (any size). Size bounds are NOT checked here — they are
-        # graded in M5 (live_cache_reloaded) after a rollout restart, so M1 and M5
-        # can diverge independently. An agent who switches type but picks the wrong
-        # size passes M1 but fails M5; an agent who does not restart fails M5 even
-        # if the ConfigMap is correct. This makes M1 a pure type-check milestone.
+        # ── Milestone 1: cache_size_corrected ─────────────────────────────────
+        # The ConfigMap cache must be a shared zone within the strict size bound
+        # (CM_MAX_CACHE_MB=8.0MB). Agents who use the common 'shared:SSL:10m'
+        # (10MB) recommendation fail here — the annotation hints them toward a
+        # conservatively sized zone for this instance class. M5 (live) uses a
+        # wider bound (12MB) so M1 and M5 can diverge: 10m agents fail M1 but
+        # pass M5 after restart; ≤8m agents pass both.
         # Protocols graded in M4; buffer graded in M3.
-        cache_is_shared  = False
-        builtin_removed  = False
-        keepalive_intact = False
-        cache_corrected  = False
+        cache_is_shared      = False
+        cache_size_ok_cm     = False
+        builtin_removed      = False
+        keepalive_intact     = False
+        cache_size_corrected = False
 
         try:
             for attempt in range(5):
                 cfg = get_configmap_conf()
-                cache_is_shared  = bool(re.search(
+                cache_is_shared      = bool(re.search(
                     r'ssl_session_cache\s+shared:\w+:', cfg or "", re.IGNORECASE))
-                builtin_removed  = _not_builtin(cfg)
-                keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
-                cache_corrected  = (
-                    cache_is_shared and builtin_removed and keepalive_intact
+                cache_size_ok_cm     = _cache_ok(cfg, max_mb=CM_MAX_CACHE_MB)
+                builtin_removed      = _not_builtin(cfg)
+                keepalive_intact     = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
+                cache_size_corrected = (
+                    cache_is_shared and cache_size_ok_cm and
+                    builtin_removed and keepalive_intact
                 )
-                if cache_corrected:
+                if cache_size_corrected:
                     break
                 if attempt < 4:
                     time.sleep(5)
         except Exception:
-            cache_corrected = False
+            cache_size_corrected = False
 
-        # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # The broken config sets ssl_session_timeout to 86400s (24h) — far too long.
-        # M2 checks only that the timeout has been reduced from the broken default
-        # (any value < 86400s). The strict ≤ 20min / 1200s bound is enforced in M6
-        # (live_timeout_reloaded) after rollout restart, so M2 and M6 can diverge
-        # independently: an agent who reduces timeout but not enough passes M2 but
-        # fails M6; an agent who never restarts fails M6 regardless of ConfigMap value.
-        BROKEN_TIMEOUT_S  = 86400  # original broken value — anything below this passes M2
-        timeout_present   = False
-        timeout_reduced   = False
-        timeout_corrected = False
+        # ── Milestone 2: live_buffer_reloaded ────────────────────────────────
+        # ssl_buffer_size controls per-connection TLS record allocation. The broken
+        # config uses 64k — excessive for this 300Mi instance. After the fix, the
+        # live nginx worker must show ssl_buffer_size ≤ 8k (MAX_BUFFER_BYTES=8192).
+        # Requires both a correct buffer value in the ConfigMap AND a rollout restart.
+        # Independent of M3 (ConfigMap-only buffer check — no restart required):
+        # agents who set ≤8k but never restart fail M2 even if M3 passes.
+        live_buffer_present  = False
+        live_buffer_bounded  = False
+        live_buffer_reloaded = False
 
         try:
-            for attempt in range(5):
-                cfg = get_configmap_conf()
-                timeout_present = bool(re.search(
-                    r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
-                m_t = re.search(r'ssl_session_timeout\s+(\S+)\s*;', cfg or "")
-                if m_t:
-                    try:
-                        timeout_reduced = _parse_nginx_time(m_t.group(1)) < BROKEN_TIMEOUT_S
-                    except (ValueError, TypeError):
-                        timeout_reduced = False
-                timeout_corrected = timeout_present and timeout_reduced
-                if timeout_corrected:
-                    break
-                if attempt < 4:
-                    time.sleep(5)
+            pod = wait_for_pod()
+            if pod:
+                for attempt in range(3):
+                    res_T = run_cmd(
+                        f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
+                    live_buf = res_T.stdout or ""
+                    live_buffer_present  = bool(re.search(
+                        r'ssl_buffer_size\s+\S+\s*;', live_buf))
+                    live_buffer_bounded  = _buffer_size_ok(live_buf)
+                    live_buffer_reloaded = live_buffer_present and live_buffer_bounded
+                    if live_buffer_reloaded:
+                        break
+                    if attempt < 2:
+                        time.sleep(10)
         except Exception:
-            timeout_corrected = False
+            live_buffer_reloaded = False
 
         # ── Milestone 3: buffer_corrected ─────────────────────────────────────
         # ssl_buffer_size controls the per-connection TLS record buffer. The broken
@@ -369,12 +373,11 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 5: live_cache_reloaded ──────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
-        # Verifies via nginx -T that the running worker has: a shared cache zone
-        # within the accepted size bounds (3–8MB), no builtin cache, and passes
-        # nginx config syntax validation. Protocols are graded separately in M4.
-        # Size bounds are checked HERE (not in M1) so M1 and M5 are independent:
-        # agents who switch to shared but pick the wrong size pass M1 but fail M5;
-        # agents who never restart fail M5 even if the ConfigMap is correct.
+        # Verifies via nginx -T that the running worker has a shared cache zone
+        # within the permissive live bound (≤12MB / MAX_CACHE_MB), no builtin
+        # cache, and passes nginx syntax validation. Protocols graded in M4.
+        # Uses a wider bound than M1's strict CM_MAX_CACHE_MB=8MB so they diverge:
+        # agents using 10m (10MB) fail M1 but pass M5 after a rollout restart.
         live_cache_shared   = False
         live_cache_bounded  = False
         live_not_builtin    = False
@@ -511,18 +514,18 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) cache_corrected:       ConfigMap cache switched to shared zone + not builtin + keepalive (no size check — size graded in M5)
-        # 2) timeout_corrected:     ConfigMap timeout reduced from 86400s (any value < 86400s — strict ≤20min bound in M6)
-        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone)
+        # 1) cache_size_corrected:  ConfigMap cache shared + ≤8MB strict (CM_MAX_CACHE_MB; 10m fails)
+        # 2) live_buffer_reloaded:  Live nginx buffer ≤ 8k after restart (proves buffer fix + restart)
+        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone; no restart)
         # 4) protocols_corrected:   No deprecated TLS protocols in ConfigMap AND live nginx
-        # 5) live_cache_reloaded:   Live nginx cache within M1 bounds (restart proof; M1⟺M5 consistency)
+        # 5) live_cache_reloaded:   Live nginx cache shared + ≤12MB after restart (permissive; 10m passes)
         # 6) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200)
         # 7) https_operational:     HTTPS works + OOM restart loop stopped (restartCount ≤ 1)
         # 8) postmortem_complete:   /workdir/postmortem.md ≥10 lines with technical content
 
         subscores: Dict[str, float] = {
-            "cache_corrected":       1.0 if cache_corrected       else 0.0,
-            "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
+            "cache_size_corrected":  1.0 if cache_size_corrected  else 0.0,
+            "live_buffer_reloaded":  1.0 if live_buffer_reloaded  else 0.0,
             "buffer_corrected":      1.0 if buffer_corrected      else 0.0,
             "protocols_corrected":   1.0 if protocols_corrected   else 0.0,
             "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
@@ -540,20 +543,21 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # M1: cache_corrected — type check only (size bound graded in M5)
-            f"CacheIsSharedZone: {'✓' if cache_is_shared   else '✗'}",
-            f"BuiltinRemoved: {'✓' if builtin_removed       else '✗'}",
-            f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
-            # M2: timeout_corrected
-            f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
-            f"TimeoutReduced: {'✓' if timeout_reduced       else '✗'}",
+            # M1: cache_size_corrected — shared zone + strict ≤8MB (CM_MAX_CACHE_MB)
+            f"CacheIsSharedZone: {'✓' if cache_is_shared        else '✗'}",
+            f"CacheSizeOkCm: {'✓' if cache_size_ok_cm           else '✗'}",
+            f"BuiltinRemoved: {'✓' if builtin_removed            else '✗'}",
+            f"KeepaliveIntact: {'✓' if keepalive_intact          else '✗'}",
+            # M2: live_buffer_reloaded — live buffer ≤ 8k after restart
+            f"LiveBufferPresent: {'✓' if live_buffer_present     else '✗'}",
+            f"LiveBufferBounded: {'✓' if live_buffer_bounded     else '✗'}",
             # M3: buffer_corrected
             f"BufferPresent: {'✓' if buffer_present         else '✗'}",
             f"BufferBounded: {'✓' if buffer_bounded         else '✗'}",
             # M4: protocols_corrected (standalone — not bundled into M1 or M5)
             f"ProtoCmSecure: {'✓' if proto_cm_secure        else '✗'}",
             f"ProtoLiveSecure: {'✓' if proto_live_secure    else '✗'}",
-            # M5: live_cache_reloaded (mirrors M1 bounds; no protocol check)
+            # M5: live_cache_reloaded (permissive ≤12MB; 10m passes; diverges from M1 strict ≤8MB)
             f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
             f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
