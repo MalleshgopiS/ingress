@@ -21,9 +21,6 @@ prompt: |
 
   For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
 
-  Reducing the TLS record buffer size limits per-connection memory overhead — consult the deployment annotations for appropriate sizing guidance for this instance class.
-
-
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
 
