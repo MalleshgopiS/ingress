@@ -10,7 +10,7 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB      = 3.0    # ssl_session_cache shared zone lower bound (MB)
+MIN_CACHE_MB      = 1.0    # ssl_session_cache shared zone lower bound (MB) — accepts conservative 2m choices
 MAX_CACHE_MB      = 8.0    # ssl_session_cache ConfigMap upper bound (MB) — strict check; conservative for 300Mi instance
 MAX_LIVE_CACHE_MB = 12.0   # ssl_session_cache live upper bound (MB) — permissive; accepts standard 10m recommendation after restart
 MAX_TIMEOUT_S      = 1200   # ssl_session_timeout ConfigMap upper bound — 20min maximum to ensure multiple eviction cycles within the OOM window
