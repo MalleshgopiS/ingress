@@ -19,8 +19,8 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  The TLS session cache size directly impacts per-worker memory footprint — refer to the deployment resource annotations for instance-specific sizing guidance.
-  
+  For this instance class, a 5m shared TLS session cache is appropriate for the workload profile.
+
   Reducing the TLS record buffer size limits per-connection memory overhead — consult the deployment annotations for appropriate sizing guidance for this instance class.
 
 
