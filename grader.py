@@ -223,7 +223,7 @@ def grade(transcript: str = None) -> GradingResult:
 
     Milestones verified:
       1. cache_corrected       — TLS session cache switched from builtin to shared zone in ConfigMap (type check only; size graded in M5)
-      2. timeout_corrected     — TLS session lifetime ≤ 20min in the ConfigMap
+      2. timeout_corrected     — TLS session timeout reduced from broken 86400s in ConfigMap (any value < 86400s; strict bound in M6)
       3. buffer_corrected      — ssl_buffer_size ≤ 8k in ConfigMap (per-connection allocation budget)
       4. protocols_corrected   — Deprecated TLS protocols removed from both ConfigMap and live nginx worker
       5. live_cache_reloaded   — Bounded shared cache active in running nginx worker (restart proof; mirrors M1 bounds)
@@ -304,19 +304,29 @@ def grade(transcript: str = None) -> GradingResult:
             cache_corrected = False
 
         # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # TLS session lifetime must be reduced to a value that ensures multiple
-        # eviction cycles within the ~6-hour OOM window (≤ 20min / 1200s).
+        # The broken config sets ssl_session_timeout to 86400s (24h) — far too long.
+        # M2 checks only that the timeout has been reduced from the broken default
+        # (any value < 86400s). The strict ≤ 20min / 1200s bound is enforced in M6
+        # (live_timeout_reloaded) after rollout restart, so M2 and M6 can diverge
+        # independently: an agent who reduces timeout but not enough passes M2 but
+        # fails M6; an agent who never restarts fails M6 regardless of ConfigMap value.
+        BROKEN_TIMEOUT_S  = 86400  # original broken value — anything below this passes M2
         timeout_present   = False
-        timeout_bounded   = False
+        timeout_reduced   = False
         timeout_corrected = False
 
         try:
             for attempt in range(5):
                 cfg = get_configmap_conf()
-                timeout_present   = bool(re.search(
+                timeout_present = bool(re.search(
                     r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
-                timeout_bounded   = _timeout_ok(cfg)
-                timeout_corrected = timeout_present and timeout_bounded
+                m_t = re.search(r'ssl_session_timeout\s+(\S+)\s*;', cfg or "")
+                if m_t:
+                    try:
+                        timeout_reduced = _parse_nginx_time(m_t.group(1)) < BROKEN_TIMEOUT_S
+                    except (ValueError, TypeError):
+                        timeout_reduced = False
+                timeout_corrected = timeout_present and timeout_reduced
                 if timeout_corrected:
                     break
                 if attempt < 4:
@@ -399,10 +409,10 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Milestone 6: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
-        # timeout value loaded after rollout restart.
-        # Uses MAX_LIVE_TIMEOUT_S (1200s / 20m) — consistent with M2's ConfigMap
-        # bound — ensuring sessions expire well before the next OOM cycle and
-        # confirming the rollout restart propagated the new config correctly.
+        # timeout loaded after rollout restart, AND that it is within the strict
+        # ≤ 20min / 1200s bound. M2 only checks the value was reduced from 86400s;
+        # the strict bound is enforced HERE so M2 and M6 are independent:
+        # agents who reduce timeout but not enough pass M2 but fail M6.
         live_timeout_present  = False
         live_timeout_bounded  = False
         live_timeout_reloaded = False
@@ -502,7 +512,7 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Subscores ──────────────────────────────────────────────────────────
         #
         # 1) cache_corrected:       ConfigMap cache switched to shared zone + not builtin + keepalive (no size check — size graded in M5)
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200)
+        # 2) timeout_corrected:     ConfigMap timeout reduced from 86400s (any value < 86400s — strict ≤20min bound in M6)
         # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone)
         # 4) protocols_corrected:   No deprecated TLS protocols in ConfigMap AND live nginx
         # 5) live_cache_reloaded:   Live nginx cache within M1 bounds (restart proof; M1⟺M5 consistency)
@@ -536,7 +546,7 @@ def grade(transcript: str = None) -> GradingResult:
             f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
             # M2: timeout_corrected
             f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
-            f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
+            f"TimeoutReduced: {'✓' if timeout_reduced       else '✗'}",
             # M3: buffer_corrected
             f"BufferPresent: {'✓' if buffer_present         else '✗'}",
             f"BufferBounded: {'✓' if buffer_bounded         else '✗'}",
