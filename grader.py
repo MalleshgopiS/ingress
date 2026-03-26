@@ -265,7 +265,7 @@ def grade(transcript: str = None) -> GradingResult:
       4. live_cache_reloaded   — Live nginx has shared cache ≤ 8MB after rollout restart
       5. live_timeout_reloaded — Live nginx session timeout ≤ 1h (≤ 3600s) after rollout restart
       6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx
-      7. https_operational     — Ingress serves HTTPS traffic reliably; live buffer ≤ 8k confirmed
+      7. https_operational     — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
       8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines, technical content)
 
     Returns weighted score (8 × 1/8). All subscores are binary (0.0 or 1.0).
@@ -472,6 +472,7 @@ def grade(transcript: str = None) -> GradingResult:
         tls_handshake_ok  = False
         nginx_syntax_ok   = False
         live_buffer_ok    = False
+        https_cache_ok    = False
         https_operational = False
 
         try:
@@ -506,10 +507,15 @@ def grade(transcript: str = None) -> GradingResult:
                         f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
                     nginx_syntax_ok = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
-                    # Live buffer check — proves per-connection allocation was reduced
+                    # Live buffer check — proves per-connection allocation was reduced.
                     # Uses same MAX_BUFFER_BYTES threshold as M3 (ConfigMap check).
                     # Requires rollout restart to propagate — independent of M3.
                     live_buffer_ok = _buffer_size_ok(res_live.stdout or "")
+                    # Live cache bound check — a mis-sized cache (e.g. 10MB on a 300Mi
+                    # pod) means the service will OOM within hours regardless of whether
+                    # HTTPS currently responds. Re-uses the live_cache_bounded flag from
+                    # M4 by re-evaluating here against MAX_LIVE_CACHE_MB.
+                    https_cache_ok = _cache_ok(res_live.stdout or "", max_mb=MAX_LIVE_CACHE_MB)
                     # watchdog_stopped gate — HTTPS is only truly operational when the
                     # fix is persistent. An agent who patches nginx but leaves the
                     # watchdog running will have their config reverted within minutes,
@@ -517,7 +523,7 @@ def grade(transcript: str = None) -> GradingResult:
                     https_operational = (
                         watchdog_stopped and
                         https_responds and tls_handshake_ok and
-                        nginx_syntax_ok and live_buffer_ok
+                        nginx_syntax_ok and live_buffer_ok and https_cache_ok
                     )
         except Exception:
             https_operational = False
@@ -540,7 +546,7 @@ def grade(transcript: str = None) -> GradingResult:
         # 4) live_cache_reloaded:   Live nginx cache ≤ 8MB after restart (strict 8MB bound)
         # 5) live_timeout_reloaded: Live nginx timeout ≤ 1h (MAX_LIVE_TIMEOUT_S=3600)
         # 6) protocols_corrected:   Deprecated TLS protocols removed from ConfigMap AND live nginx
-        # 7) https_operational:     Ingress serves HTTPS reliably; live buffer ≤ 8k confirmed
+        # 7) https_operational:     Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
         # 8) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines, technical content)
 
         subscores: Dict[str, float] = {
@@ -588,6 +594,7 @@ def grade(transcript: str = None) -> GradingResult:
             f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
             f"NginxSyntax: {'✓' if nginx_syntax_ok          else '✗'}",
             f"LiveBufferOk: {'✓' if live_buffer_ok          else '✗'}",
+            f"HttpsCacheOk: {'✓' if https_cache_ok          else '✗'}",
             # Milestone 8 detail
             f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]

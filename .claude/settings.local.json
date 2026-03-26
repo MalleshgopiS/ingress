@@ -27,7 +27,9 @@
       "Bash(do 'f=C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(9\\)\\\\rollout$i.txt' echo '=== rollout$i ===' grep -h \"Score:\\\\|ssl_session_cache.*5m\\\\|ssl_session_timeout.*20m\\\\|nginx-ssl-defaults.*conservative\\\\|nginx-ssl-defaults.*appropriate\\\\|nginx-ssl-defaults.*values\\\\|copied.*nginx-ssl\\\\|use.*nginx-ssl\" $f)",
       "Bash(ls -la \"C:\\\\Users\\\\malle\\\\Downloads\\\\rollouts-05a05142 \\(24\\)\" \")",
       "Bash(ls -la \"/c/Users/malle/Downloads/rollouts-05a05142 \\(24\\)/\")",
-      "Bash(grep -n \"final_score\\\\|Score:\" /Users/malle/Downloads/'rollouts-05a05142 \\(26\\)'/rollout*.txt)"
+      "Bash(grep -n \"final_score\\\\|Score:\" /Users/malle/Downloads/'rollouts-05a05142 \\(26\\)'/rollout*.txt)",
+      "Bash(wc -l \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout0.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout1.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout2.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout3.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout4.txt\")",
+      "Bash(wc -l \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout5.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout6.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout7.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout8.txt\" \"/c/Users/malle/Downloads/rollouts-05a05142 \\(32\\)/rollout9.txt\")"
     ]
   }
 }
