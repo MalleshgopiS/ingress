@@ -259,16 +259,13 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. watchdog_stopped      — ingress-config-watchdog CronJob deleted or suspended (makes ConfigMap fixes persistent)
-      2. timeout_corrected     — ConfigMap session timeout ≤ 1h (≤ 3600s); requires watchdog stopped to persist
-      3. buffer_corrected      — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped to persist
-      4. live_cache_reloaded   — Live nginx has shared cache ≤ 8MB after rollout restart
-      5. live_timeout_reloaded — Live nginx session timeout ≤ 1h (≤ 3600s) after rollout restart
-      6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx
-      7. https_operational     — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
-      8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines, technical content)
+      1. basic_remediation  — watchdog stopped + timeout corrected + live timeout propagated
+                              + deprecated protocols removed + postmortem written
+      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped
+      3. live_cache_reloaded — Live nginx has shared cache ≤ 8MB after rollout restart
+      4. https_operational  — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
 
-    Returns weighted score (8 × 1/8). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
@@ -540,24 +537,27 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) watchdog_stopped:      CronJob deleted or suspended — makes ConfigMap fixes persistent
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 1h (MAX_TIMEOUT_S=3600) — passes only when watchdog stopped
-        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap — passes only when watchdog stopped
-        # 4) live_cache_reloaded:   Live nginx cache ≤ 8MB after restart (strict 8MB bound)
-        # 5) live_timeout_reloaded: Live nginx timeout ≤ 1h (MAX_LIVE_TIMEOUT_S=3600)
-        # 6) protocols_corrected:   Deprecated TLS protocols removed from ConfigMap AND live nginx
-        # 7) https_operational:     Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
-        # 8) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines, technical content)
+        # The five consistently-passing milestones (watchdog, timeout, live timeout,
+        # protocols, postmortem) are combined into one basic_remediation subscore.
+        # This avoids dead weight from zero-variance subscores and gives the three
+        # differentiating milestones (buffer, live cache, https) appropriate weight.
+        #
+        # 1) basic_remediation:  watchdog stopped + timeout ≤ 1h + live timeout propagated
+        #                        + deprecated protocols removed + postmortem written
+        # 2) buffer_corrected:   ssl_buffer_size ≤ 8k in ConfigMap (watchdog-gated)
+        # 3) live_cache_reloaded: Live nginx cache ≤ 8MB after rollout restart
+        # 4) https_operational:  Ingress serves HTTPS; live buffer ≤ 8k AND live cache ≤ 8MB
+
+        basic_remediation = (
+            watchdog_stopped and timeout_corrected and live_timeout_reloaded and
+            protocols_corrected and postmortem_complete
+        )
 
         subscores: Dict[str, float] = {
-            "watchdog_stopped":      1.0 if watchdog_stopped      else 0.0,
-            "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
-            "buffer_corrected":      1.0 if buffer_corrected      else 0.0,
-            "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
-            "live_timeout_reloaded": 1.0 if live_timeout_reloaded else 0.0,
-            "protocols_corrected":   1.0 if protocols_corrected   else 0.0,
-            "https_operational":     1.0 if https_operational     else 0.0,
-            "postmortem_complete":   1.0 if postmortem_complete   else 0.0,
+            "basic_remediation":   1.0 if basic_remediation   else 0.0,
+            "buffer_corrected":    1.0 if buffer_corrected     else 0.0,
+            "live_cache_reloaded": 1.0 if live_cache_reloaded  else 0.0,
+            "https_operational":   1.0 if https_operational    else 0.0,
         }
 
         weight_val   = 1.0 / len(subscores)
@@ -569,34 +569,30 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # Milestone 1 detail (watchdog)
-            f"WatchdogStopped: {'✓' if watchdog_stopped     else '✗'}",
-            # Milestone 2 detail
-            f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
-            f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
-            # Milestone 3 detail (buffer — standalone)
-            f"BufferPresent: {'✓' if buffer_present         else '✗'}",
-            f"BufferBounded: {'✓' if buffer_bounded         else '✗'}",
-            # Milestone 4 detail (live cache — strict 8MB bound)
-            f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
-            f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
-            f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
-            f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
-            # Milestone 5 detail
+            # basic_remediation component detail
+            f"WatchdogStopped: {'✓' if watchdog_stopped       else '✗'}",
+            f"TimeoutPresent: {'✓' if timeout_present         else '✗'}",
+            f"TimeoutBounded: {'✓' if timeout_bounded         else '✗'}",
             f"LiveTimeoutPresent: {'✓' if live_timeout_present else '✗'}",
             f"LiveTimeoutBounded: {'✓' if live_timeout_bounded else '✗'}",
-            # Milestone 6 detail (protocols — standalone)
-            f"ProtoCmSecure: {'✓' if proto_cm_secure        else '✗'}",
-            f"ProtoLiveSecure: {'✓' if proto_live_secure    else '✗'}",
-            # Milestone 7 detail
-            f"HttpsGate: {'✓' if https_gate_ok              else '✗'}",
-            f"HttpsResponds: {'✓' if https_responds         else '✗'}",
-            f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
-            f"NginxSyntax: {'✓' if nginx_syntax_ok          else '✗'}",
-            f"LiveBufferOk: {'✓' if live_buffer_ok          else '✗'}",
-            f"HttpsCacheOk: {'✓' if https_cache_ok          else '✗'}",
-            # Milestone 8 detail
-            f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
+            f"ProtoCmSecure: {'✓' if proto_cm_secure          else '✗'}",
+            f"ProtoLiveSecure: {'✓' if proto_live_secure      else '✗'}",
+            f"PostmortemComplete: {'✓' if postmortem_complete  else '✗'}",
+            # buffer_corrected detail
+            f"BufferPresent: {'✓' if buffer_present           else '✗'}",
+            f"BufferBounded: {'✓' if buffer_bounded           else '✗'}",
+            # live_cache_reloaded detail
+            f"LiveCacheShared: {'✓' if live_cache_shared      else '✗'}",
+            f"LiveCacheBounded: {'✓' if live_cache_bounded    else '✗'}",
+            f"LiveNotBuiltin: {'✓' if live_not_builtin        else '✗'}",
+            f"LiveSyntaxOk: {'✓' if live_syntax_ok            else '✗'}",
+            # https_operational detail
+            f"HttpsGate: {'✓' if https_gate_ok                else '✗'}",
+            f"HttpsResponds: {'✓' if https_responds           else '✗'}",
+            f"TlsHandshake: {'✓' if tls_handshake_ok          else '✗'}",
+            f"NginxSyntax: {'✓' if nginx_syntax_ok            else '✗'}",
+            f"LiveBufferOk: {'✓' if live_buffer_ok            else '✗'}",
+            f"HttpsCacheOk: {'✓' if https_cache_ok            else '✗'}",
         ]
 
         return GradingResult(
