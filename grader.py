@@ -10,11 +10,11 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB      = 1.0    # ssl_session_cache shared zone lower bound (MB) — accepts conservative 2m choices
-MAX_CACHE_MB      = 8.0    # ssl_session_cache ConfigMap upper bound (MB) — strict check; conservative for 300Mi instance
-MAX_LIVE_CACHE_MB = 12.0   # ssl_session_cache live upper bound (MB) — permissive; accepts standard 10m recommendation after restart
-MAX_TIMEOUT_S      = 1200   # ssl_session_timeout ConfigMap upper bound — 20min maximum to ensure multiple eviction cycles within the OOM window
-MAX_LIVE_TIMEOUT_S = 1200   # ssl_session_timeout live upper bound — must match ConfigMap bound (restart propagation check)
+MIN_CACHE_MB       = 1.0    # ssl_session_cache shared zone lower bound (MB)
+MAX_CACHE_MB       = 8.0    # ssl_session_cache ConfigMap upper bound (MB) — strict 8MB
+MAX_LIVE_CACHE_MB  = 8.0    # ssl_session_cache live upper bound (MB) — strict 8MB; agents using standard 10m (10MB) fail this
+MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum; accepts common 1h choice
+MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h; consistent with ConfigMap bound
 MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
 
 
@@ -59,7 +59,7 @@ def _parse_cache_mb(val: str) -> float:
 def _cache_ok(text: str, max_mb: float = None) -> bool:
     """ssl_session_cache must be a shared zone within the accepted size range.
     max_mb defaults to MAX_CACHE_MB (strict ConfigMap check); pass MAX_LIVE_CACHE_MB
-    for the permissive live check that accepts the standard 10m recommendation."""
+    for the live check (also strict 8MB — agents using standard 10m (10MB) fail)."""
     if max_mb is None:
         max_mb = MAX_CACHE_MB
     m = re.search(r'ssl_session_cache\s+(shared:\w+:\S+)\s*;', text or "", re.IGNORECASE)
@@ -152,7 +152,7 @@ def _postmortem_exists() -> bool:
     lines = int(parts[0]) if parts else 0
     if lines < 10:
         return False
-    # Must reference at least 3 lines with relevant technical terms — not gameable with filler
+    # Must have at least 5 lines with relevant technical terms — not gameable with keyword soup
     res2 = run_cmd(
         "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol' "
         "/workdir/postmortem.md"
@@ -161,7 +161,7 @@ def _postmortem_exists() -> bool:
         relevant = int(res2.stdout.strip())
     except (ValueError, TypeError):
         return False
-    return relevant >= 3
+    return relevant >= 5
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -260,10 +260,10 @@ def grade(transcript: str = None) -> GradingResult:
 
     Milestones verified:
       1. watchdog_stopped      — ingress-config-watchdog CronJob deleted or suspended (makes ConfigMap fixes persistent)
-      2. timeout_corrected     — ConfigMap session timeout ≤ 20min (≤ 1200s); requires watchdog stopped to persist
+      2. timeout_corrected     — ConfigMap session timeout ≤ 1h (≤ 3600s); requires watchdog stopped to persist
       3. buffer_corrected      — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped to persist
-      4. live_cache_reloaded   — Live nginx has shared cache ≤ 12MB after rollout restart
-      5. live_timeout_reloaded — Live nginx session timeout ≤ 20min after rollout restart
+      4. live_cache_reloaded   — Live nginx has shared cache ≤ 8MB after rollout restart
+      5. live_timeout_reloaded — Live nginx session timeout ≤ 1h (≤ 3600s) after rollout restart
       6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx
       7. https_operational     — Ingress serves HTTPS traffic reliably; live buffer ≤ 8k confirmed
       8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines, technical content)
@@ -282,20 +282,39 @@ def grade(transcript: str = None) -> GradingResult:
                 ),
             )
 
+        # ── Milestone 1: watchdog_stopped ─────────────────────────────────────
+        # Computed FIRST — all ConfigMap-based milestones (M2, M3, M6) are gated
+        # on this result to prevent race conditions with the watchdog CronJob.
+        # The CronJob runs every 3 min; the grader's ConfigMap retry window is only
+        # 25s (5 × 5s), so the watchdog can fire mid-grading and flip ConfigMap
+        # checks from pass to fail non-deterministically. Gating on watchdog_stopped
+        # eliminates this: if the watchdog is still running, ConfigMap state is
+        # inherently unreliable and ConfigMap-based milestones correctly fail.
+        watchdog_stopped = False
+
+        try:
+            watchdog_stopped = _watchdog_stopped()
+        except Exception:
+            watchdog_stopped = False
+
         # ── Pre-compute: TLS protocol security (used by standalone protocols_corrected milestone) ──
-        # Computed once here; used exclusively in the protocols_corrected milestone (M6).
-        # No longer bundled into cache milestones — protocol security is graded independently.
+        # Computed after watchdog_stopped — proto_cm_secure is gated on watchdog_stopped
+        # to prevent race conditions (watchdog can revert ConfigMap mid-grading).
+        # If watchdog is still running, proto_cm_secure = False (CM is unreliable).
         proto_cm_secure   = False
         proto_live_secure = False
 
         try:
-            for attempt in range(5):
-                _cfg_p = get_configmap_conf()
-                proto_cm_secure = _protocols_secure(_cfg_p)
-                if proto_cm_secure:
-                    break
-                if attempt < 4:
-                    time.sleep(5)
+            if watchdog_stopped:
+                # ConfigMap is stable — safe to check protocol state there
+                for attempt in range(5):
+                    _cfg_p = get_configmap_conf()
+                    proto_cm_secure = _protocols_secure(_cfg_p)
+                    if proto_cm_secure:
+                        break
+                    if attempt < 4:
+                        time.sleep(5)
+            # Always check live nginx regardless of watchdog state
             _pod_p = wait_for_pod()
             if _pod_p:
                 for attempt in range(3):
@@ -309,62 +328,55 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             pass
 
-        # ── Milestone 1: watchdog_stopped ─────────────────────────────────────
-        # The ingress-config-watchdog CronJob actively re-applies the broken nginx
-        # ConfigMap every 3 minutes, simulating configuration drift. Any agent who
-        # only patches the ConfigMap without stopping this watchdog will have their
-        # changes reverted — making all ConfigMap-based milestones (M2, M3, M6)
-        # unreliable until the watchdog is stopped.
-        # The agent must delete or suspend the CronJob to make their fix persistent.
-        watchdog_stopped = False
-
-        try:
-            watchdog_stopped = _watchdog_stopped()
-        except Exception:
-            watchdog_stopped = False
-
         # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # TLS session lifetime must be reduced to a value that ensures multiple
-        # eviction cycles within the ~6-hour OOM window (≤ 20min / 1200s).
+        # TLS session lifetime must be reduced (≤ MAX_TIMEOUT_S = 3600s / 1h).
+        # Gated on watchdog_stopped — the watchdog reverts the ConfigMap every 3
+        # minutes, which is shorter than the grader's 25s retry window. Without the
+        # gate, a watchdog firing mid-grading would non-deterministically fail this
+        # milestone even when the agent applied a valid value.
         timeout_present   = False
         timeout_bounded   = False
         timeout_corrected = False
 
         try:
-            for attempt in range(5):
-                cfg = get_configmap_conf()
-                timeout_present   = bool(re.search(
-                    r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
-                timeout_bounded   = _timeout_ok(cfg)
-                timeout_corrected = timeout_present and timeout_bounded
-                if timeout_corrected:
-                    break
-                if attempt < 4:
-                    time.sleep(5)
+            if watchdog_stopped:
+                # ConfigMap is stable — safe to read and evaluate
+                for attempt in range(5):
+                    cfg = get_configmap_conf()
+                    timeout_present   = bool(re.search(
+                        r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
+                    timeout_bounded   = _timeout_ok(cfg)
+                    timeout_corrected = timeout_present and timeout_bounded
+                    if timeout_corrected:
+                        break
+                    if attempt < 4:
+                        time.sleep(5)
+            # If watchdog is still running, ConfigMap is unreliable; timeout_corrected stays False
         except Exception:
             timeout_corrected = False
 
         # ── Milestone 3: buffer_corrected ─────────────────────────────────────
         # ssl_buffer_size controls the per-connection TLS record buffer. The broken
-        # config sets it to 64k — appropriate for larger instances but excessive for
-        # this 300Mi pod. Under high TLS concurrency the per-connection allocation
-        # compounds directly into worker RSS. Agents should read the deployment
-        # memory-profile annotation which documents this growth pattern and derive
-        # a conservative buffer size appropriate for the instance memory limit.
+        # config sets it to 64k — excessive for this 300Mi pod. Under high TLS
+        # concurrency the per-connection allocation compounds directly into worker RSS.
+        # Gated on watchdog_stopped for the same race condition reason as M2.
         buffer_present   = False
         buffer_bounded   = False
         buffer_corrected = False
 
         try:
-            for attempt in range(5):
-                cfg = get_configmap_conf()
-                buffer_present   = bool(re.search(r'ssl_buffer_size\s+\S+\s*;', cfg or ""))
-                buffer_bounded   = _buffer_size_ok(cfg)
-                buffer_corrected = buffer_present and buffer_bounded
-                if buffer_corrected:
-                    break
-                if attempt < 4:
-                    time.sleep(5)
+            if watchdog_stopped:
+                # ConfigMap is stable — safe to read and evaluate
+                for attempt in range(5):
+                    cfg = get_configmap_conf()
+                    buffer_present   = bool(re.search(r'ssl_buffer_size\s+\S+\s*;', cfg or ""))
+                    buffer_bounded   = _buffer_size_ok(cfg)
+                    buffer_corrected = buffer_present and buffer_bounded
+                    if buffer_corrected:
+                        break
+                    if attempt < 4:
+                        time.sleep(5)
+            # If watchdog is still running, ConfigMap is unreliable; buffer_corrected stays False
         except Exception:
             buffer_corrected = False
 
@@ -372,10 +384,9 @@ def grade(transcript: str = None) -> GradingResult:
         # ConfigMap changes do not auto-propagate to a running nginx process when
         # the volume uses subPath. A rollout restart is required.
         # Verifies via nginx -T that the running worker has a shared cache zone
-        # within the PERMISSIVE live bounds (≤ MAX_LIVE_CACHE_MB=12MB — accepts
-        # the standard 10m recommendation), proving restart happened and new config
-        # was loaded. Uses a wider bound than M1 (8MB strict) so M1 and M4 are
-        # independently passable: agents using 10m fail M1 but pass M4 after restart.
+        # within the strict live bounds (≤ MAX_LIVE_CACHE_MB=8MB). The deployment
+        # annotation guidance says 5–8MB range; agents who pick the common generic
+        # "10m" recommendation (10MB) fail this check, creating genuine variance.
         # Protocol security is graded independently in M6 — not bundled here.
         # Buffer sizing is graded independently in M3 — not bundled here.
         live_cache_shared   = False
@@ -413,9 +424,9 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Milestone 5: live_timeout_reloaded ────────────────────────────────
         # Verifies via nginx -T that the running worker has the corrected session
         # timeout value loaded after rollout restart.
-        # Uses MAX_LIVE_TIMEOUT_S (1200s / 20m) — consistent with M2's ConfigMap
-        # bound — ensuring sessions expire well before the next OOM cycle and
-        # confirming the rollout restart propagated the new config correctly.
+        # Uses MAX_LIVE_TIMEOUT_S (3600s / 1h) — consistent with M2's ConfigMap
+        # bound — ensuring sessions expire well within the observed ~6-hour OOM
+        # window and confirming the rollout restart propagated the new config.
         live_timeout_present  = False
         live_timeout_bounded  = False
         live_timeout_reloaded = False
@@ -524,10 +535,10 @@ def grade(transcript: str = None) -> GradingResult:
         # ── Subscores ──────────────────────────────────────────────────────────
         #
         # 1) watchdog_stopped:      CronJob deleted or suspended — makes ConfigMap fixes persistent
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200) — passes only when watchdog stopped
+        # 2) timeout_corrected:     ConfigMap timeout ≤ 1h (MAX_TIMEOUT_S=3600) — passes only when watchdog stopped
         # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap — passes only when watchdog stopped
-        # 4) live_cache_reloaded:   Live nginx cache ≤ 12MB after restart (permissive)
-        # 5) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200)
+        # 4) live_cache_reloaded:   Live nginx cache ≤ 8MB after restart (strict 8MB bound)
+        # 5) live_timeout_reloaded: Live nginx timeout ≤ 1h (MAX_LIVE_TIMEOUT_S=3600)
         # 6) protocols_corrected:   Deprecated TLS protocols removed from ConfigMap AND live nginx
         # 7) https_operational:     Ingress serves HTTPS reliably; live buffer ≤ 8k confirmed
         # 8) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines, technical content)
@@ -560,7 +571,7 @@ def grade(transcript: str = None) -> GradingResult:
             # Milestone 3 detail (buffer — standalone)
             f"BufferPresent: {'✓' if buffer_present         else '✗'}",
             f"BufferBounded: {'✓' if buffer_bounded         else '✗'}",
-            # Milestone 4 detail (live cache — permissive 12MB bound, no protocols)
+            # Milestone 4 detail (live cache — strict 8MB bound)
             f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
             f"LiveCacheBounded: {'✓' if live_cache_bounded  else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",

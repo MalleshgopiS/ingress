@@ -12,13 +12,15 @@ prompt: |
   - HTTPS traffic is intermittently unavailable during restarts
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
-  - The team has been unable to maintain a stable configuration — applied fixes have not persisted across operational shifts
+  - The team has been unable to maintain a stable configuration — changes made to the nginx ConfigMap have been observed to revert automatically within minutes
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 
   The active nginx configuration is managed via the ingress-nginx-config ConfigMap in the ingress-system namespace.
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
+
+  Inspect the deployment resource annotations — they contain platform-specific guidance on TLS parameter bounds, memory profile data, and historical incident context relevant to this instance class.
 
   For this instance class, a shared TLS session cache is appropriate for the workload profile.
 
