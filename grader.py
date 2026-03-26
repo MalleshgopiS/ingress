@@ -112,6 +112,23 @@ def _protocols_secure(text: str) -> bool:
     return 'sslv3' not in protocols and not re.search(r'\btlsv1\b(?!\.)', protocols)
 
 
+def _watchdog_stopped() -> bool:
+    """The ingress-config-watchdog CronJob must be deleted or suspended.
+    The watchdog restores the broken ConfigMap every 3 minutes — agents who only
+    patch the ConfigMap without stopping this watchdog will have their changes
+    reverted before grading. Passes if the CronJob has been deleted (not found)
+    or suspended (spec.suspend == true)."""
+    res = run_cmd(
+        f"kubectl get cronjob ingress-config-watchdog -n {NS} "
+        f"-o jsonpath='{{.spec.suspend}}' 2>/dev/null"
+    )
+    if res.returncode != 0:
+        # CronJob does not exist — agent deleted it ✓
+        return True
+    # CronJob exists — check if agent suspended it
+    return res.stdout.strip().lower() == "true"
+
+
 def _postmortem_exists() -> bool:
     """Agent must create /workdir/postmortem.md with ≥10 lines and relevant technical content."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
@@ -228,14 +245,14 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. cache_corrected       — ConfigMap cache is a bounded shared zone ≤ 8MB (protocols graded separately in M6)
-      2. timeout_corrected     — ConfigMap session timeout ≤ 20min (≤ 1200s)
-      3. buffer_corrected      — ConfigMap ssl_buffer_size ≤ 8k per-connection
-      4. live_cache_reloaded   — Live nginx has shared cache ≤ 12MB after rollout restart (permissive; independent of M1)
+      1. watchdog_stopped      — ingress-config-watchdog CronJob deleted or suspended (makes ConfigMap fixes persistent)
+      2. timeout_corrected     — ConfigMap session timeout ≤ 20min (≤ 1200s); requires watchdog stopped to persist
+      3. buffer_corrected      — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped to persist
+      4. live_cache_reloaded   — Live nginx has shared cache ≤ 12MB after rollout restart
       5. live_timeout_reloaded — Live nginx session timeout ≤ 20min after rollout restart
-      6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx (standalone milestone)
-      7. https_operational     — Ingress serves HTTPS traffic reliably after all fixes
-      8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines)
+      6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx
+      7. https_operational     — Ingress serves HTTPS traffic reliably; live buffer ≤ 8k confirmed
+      8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines, technical content)
 
     Returns weighted score (8 × 1/8). All subscores are binary (0.0 or 1.0).
     """
@@ -278,36 +295,19 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             pass
 
-        # ── Milestone 1: cache_corrected ───────────────────────────────────────
-        # The TLS session cache must be replaced with a bounded shared zone in the
-        # ConfigMap (≤ MAX_CACHE_MB=8MB strict check). Protocol security is graded
-        # independently in protocols_corrected (M6) and must NOT be bundled here.
-        # Buffer sizing is graded independently in M3 and must NOT be bundled here.
-        # Also verifies existing config structure was not destroyed (keepalive intact).
-        cache_is_shared  = False
-        cache_bounded    = False
-        builtin_removed  = False
-        keepalive_intact = False
-        cache_corrected  = False
+        # ── Milestone 1: watchdog_stopped ─────────────────────────────────────
+        # The ingress-config-watchdog CronJob actively re-applies the broken nginx
+        # ConfigMap every 3 minutes, simulating configuration drift. Any agent who
+        # only patches the ConfigMap without stopping this watchdog will have their
+        # changes reverted — making all ConfigMap-based milestones (M2, M3, M6)
+        # unreliable until the watchdog is stopped.
+        # The agent must delete or suspend the CronJob to make their fix persistent.
+        watchdog_stopped = False
 
         try:
-            for attempt in range(5):
-                cfg = get_configmap_conf()
-                cache_is_shared  = bool(re.search(
-                    r'ssl_session_cache\s+shared:\w+:', cfg or "", re.IGNORECASE))
-                cache_bounded    = _cache_ok(cfg)
-                builtin_removed  = _not_builtin(cfg)
-                keepalive_intact = bool(re.search(r'keepalive_timeout\s+\d+', cfg or ""))
-                cache_corrected  = (
-                    cache_is_shared and cache_bounded and
-                    builtin_removed and keepalive_intact
-                )
-                if cache_corrected:
-                    break
-                if attempt < 4:
-                    time.sleep(5)
+            watchdog_stopped = _watchdog_stopped()
         except Exception:
-            cache_corrected = False
+            watchdog_stopped = False
 
         # ── Milestone 2: timeout_corrected ────────────────────────────────────
         # TLS session lifetime must be reduced to a value that ensures multiple
@@ -446,6 +446,7 @@ def grade(transcript: str = None) -> GradingResult:
         https_responds    = False
         tls_handshake_ok  = False
         nginx_syntax_ok   = False
+        live_buffer_ok    = False
         https_operational = False
 
         try:
@@ -503,17 +504,17 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # 1) cache_corrected:       ConfigMap cache is bounded shared zone ≤ 8MB (NO protocols — graded in M6)
-        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200)
-        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap (standalone)
-        # 4) live_cache_reloaded:   Live nginx cache ≤ 12MB after restart (permissive — independent of M1's 8MB strict bound)
+        # 1) watchdog_stopped:      CronJob deleted or suspended — makes ConfigMap fixes persistent
+        # 2) timeout_corrected:     ConfigMap timeout ≤ 20min (MAX_TIMEOUT_S=1200) — passes only when watchdog stopped
+        # 3) buffer_corrected:      ssl_buffer_size ≤ 8k in ConfigMap — passes only when watchdog stopped
+        # 4) live_cache_reloaded:   Live nginx cache ≤ 12MB after restart (permissive)
         # 5) live_timeout_reloaded: Live nginx timeout ≤ 20min (MAX_LIVE_TIMEOUT_S=1200)
-        # 6) protocols_corrected:   Deprecated TLS protocols removed from ConfigMap AND live nginx (standalone milestone)
-        # 7) https_operational:     Ingress serves HTTPS reliably after all fixes
-        # 8) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines)
+        # 6) protocols_corrected:   Deprecated TLS protocols removed from ConfigMap AND live nginx
+        # 7) https_operational:     Ingress serves HTTPS reliably; live buffer ≤ 8k confirmed
+        # 8) postmortem_complete:   Agent created /workdir/postmortem.md (≥10 lines, technical content)
 
         subscores: Dict[str, float] = {
-            "cache_corrected":       1.0 if cache_corrected       else 0.0,
+            "watchdog_stopped":      1.0 if watchdog_stopped      else 0.0,
             "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
             "buffer_corrected":      1.0 if buffer_corrected      else 0.0,
             "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
@@ -532,11 +533,8 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # Milestone 1 detail (cache only — no protocols)
-            f"CacheIsSharedZone: {'✓' if cache_is_shared   else '✗'}",
-            f"CacheSizeBounded: {'✓' if cache_bounded       else '✗'}",
-            f"BuiltinRemoved: {'✓' if builtin_removed       else '✗'}",
-            f"KeepaliveIntact: {'✓' if keepalive_intact     else '✗'}",
+            # Milestone 1 detail (watchdog)
+            f"WatchdogStopped: {'✓' if watchdog_stopped     else '✗'}",
             # Milestone 2 detail
             f"TimeoutPresent: {'✓' if timeout_present       else '✗'}",
             f"TimeoutBounded: {'✓' if timeout_bounded       else '✗'}",
