@@ -22,6 +22,8 @@ prompt: |
 
   Inspect the deployment resource annotations — they contain memory profile data and historical incident context relevant to this instance class.
 
+  Review the traffic-profile annotation for context on what cache configuration is appropriate for this workload.
+
   The memory growth pattern suggests both session accumulation and per-connection allocation contribute — investigate all relevant TLS parameters in the ConfigMap.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
