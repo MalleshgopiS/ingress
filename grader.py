@@ -113,11 +113,13 @@ def _protocols_secure(text: str) -> bool:
 
 
 def _watchdog_stopped() -> bool:
-    """The ingress-config-watchdog CronJob must be deleted or suspended.
-    The watchdog restores the broken ConfigMap every 3 minutes — agents who only
-    patch the ConfigMap without stopping this watchdog will have their changes
-    reverted before grading. Passes if the CronJob has been deleted (not found)
-    or suspended (spec.suspend == true)."""
+    """The ingress-config-watchdog CronJob must be stopped or rendered harmless.
+    Accepts three valid remediation approaches:
+      1. CronJob deleted (kubectl get returns non-zero)
+      2. CronJob suspended (spec.suspend == true)
+      3. Source ConfigMap (ingress-config-broken) patched so the watchdog no longer
+         re-applies a broken config — agent fixed the drift source rather than the
+         mechanism, which is equally valid."""
     res = run_cmd(
         f"kubectl get cronjob ingress-config-watchdog -n {NS} "
         f"-o jsonpath='{{.spec.suspend}}' 2>/dev/null"
@@ -125,8 +127,20 @@ def _watchdog_stopped() -> bool:
     if res.returncode != 0:
         # CronJob does not exist — agent deleted it ✓
         return True
-    # CronJob exists — check if agent suspended it
-    return res.stdout.strip().lower() == "true"
+    if res.stdout.strip().lower() == "true":
+        # CronJob suspended ✓
+        return True
+    # CronJob still running — check if agent patched the source ConfigMap
+    # (ingress-config-broken). If that no longer contains 'builtin', the watchdog
+    # is harmless because it now restores the correct config.
+    res_src = run_cmd(
+        f"kubectl get configmap ingress-config-broken -n {NS} "
+        f"-o jsonpath='{{.data.nginx\\.conf}}' 2>/dev/null"
+    )
+    if res_src.returncode == 0 and res_src.stdout.strip():
+        if not re.search(r'ssl_session_cache\s+builtin', res_src.stdout, re.IGNORECASE):
+            return True  # Source no longer broken — watchdog effectively neutralised ✓
+    return False
 
 
 def _postmortem_exists() -> bool:
@@ -485,7 +499,12 @@ def grade(transcript: str = None) -> GradingResult:
                     # Uses same MAX_BUFFER_BYTES threshold as M3 (ConfigMap check).
                     # Requires rollout restart to propagate — independent of M3.
                     live_buffer_ok = _buffer_size_ok(res_live.stdout or "")
+                    # watchdog_stopped gate — HTTPS is only truly operational when the
+                    # fix is persistent. An agent who patches nginx but leaves the
+                    # watchdog running will have their config reverted within minutes,
+                    # so this cannot be considered a stable operational state.
                     https_operational = (
+                        watchdog_stopped and
                         https_responds and tls_handshake_ok and
                         nginx_syntax_ok and live_buffer_ok
                     )

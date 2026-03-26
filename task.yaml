@@ -12,7 +12,7 @@ prompt: |
   - HTTPS traffic is intermittently unavailable during restarts
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
-  - Previous remediation attempts have not held — the configuration has been observed to revert to the broken state after changes are applied
+  - The team has been unable to maintain a stable configuration — applied fixes have not persisted across operational shifts
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 
