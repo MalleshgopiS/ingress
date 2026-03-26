@@ -20,13 +20,13 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  Inspect the cluster resources for any relevant operational context.
+  Inspect the deployment resource annotations — they contain memory profile data and historical incident context relevant to this instance class.
 
-  Review the traffic-profile annotation for context on what cache configuration is appropriate for this workload.
+  For this instance class, a shared TLS session cache is appropriate for the workload profile.
 
-  The memory growth pattern suggests per-connection allocation and cache configuration contribute — investigate all relevant TLS parameters in the ConfigMap.
+  The memory growth pattern suggests both session accumulation and per-connection allocation contribute — investigate all relevant TLS parameters in the ConfigMap.
 
-  Ensure the TLS configuration meets current security requirements.
+  Ensure the TLS configuration does not use deprecated protocol versions.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
