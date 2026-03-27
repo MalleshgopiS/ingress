@@ -11,11 +11,11 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB       = 1.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB       = 10.0   # ssl_session_cache ConfigMap upper bound (MB) — accepts standard 10m recommendation
-MAX_LIVE_CACHE_MB  = 10.0   # ssl_session_cache live upper bound (MB) — accepts standard 10m recommendation
-MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum; accepts common 1h choice
-MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h; consistent with ConfigMap bound
-MAX_BUFFER_BYTES   = 16384  # ssl_buffer_size per-connection allocation upper bound — 16k; accepts nginx default; rejects broken 64k
+MAX_CACHE_MB       = 8.0    # ssl_session_cache ConfigMap upper bound (MB)
+MAX_LIVE_CACHE_MB  = 8.0    # ssl_session_cache live upper bound (MB)
+MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum
+MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h
+MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -258,15 +258,14 @@ def grade(transcript: str = None) -> GradingResult:
     """
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
-    Subscores (5 × 1/5 weight each):
-      1. basic_remediation  — watchdog stopped + buffer ≤ 16k in ConfigMap + deprecated
-                              protocols removed + postmortem written (zero-variance checks combined)
-      2. timeout_corrected  — ConfigMap session timeout ≤ 1h (≤ 3600s); requires watchdog stopped
-      3. live_cache_reloaded — Live nginx shared cache ≤ 10MB after rollout restart
-      4. live_timeout_reloaded — Live nginx session timeout ≤ 1h after rollout restart
-      5. https_operational  — Ingress serves HTTPS reliably; live buffer ≤ 16k AND live cache ≤ 10MB
+    Subscores (4 × 1/4 weight each):
+      1. basic_remediation  — watchdog stopped + timeout ≤ 1h + live timeout propagated +
+                              deprecated protocols removed + postmortem written
+      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k; requires watchdog stopped
+      3. live_cache_reloaded — Live nginx shared cache ≤ 8MB after rollout restart
+      4. https_operational  — Ingress serves HTTPS; live buffer ≤ 8k AND live cache ≤ 8MB
 
-    Returns weighted score (5 × 1/5). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
@@ -538,27 +537,25 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # The four zero-variance checks (watchdog, buffer, protocols, postmortem)
-        # are combined into one basic_remediation subscore to avoid dead-weight
-        # subscores and give the three differentiating checks appropriate weight.
+        # Zero-variance milestones (watchdog, timeout, live_timeout, protocols,
+        # postmortem) are combined into basic_remediation to avoid dead weight
+        # and give the differentiating milestones appropriate score weight.
         #
-        # 1) basic_remediation:    watchdog stopped + buffer ≤ 16k + protocols fixed + postmortem written
-        # 2) timeout_corrected:    ConfigMap timeout ≤ 1h (MAX_TIMEOUT_S=3600) — gated on watchdog stopped
-        # 3) live_cache_reloaded:  Live nginx shared cache ≤ 10MB after rollout restart
-        # 4) live_timeout_reloaded: Live nginx timeout ≤ 1h after rollout restart
-        # 5) https_operational:    Ingress serves HTTPS; live buffer ≤ 16k AND live cache ≤ 10MB
+        # 1) basic_remediation:  watchdog + timeout ≤ 1h + live timeout + protocols + postmortem
+        # 2) buffer_corrected:   ssl_buffer_size ≤ 8k in ConfigMap (agent must find from annotations)
+        # 3) live_cache_reloaded: Live nginx shared cache ≤ 8MB (agent must find from annotations)
+        # 4) https_operational:  HTTPS works; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
 
         basic_remediation = (
-            watchdog_stopped and buffer_corrected and
+            watchdog_stopped and timeout_corrected and live_timeout_reloaded and
             protocols_corrected and postmortem_complete
         )
 
         subscores: Dict[str, float] = {
-            "basic_remediation":     1.0 if basic_remediation     else 0.0,
-            "timeout_corrected":     1.0 if timeout_corrected     else 0.0,
-            "live_cache_reloaded":   1.0 if live_cache_reloaded   else 0.0,
-            "live_timeout_reloaded": 1.0 if live_timeout_reloaded else 0.0,
-            "https_operational":     1.0 if https_operational     else 0.0,
+            "basic_remediation":   1.0 if basic_remediation   else 0.0,
+            "buffer_corrected":    1.0 if buffer_corrected     else 0.0,
+            "live_cache_reloaded": 1.0 if live_cache_reloaded  else 0.0,
+            "https_operational":   1.0 if https_operational    else 0.0,
         }
 
         weight_val   = 1.0 / len(subscores)
@@ -570,31 +567,30 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # basic_remediation component detail
-            f"WatchdogStopped: {'✓' if watchdog_stopped       else '✗'}",
-            f"BufferPresent: {'✓' if buffer_present           else '✗'}",
-            f"BufferBounded: {'✓' if buffer_bounded           else '✗'}",
-            f"ProtoCmSecure: {'✓' if proto_cm_secure          else '✗'}",
-            f"ProtoLiveSecure: {'✓' if proto_live_secure      else '✗'}",
-            f"PostmortemComplete: {'✓' if postmortem_complete  else '✗'}",
-            # timeout_corrected detail
-            f"TimeoutPresent: {'✓' if timeout_present         else '✗'}",
-            f"TimeoutBounded: {'✓' if timeout_bounded         else '✗'}",
-            # live_cache_reloaded detail
-            f"LiveCacheShared: {'✓' if live_cache_shared      else '✗'}",
-            f"LiveCacheBounded: {'✓' if live_cache_bounded    else '✗'}",
-            f"LiveNotBuiltin: {'✓' if live_not_builtin        else '✗'}",
-            f"LiveSyntaxOk: {'✓' if live_syntax_ok            else '✗'}",
-            # live_timeout_reloaded detail
-            f"LiveTimeoutPresent: {'✓' if live_timeout_present else '✗'}",
-            f"LiveTimeoutBounded: {'✓' if live_timeout_bounded else '✗'}",
-            # https_operational detail
-            f"HttpsGate: {'✓' if https_gate_ok                else '✗'}",
-            f"HttpsResponds: {'✓' if https_responds           else '✗'}",
-            f"TlsHandshake: {'✓' if tls_handshake_ok          else '✗'}",
-            f"NginxSyntax: {'✓' if nginx_syntax_ok            else '✗'}",
-            f"LiveBufferOk: {'✓' if live_buffer_ok            else '✗'}",
-            f"HttpsCacheOk: {'✓' if https_cache_ok            else '✗'}",
+            # basic_remediation components
+            f"WatchdogStopped: {'✓' if watchdog_stopped        else '✗'}",
+            f"TimeoutPresent: {'✓' if timeout_present          else '✗'}",
+            f"TimeoutBounded: {'✓' if timeout_bounded          else '✗'}",
+            f"LiveTimeoutPresent: {'✓' if live_timeout_present  else '✗'}",
+            f"LiveTimeoutBounded: {'✓' if live_timeout_bounded  else '✗'}",
+            f"ProtoCmSecure: {'✓' if proto_cm_secure           else '✗'}",
+            f"ProtoLiveSecure: {'✓' if proto_live_secure       else '✗'}",
+            f"PostmortemComplete: {'✓' if postmortem_complete   else '✗'}",
+            # buffer_corrected
+            f"BufferPresent: {'✓' if buffer_present            else '✗'}",
+            f"BufferBounded: {'✓' if buffer_bounded            else '✗'}",
+            # live_cache_reloaded
+            f"LiveCacheShared: {'✓' if live_cache_shared       else '✗'}",
+            f"LiveCacheBounded: {'✓' if live_cache_bounded     else '✗'}",
+            f"LiveNotBuiltin: {'✓' if live_not_builtin         else '✗'}",
+            f"LiveSyntaxOk: {'✓' if live_syntax_ok             else '✗'}",
+            # https_operational
+            f"HttpsGate: {'✓' if https_gate_ok                 else '✗'}",
+            f"HttpsResponds: {'✓' if https_responds            else '✗'}",
+            f"TlsHandshake: {'✓' if tls_handshake_ok           else '✗'}",
+            f"NginxSyntax: {'✓' if nginx_syntax_ok             else '✗'}",
+            f"LiveBufferOk: {'✓' if live_buffer_ok             else '✗'}",
+            f"HttpsCacheOk: {'✓' if https_cache_ok             else '✗'}",
         ]
 
         return GradingResult(
