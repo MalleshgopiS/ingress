@@ -525,7 +525,7 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             https_operational = False
 
-        # ── Milestone 7: postmortem_complete ──────────────────────────────────
+        # ── Milestone 8: postmortem_complete ──────────────────────────────────
         # Agent must document their investigation by creating /workdir/postmortem.md
         # with at least 10 lines explaining the root cause and remediation steps.
         postmortem_complete = False
