@@ -261,9 +261,9 @@ def grade(transcript: str = None) -> GradingResult:
     Subscores (4 × 1/4 weight each):
       1. basic_remediation  — watchdog stopped + timeout ≤ 1h + live timeout propagated
                               + deprecated protocols removed + postmortem written
-      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 16k; requires watchdog stopped to persist
-      3. live_cache_reloaded — Live nginx shared cache ≤ 10MB after rollout restart
-      4. https_operational  — Ingress serves HTTPS reliably; live buffer ≤ 16k AND live cache ≤ 10MB
+      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k; requires watchdog stopped to persist
+      3. live_cache_reloaded — Live nginx shared cache ≤ 8MB after rollout restart
+      4. https_operational  — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB
 
     Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
     """
