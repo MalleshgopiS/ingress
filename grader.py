@@ -11,11 +11,11 @@ DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
 MIN_CACHE_MB       = 1.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB       = 8.0    # ssl_session_cache ConfigMap upper bound (MB)
-MAX_LIVE_CACHE_MB  = 8.0    # ssl_session_cache live upper bound (MB)
+MAX_CACHE_MB       = 10.0   # ssl_session_cache ConfigMap upper bound (MB) — accepts standard 10m
+MAX_LIVE_CACHE_MB  = 10.0   # ssl_session_cache live upper bound (MB) — accepts standard 10m
 MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum
 MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h
-MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k
+MAX_BUFFER_BYTES   = 16384  # ssl_buffer_size upper bound — 16k; accepts nginx default; rejects broken 64k
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -261,9 +261,9 @@ def grade(transcript: str = None) -> GradingResult:
     Subscores (4 × 1/4 weight each):
       1. basic_remediation  — watchdog stopped + timeout ≤ 1h + live timeout propagated +
                               deprecated protocols removed + postmortem written
-      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k; requires watchdog stopped
-      3. live_cache_reloaded — Live nginx shared cache ≤ 8MB after rollout restart
-      4. https_operational  — Ingress serves HTTPS; live buffer ≤ 8k AND live cache ≤ 8MB
+      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 16k; requires watchdog stopped
+      3. live_cache_reloaded — Live nginx shared cache ≤ 10MB after rollout restart
+      4. https_operational  — Ingress serves HTTPS; live buffer ≤ 16k AND live cache ≤ 10MB
 
     Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
     """
@@ -542,9 +542,9 @@ def grade(transcript: str = None) -> GradingResult:
         # and give the differentiating milestones appropriate score weight.
         #
         # 1) basic_remediation:  watchdog + timeout ≤ 1h + live timeout + protocols + postmortem
-        # 2) buffer_corrected:   ssl_buffer_size ≤ 8k in ConfigMap (agent must find from annotations)
-        # 3) live_cache_reloaded: Live nginx shared cache ≤ 8MB (agent must find from annotations)
-        # 4) https_operational:  HTTPS works; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
+        # 2) buffer_corrected:   ssl_buffer_size ≤ 16k in ConfigMap — rejects broken 64k default
+        # 3) live_cache_reloaded: Live nginx shared cache ≤ 10MB after rollout restart
+        # 4) https_operational:  HTTPS works; live buffer ≤ 16k AND live cache ≤ 10MB confirmed
 
         basic_remediation = (
             watchdog_stopped and timeout_corrected and live_timeout_reloaded and
