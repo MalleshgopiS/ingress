@@ -24,8 +24,6 @@ prompt: |
 
   The memory growth pattern suggests both session accumulation and per-connection allocation contribute — investigate all relevant TLS parameters in the ConfigMap.
 
-  Memory profiling for this instance class indicates a shared TLS session cache not exceeding 10m and ssl_buffer_size not exceeding 16k are the upper bounds for stable operation on this deployment.
-
   Ensure the TLS configuration does not use deprecated protocol versions.
 
   [Objective]
