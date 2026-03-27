@@ -20,11 +20,11 @@ prompt: |
 
   There are multiple configuration references in the cluster. Not all of them are guaranteed to be correct or up to date — treat the live ConfigMap as the authoritative source.
 
-  Inspect the deployment resource annotations — they contain memory profile data and historical incident context relevant to this instance class.
+  Inspect the deployment resource annotations, they contain memory profile data and historical incident context relevant to this instance class.
 
   For this instance class, a shared TLS session cache is appropriate for the workload profile.
 
-  The memory growth pattern suggests both session accumulation and per-connection allocation contribute — investigate all relevant TLS parameters in the ConfigMap.
+  investigate all relevant TLS parameters in the ConfigMap.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
 
