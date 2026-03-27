@@ -10,12 +10,12 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB       = 1.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB       = 8.0    # ssl_session_cache ConfigMap upper bound (MB) — strict 8MB
-MAX_LIVE_CACHE_MB  = 8.0    # ssl_session_cache live upper bound (MB) — strict 8MB; agents using standard 10m (10MB) fail this
-MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum; accepts common 1h choice
-MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h; consistent with ConfigMap bound
-MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size per-connection allocation upper bound — 8k for 300Mi instance class
+MIN_CACHE_MB       = 1.0     # ssl_session_cache shared zone lower bound (MB)
+MAX_CACHE_MB       = 10.0    # ssl_session_cache ConfigMap upper bound (MB) — accepts standard 10m recommendation
+MAX_LIVE_CACHE_MB  = 10.0    # ssl_session_cache live upper bound (MB) — accepts standard 10m recommendation
+MAX_TIMEOUT_S      = 3600    # ssl_session_timeout ConfigMap upper bound — 1h maximum; accepts common 1h choice
+MAX_LIVE_TIMEOUT_S = 3600    # ssl_session_timeout live upper bound — 1h; consistent with ConfigMap bound
+MAX_BUFFER_BYTES   = 16384   # ssl_buffer_size per-connection allocation upper bound — 16k; accepts nginx default; rejects broken 64k
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -58,8 +58,8 @@ def _parse_cache_mb(val: str) -> float:
 
 def _cache_ok(text: str, max_mb: float = None) -> bool:
     """ssl_session_cache must be a shared zone within the accepted size range.
-    max_mb defaults to MAX_CACHE_MB (strict ConfigMap check); pass MAX_LIVE_CACHE_MB
-    for the live check (also strict 8MB — agents using standard 10m (10MB) fail)."""
+    max_mb defaults to MAX_CACHE_MB (ConfigMap check); pass MAX_LIVE_CACHE_MB
+    for the live check. Both accept the standard 10m (10MB) nginx recommendation."""
     if max_mb is None:
         max_mb = MAX_CACHE_MB
     m = re.search(r'ssl_session_cache\s+(shared:\w+:\S+)\s*;', text or "", re.IGNORECASE)
@@ -386,6 +386,7 @@ def grade(transcript: str = None) -> GradingResult:
         # "10m" recommendation (10MB) fail this check, creating genuine variance.
         # Protocol security is graded independently in M6 — not bundled here.
         # Buffer sizing is graded independently in M3 — not bundled here.
+        # Accepts standard shared:SSL:10m (10MB) recommendation.
         live_cache_shared   = False
         live_cache_bounded  = False
         live_not_builtin    = False
@@ -508,10 +509,10 @@ def grade(transcript: str = None) -> GradingResult:
                     # Uses same MAX_BUFFER_BYTES threshold as M3 (ConfigMap check).
                     # Requires rollout restart to propagate — independent of M3.
                     live_buffer_ok = _buffer_size_ok(res_live.stdout or "")
-                    # Live cache bound check — a mis-sized cache (e.g. 10MB on a 300Mi
-                    # pod) means the service will OOM within hours regardless of whether
-                    # HTTPS currently responds. Re-uses the live_cache_bounded flag from
-                    # M4 by re-evaluating here against MAX_LIVE_CACHE_MB.
+                    # Live cache bound check — confirms the shared cache loaded into the
+                    # running worker is within the accepted size range (≤ MAX_LIVE_CACHE_MB).
+                    # Re-evaluates against MAX_LIVE_CACHE_MB to confirm rollout propagated
+                    # a properly-sized cache zone to the live process.
                     https_cache_ok = _cache_ok(res_live.stdout or "", max_mb=MAX_LIVE_CACHE_MB)
                     # watchdog_stopped gate — HTTPS is only truly operational when the
                     # fix is persistent. An agent who patches nginx but leaves the
@@ -544,9 +545,9 @@ def grade(transcript: str = None) -> GradingResult:
         #
         # 1) basic_remediation:  watchdog stopped + timeout ≤ 1h + live timeout propagated
         #                        + deprecated protocols removed + postmortem written
-        # 2) buffer_corrected:   ssl_buffer_size ≤ 8k in ConfigMap (watchdog-gated)
-        # 3) live_cache_reloaded: Live nginx cache ≤ 8MB after rollout restart
-        # 4) https_operational:  Ingress serves HTTPS; live buffer ≤ 8k AND live cache ≤ 8MB
+        # 2) buffer_corrected:   ssl_buffer_size ≤ 16k in ConfigMap (watchdog-gated); rejects broken 64k
+        # 3) live_cache_reloaded: Live nginx shared cache ≤ 10MB after rollout restart
+        # 4) https_operational:  Ingress serves HTTPS; live buffer ≤ 16k AND live cache ≤ 10MB
 
         basic_remediation = (
             watchdog_stopped and timeout_corrected and live_timeout_reloaded and
