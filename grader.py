@@ -259,13 +259,16 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Milestones verified:
-      1. basic_remediation  — watchdog stopped + timeout corrected + live timeout propagated
-                              + deprecated protocols removed + postmortem written
-      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped
-      3. live_cache_reloaded — Live nginx has shared cache ≤ 8MB after rollout restart
-      4. https_operational  — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
+      1. watchdog_stopped      — ingress-config-watchdog CronJob deleted or suspended (makes ConfigMap fixes persistent)
+      2. timeout_corrected     — ConfigMap session timeout ≤ 1h (≤ 3600s); requires watchdog stopped to persist
+      3. buffer_corrected      — ConfigMap ssl_buffer_size ≤ 8k per-connection; requires watchdog stopped to persist
+      4. live_cache_reloaded   — Live nginx has shared cache ≤ 8MB after rollout restart
+      5. live_timeout_reloaded — Live nginx session timeout ≤ 1h (≤ 3600s) after rollout restart
+      6. protocols_corrected   — Deprecated TLS protocols removed from ConfigMap AND live nginx
+      7. https_operational     — Ingress serves HTTPS reliably; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
+      8. postmortem_complete   — Agent created /workdir/postmortem.md (≥10 lines, technical content)
 
-    Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (8 × 1/8). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
