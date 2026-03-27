@@ -22,7 +22,7 @@ prompt: |
 
   Inspect the deployment resource annotations — they contain memory profile data and historical incident context relevant to this instance class.
 
-  The memory growth pattern suggests both session accumulation and per-connection allocation contribute — investigate all relevant TLS parameters in the ConfigMap.
+  The memory growth pattern suggests TLS session configuration is a contributing factor — investigate the relevant nginx TLS parameters in the ConfigMap.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
 
