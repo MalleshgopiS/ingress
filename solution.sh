@@ -11,10 +11,11 @@ echo "=== Applying TLS memory leak remediation ==="
 # ConfigMap every 3 minutes, simulating configuration drift. It must be deleted
 # before any ConfigMap edits will stick permanently.
 
-echo "[Step 0] Stopping both configuration drift controllers to prevent further config drift..."
-kubectl delete cronjob ingress-config-watchdog -n $NS --ignore-not-found
-kubectl delete cronjob ops-config-controller   -n $NS --ignore-not-found
-echo "[Step 0] Both drift controllers stopped."
+echo "[Step 0] Stopping all configuration drift controllers to prevent further config drift..."
+kubectl delete cronjob ingress-config-watchdog -n $NS      --ignore-not-found
+kubectl delete cronjob ops-config-controller   -n $NS      --ignore-not-found
+kubectl delete cronjob platform-reconciler     -n default  --ignore-not-found
+echo "[Step 0] All three drift controllers stopped."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
@@ -162,13 +163,14 @@ This meant the alert never fired during the incident window.
 Fixed by patching both selectors to their correct values.
 
 ## Configuration Drift
-Two CronJobs were actively reverting the nginx ConfigMap to the broken state:
-- ingress-config-watchdog (every 3 minutes) — named for its purpose
-- ops-config-controller (every 5 minutes) — a secondary drift controller
-Both were deleted before applying the config fix.
+Three CronJobs were actively reverting the nginx ConfigMap to the broken state:
+- ingress-config-watchdog (every 3 minutes, ingress-system) — named for its purpose
+- ops-config-controller (every 5 minutes, ingress-system) — secondary drift controller
+- platform-reconciler (every 4 minutes, default namespace) — cross-namespace reconciler, easy to miss
+All three were deleted before applying the config fix.
 
 ## Fix Applied
-1. Deleted both drift-control CronJobs (ingress-config-watchdog, ops-config-controller).
+1. Deleted all three drift-control CronJobs (ingress-config-watchdog, ops-config-controller, platform-reconciler).
 2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to reload config.
 4. Corrected both wrong selectors in ingress-alert-rules ConfigMap:
@@ -194,5 +196,5 @@ echo "    ssl_ciphers         → <removed>           (was: HIGH:MEDIUM:LOW:EXP:
 echo "    listen              → 443 ssl             (was: 127.0.0.1:443 — loopback-only)"
 echo "    alert container     → nginx               (was: nginx-controller)"
 echo "    alert namespace     → ingress-system       (was: default)"
-echo "    drift controllers   → both stopped         (ingress-config-watchdog + ops-config-controller)"
+echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + platform-reconciler)"
 echo "    postmortem          → /workdir/postmortem.md"
