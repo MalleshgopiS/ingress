@@ -11,9 +11,10 @@ echo "=== Applying TLS memory leak remediation ==="
 # ConfigMap every 3 minutes, simulating configuration drift. It must be deleted
 # before any ConfigMap edits will stick permanently.
 
-echo "[Step 0] Stopping configuration watchdog to prevent further config drift..."
+echo "[Step 0] Stopping both configuration drift controllers to prevent further config drift..."
 kubectl delete cronjob ingress-config-watchdog -n $NS --ignore-not-found
-echo "[Step 0] Configuration watchdog stopped."
+kubectl delete cronjob ops-config-controller   -n $NS --ignore-not-found
+echo "[Step 0] Both drift controllers stopped."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
@@ -21,12 +22,14 @@ SSL_CACHE="shared:SSL:5m"
 SSL_TIMEOUT="20m"
 SSL_BUFFER="4k"
 SSL_PROTOCOLS="TLSv1.2 TLSv1.3"
+SSL_TICKETS="off"
 
-echo "[Step 1] Bounded replacement values:"
-echo "    ssl_session_cache   = $SSL_CACHE        (replaces: builtin — unbounded)"
+echo "[Step 1] Replacement values:"
+echo "    ssl_session_cache   = $SSL_CACHE        (replaces: builtin — unbounded per-worker)"
 echo "    ssl_session_timeout = $SSL_TIMEOUT       (replaces: 86400 — 24-hour sessions)"
 echo "    ssl_buffer_size     = $SSL_BUFFER         (replaces: 64k — excessive per-connection)"
-echo "    ssl_protocols       = $SSL_PROTOCOLS  (replaces: TLSv1 TLSv1.2 TLSv1.3 — deprecated protocol included)"
+echo "    ssl_protocols       = $SSL_PROTOCOLS  (replaces: TLSv1 TLSv1.2 TLSv1.3 — deprecated)"
+echo "    ssl_session_tickets = $SSL_TICKETS           (replaces: on — sessions stored twice wasting memory)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
 
@@ -34,12 +37,13 @@ echo "[Step 2] Reading current nginx.conf from ConfigMap..."
 CURRENT_CONF=$(kubectl get configmap ingress-nginx-config -n $NS \
   -o jsonpath='{.data.nginx\.conf}')
 
-echo "[Step 2] Patching the four broken TLS parameters in-place..."
+echo "[Step 2] Patching all broken TLS parameters in-place..."
 PATCHED_CONF=$(echo "$CURRENT_CONF" \
   | sed "s|ssl_session_cache\s\+[^;]*;|ssl_session_cache   $SSL_CACHE;|" \
   | sed "s|ssl_session_timeout\s\+[^;]*;|ssl_session_timeout $SSL_TIMEOUT;|" \
   | sed "s|ssl_buffer_size\s\+[^;]*;|ssl_buffer_size     $SSL_BUFFER;|" \
-  | sed "s|ssl_protocols\s\+[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|")
+  | sed "s|ssl_protocols\s\+[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|" \
+  | sed "s|ssl_session_tickets\s\+[^;]*;|ssl_session_tickets $SSL_TICKETS;|")
 
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf="$PATCHED_CONF" \
@@ -87,17 +91,18 @@ fi
 #   container="nginx"             (correct — matches the nginx container in the pod)
 # Fix by patching the ConfigMap data in-place.
 
-echo "[Step 5] Fixing Prometheus alert rule — correcting container selector..."
+echo "[Step 5] Fixing Prometheus alert rule — correcting both wrong label selectors..."
 CURRENT_ALERT=$(kubectl get configmap ingress-alert-rules -n $NS \
   -o jsonpath='{.data.alert\.yaml}' 2>/dev/null || echo "")
 
 if [ -n "$CURRENT_ALERT" ]; then
     FIXED_ALERT=$(echo "$CURRENT_ALERT" \
-      | sed 's|container="nginx-controller"|container="nginx"|g')
+      | sed 's|container="nginx-controller"|container="nginx"|g' \
+      | sed 's|namespace="default"|namespace="ingress-system"|g')
     kubectl create configmap ingress-alert-rules -n $NS \
       --from-literal=alert.yaml="$FIXED_ALERT" \
       --dry-run=client -o yaml | kubectl apply -f -
-    echo "[Step 5] Alert rule patched — container selector corrected to 'nginx'."
+    echo "[Step 5] Alert rule patched — container='nginx', namespace='ingress-system'."
 else
     echo "[Step 5] Warning: ingress-alert-rules ConfigMap not found — skipping alert fix."
 fi
@@ -114,7 +119,7 @@ every ~6 hours due to misconfigured TLS session parameters in the nginx ConfigMa
 A monitoring alert was also silently misconfigured and never fired during the incident.
 
 ## Root Cause
-Four misconfigured TLS directives in the nginx ConfigMap caused unbounded memory growth under HTTPS load:
+Five misconfigured TLS directives in the nginx ConfigMap caused unbounded memory growth under HTTPS load:
 
 1. **ssl_session_cache builtin** — OpenSSL builtin cache grows unboundedly per-worker.
    Replaced with shared:SSL:5m (fixed 5MB zone shared across all workers).
@@ -128,6 +133,10 @@ Four misconfigured TLS directives in the nginx ConfigMap caused unbounded memory
 4. **ssl_protocols TLSv1 TLSv1.2 TLSv1.3** — Deprecated TLSv1 included, exposing
    clients to downgrade attacks. Fixed to TLSv1.2 TLSv1.3 only.
 
+5. **ssl_session_tickets on** — With a bounded shared cache already in place, leaving
+   session tickets enabled causes sessions to be persisted twice (cache zone + ticket),
+   defeating the memory bound. Set to off to force all resumption through the cache.
+
 ## Contributing Factor: Silent Monitoring Failure
 The ingress-alert-rules ConfigMap contained a Prometheus alert for pod restarts, but
 the container label selector was set to container="nginx-controller" — a label that
@@ -136,15 +145,18 @@ is "nginx"). This meant the alert never fired during the incident window.
 Fixed by patching the selector to container="nginx".
 
 ## Configuration Drift
-A CronJob (ingress-config-watchdog) was actively reverting the nginx ConfigMap to the
-broken state every 3 minutes. This was deleted before applying the config fix to prevent
-the corrected configuration from being overwritten.
+Two CronJobs were actively reverting the nginx ConfigMap to the broken state:
+- ingress-config-watchdog (every 3 minutes) — named for its purpose
+- ops-config-controller (every 5 minutes) — a secondary drift controller
+Both were deleted before applying the config fix.
 
 ## Fix Applied
-1. Deleted ingress-config-watchdog CronJob to stop configuration drift.
-2. Patched ingress-nginx-config ConfigMap with corrected TLS settings and removed limit_rate.
+1. Deleted both drift-control CronJobs (ingress-config-watchdog, ops-config-controller).
+2. Patched ingress-nginx-config ConfigMap with all five corrected TLS settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to reload config.
-4. Corrected container selector in ingress-alert-rules ConfigMap.
+4. Corrected both wrong selectors in ingress-alert-rules ConfigMap:
+   - container="nginx-controller" → container="nginx"
+   - namespace="default" → namespace="ingress-system"
 
 ## Verification
 nginx -T confirms corrected parameters are active in the running worker process.
@@ -159,6 +171,9 @@ echo "=== Remediation complete ==="
 echo "    ssl_session_cache   → $SSL_CACHE        (was: builtin — unbounded per-worker)"
 echo "    ssl_session_timeout → $SSL_TIMEOUT       (was: 86400 — 24-hour accumulation)"
 echo "    ssl_buffer_size     → $SSL_BUFFER         (was: 64k — 16x recommended size)"
-echo "    ssl_protocols       → $SSL_PROTOCOLS  (was: TLSv1 TLSv1.2 TLSv1.3 — deprecated protocol)"
-echo "    alert selector      → container=nginx     (was: nginx-controller — alert never fired)"
+echo "    ssl_protocols       → $SSL_PROTOCOLS  (was: TLSv1 TLSv1.2 TLSv1.3 — deprecated)"
+echo "    ssl_session_tickets → $SSL_TICKETS           (was: on — sessions stored twice)"
+echo "    alert container     → nginx               (was: nginx-controller)"
+echo "    alert namespace     → ingress-system       (was: default)"
+echo "    drift controllers   → both stopped         (ingress-config-watchdog + ops-config-controller)"
 echo "    postmortem          → /workdir/postmortem.md"

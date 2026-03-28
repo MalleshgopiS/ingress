@@ -23,7 +23,7 @@ prompt: |
 
   Investigate the cluster resources to understand the memory profile and operational context for this instance class.
 
-  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the relevant parameters in the ConfigMap.
+  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate all TLS session-related parameters in the ConfigMap, including session cache, session lifetime, session tickets, buffer sizing, and protocol versions.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
 

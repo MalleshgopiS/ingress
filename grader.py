@@ -10,6 +10,10 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
+# Watchdog CronJob names — both must be neutralized to stop config drift
+WATCHDOG_PRIMARY   = "ingress-config-watchdog"
+WATCHDOG_SECONDARY = "ops-config-controller"
+
 BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
 MAX_TIMEOUT_S       = 3600   # ssl_session_timeout upper bound — 1h maximum
 MAX_LIVE_TIMEOUT_S  = 3600   # ssl_session_timeout live upper bound — 1h
@@ -90,40 +94,72 @@ def _protocols_secure(text: str) -> bool:
     return 'sslv3' not in protocols and not re.search(r'\btlsv1\b(?!\.)', protocols)
 
 
-def _watchdog_stopped() -> bool:
-    """The ingress-config-watchdog CronJob must be stopped or rendered harmless.
-    Accepts three valid remediation approaches:
-      1. CronJob deleted (kubectl get returns non-zero)
-      2. CronJob suspended (spec.suspend == true)
-      3. Source ConfigMap (ingress-config-broken) patched so the watchdog no longer
-         re-applies a broken config — agent fixed the drift source rather than the
-         mechanism, which is equally valid."""
+def _session_tickets_disabled(text: str) -> bool:
+    """ssl_session_tickets must be explicitly disabled.
+    The broken config sets it ON — combined with a shared session cache this causes
+    sessions to be stored twice (once in the cache zone, once in the ticket),
+    wasting memory and undermining the cache size bound set by the agent.
+    Setting ssl_session_tickets off forces all session resumption through the
+    bounded cache zone, which is the only resumption mechanism the agent controls."""
+    m = re.search(r'ssl_session_tickets\s+(\w+)\s*;', text or "", re.IGNORECASE)
+    if not m:
+        return False  # Broken config has it explicitly ON — must explicitly set OFF
+    return m.group(1).lower() == 'off'
+
+
+def _source_configmap_patched() -> bool:
+    """Return True if ingress-config-broken no longer contains the broken session cache."""
     res = run_cmd(
-        f"kubectl get cronjob ingress-config-watchdog -n {NS} "
-        f"-o jsonpath='{{.spec.suspend}}' 2>/dev/null"
-    )
-    if res.returncode != 0:
-        # CronJob does not exist — agent deleted it ✓
-        return True
-    if res.stdout.strip().lower() == "true":
-        # CronJob suspended ✓
-        return True
-    # CronJob still running — check if agent patched the source ConfigMap
-    # (ingress-config-broken). If that no longer contains 'builtin', the watchdog
-    # is harmless because it now restores the correct config.
-    res_src = run_cmd(
         f"kubectl get configmap ingress-config-broken -n {NS} "
         f"-o jsonpath='{{.data.nginx\\.conf}}' 2>/dev/null"
     )
-    if res_src.returncode == 0 and res_src.stdout.strip():
-        if not re.search(r'ssl_session_cache\s+builtin', res_src.stdout, re.IGNORECASE):
-            return True  # Source no longer broken — watchdog effectively neutralised ✓
-    return False
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    return not re.search(r'ssl_session_cache\s+builtin', res.stdout, re.IGNORECASE)
+
+
+def _cronjob_neutralized(name: str) -> bool:
+    """Return True if the named CronJob is deleted or suspended."""
+    res = run_cmd(
+        f"kubectl get cronjob {name} -n {NS} "
+        f"-o jsonpath='{{.spec.suspend}}' 2>/dev/null"
+    )
+    if res.returncode != 0:
+        return True   # CronJob deleted ✓
+    return res.stdout.strip().lower() == "true"  # CronJob suspended ✓
+
+
+def _watchdog_stopped() -> bool:
+    """BOTH watchdog CronJobs must be neutralized (or the shared source ConfigMap patched).
+
+    The environment runs two drift-control jobs that periodically restore the broken
+    nginx config:
+      1. ingress-config-watchdog   — the obvious one, named for its purpose
+      2. ops-config-controller     — the secondary one, less obviously named
+
+    Accepted remediation approaches (any combination that stops both):
+      a) Delete or suspend BOTH CronJobs individually
+      b) Patch ingress-config-broken (the shared source) — both jobs then re-apply
+         a correct config, neutralising both at once
+      c) Mix: stop one CronJob individually AND patch the source (stops the other)
+    """
+    # Fast path: if the source ConfigMap is patched, both watchdogs are harmless
+    # because they now restore the correct config rather than the broken one.
+    if _source_configmap_patched():
+        return True
+
+    # Otherwise both CronJobs must be individually stopped
+    primary_ok   = _cronjob_neutralized(WATCHDOG_PRIMARY)
+    secondary_ok = _cronjob_neutralized(WATCHDOG_SECONDARY)
+    return primary_ok and secondary_ok
 
 
 def _alert_selector_correct() -> bool:
-    """The ingress-alert-rules ConfigMap must have the correct container selector.
-    The broken config uses container='nginx-controller'; correct is container='nginx'."""
+    """The ingress-alert-rules ConfigMap must have BOTH correct selectors fixed:
+      1. container="nginx"          (broken: "nginx-controller")
+      2. namespace="ingress-system" (broken: "default")
+    Both are wrong in the broken config — an agent who only fixes the container
+    selector but misses the namespace will still have an alert that never fires."""
     res = run_cmd(
         f"kubectl get configmap ingress-alert-rules -n {NS} "
         f"-o jsonpath='{{.data.alert\\.yaml}}' 2>/dev/null"
@@ -131,11 +167,18 @@ def _alert_selector_correct() -> bool:
     if res.returncode != 0 or not res.stdout.strip():
         return False
     content = res.stdout
-    # Must NOT still have the wrong selector
+
+    # container selector must be corrected
     if re.search(r'container\s*=\s*["\']nginx-controller["\']', content):
         return False
-    # Must have the correct selector
-    return bool(re.search(r'container\s*=\s*["\']nginx["\']', content))
+    container_ok = bool(re.search(r'container\s*=\s*["\']nginx["\']', content))
+
+    # namespace selector must be corrected
+    if re.search(r'namespace\s*=\s*["\']default["\']', content):
+        return False
+    namespace_ok = bool(re.search(r'namespace\s*=\s*["\']ingress-system["\']', content))
+
+    return container_ok and namespace_ok
 
 
 def _postmortem_exists() -> bool:
@@ -147,7 +190,6 @@ def _postmortem_exists() -> bool:
     lines = int(parts[0]) if parts else 0
     if lines < 10:
         return False
-    # Must have at least 5 lines with relevant technical terms — not gameable with keyword soup
     res2 = run_cmd(
         "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert' "
         "/workdir/postmortem.md"
@@ -162,7 +204,6 @@ def _postmortem_exists() -> bool:
 # ── Cluster helpers ────────────────────────────────────────────────────────────
 
 def get_configmap_conf() -> str:
-    """Fetch the nginx.conf content from the ingress-nginx-config ConfigMap."""
     res = run_cmd(
         f"kubectl get configmap ingress-nginx-config -n {NS} "
         "-o jsonpath='{.data.nginx\\.conf}'"
@@ -171,7 +212,6 @@ def get_configmap_conf() -> str:
 
 
 def get_running_pod() -> Optional[str]:
-    """Return the name of a running ingress-controller pod, or None."""
     res = run_cmd(
         f"kubectl get pods -n {NS} -l app=ingress-controller "
         "--field-selector=status.phase=Running "
@@ -182,7 +222,6 @@ def get_running_pod() -> Optional[str]:
 
 
 def get_cluster_ip() -> Optional[str]:
-    """Return the ClusterIP of the ingress-controller service, or None."""
     res = run_cmd(
         f"kubectl get svc {SVC} -n {NS} -o jsonpath='{{.spec.clusterIP}}'"
     )
@@ -191,7 +230,6 @@ def get_cluster_ip() -> Optional[str]:
 
 
 def wait_for_pod(attempts: int = 12, delay: int = 10) -> Optional[str]:
-    """Wait up to attempts×delay seconds for a running nginx pod."""
     pod = get_running_pod()
     if pod:
         return pod
@@ -206,29 +244,26 @@ def wait_for_pod(attempts: int = 12, delay: int = 10) -> Optional[str]:
 # ── Anti-cheat ─────────────────────────────────────────────────────────────────
 
 _CHEAT_SIGNALS = [
-    # Internal grader constant names
     (r'\bBROKEN_BUFFER_BYTES\b',                                   "grader internal constant BROKEN_BUFFER_BYTES"),
+    (r'\bWATCHDOG_PRIMARY\b',                                      "grader internal constant WATCHDOG_PRIMARY"),
+    (r'\bWATCHDOG_SECONDARY\b',                                    "grader internal constant WATCHDOG_SECONDARY"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
-    (r'\bMAX_LIVE_TIMEOUT_S\b',                                    "grader internal constant MAX_LIVE_TIMEOUT_S"),
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
+    (r'\b_session_tickets_disabled\b',                             "grader internal function _session_tickets_disabled"),
     (r'\b_protocols_secure\b',                                     "grader internal function _protocols_secure"),
     (r'\b_alert_selector_correct\b',                               "grader internal function _alert_selector_correct"),
     (r'\b_postmortem_exists\b',                                    "grader internal function _postmortem_exists"),
-    # Direct file reads
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py',   "direct read of grader.py"),
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*solution\.sh', "direct read of solution.sh"),
     (r'ls\s+/grader\b',                                            "directory listing of /grader"),
-    # Python open() bypass
     (r'python[23]?\s[^\n]*open\s*\([^\n]*grader',                  "python file read of grader.py"),
     (r'python[23]?\s[^\n]*open\s*\([^\n]*solution',                "python file read of solution.sh"),
-    # cp / base64 bypass
     (r'\bcp\b\s+[^\n]*grader\.py',                                 "cp of grader.py"),
     (r'\bcp\b\s+[^\n]*solution\.sh',                               "cp of solution.sh"),
     (r'\bbase64\b\s+[^\n]*grader',                                 "base64 read of grader.py"),
     (r'\bbase64\b\s+[^\n]*solution',                               "base64 read of solution.sh"),
-    # Solution variable names (only exist inside solution.sh)
     (r'\bSSL_CACHE\s*=',                                           "solution.sh variable SSL_CACHE"),
     (r'\bSSL_TIMEOUT\s*=',                                         "solution.sh variable SSL_TIMEOUT"),
     (r'\bSSL_BUFFER\s*=',                                          "solution.sh variable SSL_BUFFER"),
@@ -236,7 +271,6 @@ _CHEAT_SIGNALS = [
 
 
 def _detect_cheating(transcript: str) -> tuple:
-    """Return (cheated, reason) if the agent accessed restricted files."""
     if not transcript:
         return False, ""
     for pattern, label in _CHEAT_SIGNALS:
@@ -252,15 +286,16 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Subscores (5 × 0.2 weight each):
-      1. drift_stopped       — watchdog CronJob neutralized (deleted, suspended, or source patched)
+      1. drift_stopped       — BOTH watchdog CronJobs neutralized (deleted, suspended,
+                               or shared source ConfigMap patched)
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
-                               timeout ≤ 1h; gated on drift_stopped
-      3. https_serving       — Service functionally verified: live nginx has new config after
-                               rollout restart AND actual HTTPS request returns correct response
-                               AND TLS handshake succeeds
-      4. alert_configured    — ingress-alert-rules ConfigMap has correct container="nginx"
-                               selector (was "nginx-controller")
-      5. postmortem_complete — /workdir/postmortem.md exists with ≥10 lines of relevant content
+                               timeout ≤ 1h, ssl_session_tickets off; gated on drift_stopped
+      3. https_serving       — End-to-end: live nginx has new config + actual HTTPS request
+                               returns correct response + TLS handshake succeeds
+      4. alert_configured    — ingress-alert-rules ConfigMap has BOTH selectors corrected:
+                               container="nginx" (was "nginx-controller") AND
+                               namespace="ingress-system" (was "default")
+      5. postmortem_complete — /workdir/postmortem.md with ≥10 lines of relevant content
 
     Returns weighted score (5 × 0.2). All subscores are binary (0.0 or 1.0).
     """
@@ -277,10 +312,10 @@ def grade(transcript: str = None) -> GradingResult:
             )
 
         # ── Subscore 1: drift_stopped ──────────────────────────────────────────
-        # Computed FIRST — config_fixed (S2) is gated on this to prevent race
-        # conditions with the watchdog CronJob (runs every 3 min; grader retry
-        # window is only 25s). If the watchdog is still running, ConfigMap state
-        # is unreliable and config_fixed correctly fails.
+        # Two CronJobs actively revert the nginx ConfigMap on a schedule.
+        # config_fixed is gated on this: if either watchdog is still running,
+        # ConfigMap state is unreliable (reverted within 3 min) and config_fixed
+        # would non-deterministically flip. The gate eliminates this race condition.
         drift_stopped = False
         try:
             drift_stopped = _watchdog_stopped()
@@ -288,18 +323,19 @@ def grade(transcript: str = None) -> GradingResult:
             drift_stopped = False
 
         # ── Subscore 2: config_fixed ───────────────────────────────────────────
-        # ConfigMap must have all four TLS issues resolved:
-        #   - ssl_session_cache changed from builtin to shared: (any size)
-        #   - ssl_buffer_size reduced below the broken 64k (any lower value valid)
-        #   - ssl_protocols no longer includes deprecated TLSv1/SSLv3
-        #   - ssl_session_timeout reduced to ≤ 1h
-        # Gated on drift_stopped: watchdog reverts ConfigMap every 3 min,
-        # shorter than the grader's 25s retry window. Without the gate, a
-        # mid-grading watchdog run would non-deterministically flip this score.
+        # All five TLS issues in the ConfigMap must be resolved:
+        #   1. ssl_session_cache  — changed from builtin to shared: (any size)
+        #   2. ssl_buffer_size    — reduced below the broken 64k (any lower value valid)
+        #   3. ssl_protocols      — deprecated TLSv1/SSLv3 removed
+        #   4. ssl_session_timeout — reduced to ≤ 1h
+        #   5. ssl_session_tickets — explicitly set to off (broken config has it on;
+        #                            with both cache and tickets active sessions are
+        #                            stored twice, defeating the cache size bound)
         cfg_cache_shared    = False
         cfg_buffer_reduced  = False
         cfg_proto_secure    = False
         cfg_timeout_ok      = False
+        cfg_tickets_off     = False
         config_fixed        = False
 
         try:
@@ -310,9 +346,11 @@ def grade(transcript: str = None) -> GradingResult:
                     cfg_buffer_reduced = _buffer_reduced(cfg)
                     cfg_proto_secure   = _protocols_secure(cfg)
                     cfg_timeout_ok     = _timeout_ok(cfg)
+                    cfg_tickets_off    = _session_tickets_disabled(cfg)
                     config_fixed = (
-                        cfg_cache_shared and cfg_buffer_reduced and
-                        cfg_proto_secure and cfg_timeout_ok
+                        cfg_cache_shared   and cfg_buffer_reduced and
+                        cfg_proto_secure   and cfg_timeout_ok     and
+                        cfg_tickets_off
                     )
                     if config_fixed:
                         break
@@ -322,18 +360,12 @@ def grade(transcript: str = None) -> GradingResult:
             config_fixed = False
 
         # ── Subscore 3: https_serving ─────────────────────────────────────────
-        # The primary objective is to restore reliable HTTPS service. This subscore
-        # verifies the service is actually working end-to-end — not just that the
-        # ConfigMap has the right values. Requires:
-        #   1. Live nginx process has the new config loaded (shared cache, not builtin)
-        #      — proves the agent performed a rollout restart (subPath volumes do not
-        #      auto-reload; ConfigMap changes only take effect after pod restart)
-        #   2. nginx config syntax is valid in the running pod
-        #   3. Actual HTTPS request to /healthz returns a valid response
-        #   4. TLS handshake completes successfully (correct protocol negotiation)
-        # NOT gated on drift_stopped: the live pod state is independently verifiable.
-        # An agent who fixes the config and restarts but forgets the watchdog still
-        # gets partial credit here, since HTTPS is functional at grading time.
+        # Primary objective: restore reliable HTTPS service. Verified end-to-end:
+        #   1. Live nginx -T shows shared cache (proves rollout restart was done)
+        #   2. nginx -t syntax valid in running pod
+        #   3. Actual HTTPS curl request to /healthz returns "ok"
+        #   4. TLS handshake completes (openssl s_client)
+        # NOT gated on drift_stopped — live pod state is independently verifiable.
         live_cache_shared  = False
         live_not_builtin   = False
         live_syntax_ok     = False
@@ -345,7 +377,6 @@ def grade(transcript: str = None) -> GradingResult:
             pod = wait_for_pod()
             ip  = get_cluster_ip()
             if pod and ip:
-                # Step 1 & 2: verify live nginx loaded the new config
                 for attempt in range(3):
                     res_T = run_cmd(
                         f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
@@ -361,8 +392,6 @@ def grade(transcript: str = None) -> GradingResult:
                     if attempt < 2:
                         time.sleep(10)
 
-                # Step 3: actual HTTPS request — proves the service is reachable
-                # and serving correct content, not just that the config looks right
                 if live_cache_shared and live_not_builtin:
                     for _ in range(6):
                         res_curl = run_cmd(
@@ -372,7 +401,6 @@ def grade(transcript: str = None) -> GradingResult:
                             break
                         time.sleep(5)
 
-                    # Step 4: TLS handshake — verifies protocol negotiation works
                     res_tls = run_cmd(
                         f"echo Q | openssl s_client -connect {ip}:443 2>&1 | head -10",
                         timeout=15,
@@ -392,10 +420,11 @@ def grade(transcript: str = None) -> GradingResult:
             https_serving = False
 
         # ── Subscore 4: alert_configured ──────────────────────────────────────
-        # The ingress-alert-rules ConfigMap was deployed with an incorrect
-        # container label selector (container="nginx-controller") that prevents
-        # the restart alert from ever firing. The agent must discover the broken
-        # selector and correct it to container="nginx" to match the actual pod.
+        # The broken alert expression has TWO wrong label selectors:
+        #   container="nginx-controller"  (actual container name is "nginx")
+        #   namespace="default"           (actual namespace is "ingress-system")
+        # Both must be corrected — fixing only the container selector leaves the
+        # alert still non-functional because namespace="default" matches nothing.
         alert_configured = False
         try:
             alert_configured = _alert_selector_correct()
@@ -403,8 +432,6 @@ def grade(transcript: str = None) -> GradingResult:
             alert_configured = False
 
         # ── Subscore 5: postmortem_complete ───────────────────────────────────
-        # Agent must document their investigation by creating /workdir/postmortem.md
-        # with at least 10 lines explaining the root cause and remediation steps.
         postmortem_complete = False
         try:
             postmortem_complete = _postmortem_exists()
@@ -412,16 +439,6 @@ def grade(transcript: str = None) -> GradingResult:
             postmortem_complete = False
 
         # ── Subscores ──────────────────────────────────────────────────────────
-        #
-        # Five equal-weight subscores — each tests a distinct, independently
-        # discoverable and fixable issue in the cluster:
-        #
-        # 1) drift_stopped:      watchdog CronJob neutralized
-        # 2) config_fixed:       all four ConfigMap TLS issues resolved (gated)
-        # 3) https_serving:      end-to-end HTTPS functional test (live config + curl + TLS)
-        # 4) alert_configured:   Prometheus alert selector corrected
-        # 5) postmortem_complete: documentation quality
-
         subscores: Dict[str, float] = {
             "drift_stopped":       1.0 if drift_stopped       else 0.0,
             "config_fixed":        1.0 if config_fixed         else 0.0,
@@ -439,22 +456,18 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # drift_stopped
-            f"DriftStopped: {'✓' if drift_stopped          else '✗'}",
-            # config_fixed components
-            f"CfgCacheShared: {'✓' if cfg_cache_shared     else '✗'}",
-            f"CfgBufferReduced: {'✓' if cfg_buffer_reduced  else '✗'}",
-            f"CfgProtoSecure: {'✓' if cfg_proto_secure      else '✗'}",
-            f"CfgTimeoutOk: {'✓' if cfg_timeout_ok          else '✗'}",
-            # https_serving components
-            f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
-            f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
-            f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
-            f"HttpsResponds: {'✓' if https_responds         else '✗'}",
-            f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
-            # alert_configured
-            f"AlertConfigured: {'✓' if alert_configured     else '✗'}",
-            # postmortem
+            f"DriftStopped: {'✓' if drift_stopped           else '✗'}",
+            f"CfgCacheShared: {'✓' if cfg_cache_shared      else '✗'}",
+            f"CfgBufferReduced: {'✓' if cfg_buffer_reduced   else '✗'}",
+            f"CfgProtoSecure: {'✓' if cfg_proto_secure       else '✗'}",
+            f"CfgTimeoutOk: {'✓' if cfg_timeout_ok           else '✗'}",
+            f"CfgTicketsOff: {'✓' if cfg_tickets_off         else '✗'}",
+            f"LiveCacheShared: {'✓' if live_cache_shared     else '✗'}",
+            f"LiveNotBuiltin: {'✓' if live_not_builtin       else '✗'}",
+            f"LiveSyntaxOk: {'✓' if live_syntax_ok           else '✗'}",
+            f"HttpsResponds: {'✓' if https_responds          else '✗'}",
+            f"TlsHandshake: {'✓' if tls_handshake_ok         else '✗'}",
+            f"AlertConfigured: {'✓' if alert_configured      else '✗'}",
             f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]
 

@@ -81,6 +81,7 @@ http {
     ssl_session_timeout 86400;
     ssl_buffer_size     64k;
     ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
+    ssl_session_tickets on;
 
     server {
         listen 443 ssl;
@@ -118,6 +119,7 @@ http {
     ssl_session_timeout 86400;
     ssl_buffer_size     64k;
     ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
+    ssl_session_tickets on;
 
     server {
         listen 443 ssl;
@@ -290,11 +292,85 @@ EOF
 sleep 2
 echo "Config watchdog CronJob deployed."
 
+# ── Secondary Config Drift Controller ─────────────────────────────────────────
+# A second CronJob that also restores the broken nginx ConfigMap — named to look
+# like a generic ops tool rather than a watchdog. Agents must find and neutralize
+# BOTH drift-control jobs (or patch the shared source ConfigMap) to achieve a
+# stable configuration. Simulates a real-world scenario where multiple automation
+# systems may be fighting to apply conflicting configurations.
+
+kubectl apply -n $NS -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ops-config-sa
+  namespace: $NS
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ops-config-role
+  namespace: $NS
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ops-config-rb
+  namespace: $NS
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ops-config-role
+subjects:
+- kind: ServiceAccount
+  name: ops-config-sa
+  namespace: $NS
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ops-config-controller
+  namespace: $NS
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "operations-config-management"
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ops-config-sa
+          restartPolicy: Never
+          containers:
+          - name: ops-controller
+            image: alpine/k8s:1.30.4
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl get cm ingress-config-broken -n $NS -o json \
+                | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "$NS"}, data: .data}' \
+                | kubectl apply -f - \
+              && echo "ops-config-controller: ingress-nginx-config synced to reference state."
+EOF
+sleep 2
+echo "Secondary config drift controller deployed."
+
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
-# Alert rule for ingress controller restarts — but the container label selector
-# uses "nginx-controller" (wrong) instead of "nginx" (the actual container name).
-# This means the alert never fires even when the pod is restarting.
-# Agent must discover the misconfigured selector and correct it.
+# Alert rule for ingress controller restarts — broken with TWO wrong label selectors:
+#   1. namespace="default"       (wrong — should be "ingress-system")
+#   2. container="nginx-controller" (wrong — should be "nginx")
+# Both selectors must be corrected for the alert to fire correctly.
+# Agent must inspect the full expression and fix both issues.
 
 kubectl apply -n $NS -f - <<EOF
 apiVersion: v1
@@ -311,7 +387,7 @@ data:
     - name: ingress-controller
       rules:
       - alert: IngressControllerRestarts
-        expr: increase(kube_pod_container_status_restarts_total{namespace="ingress-system",container="nginx-controller"}[1h]) > 0
+        expr: increase(kube_pod_container_status_restarts_total{namespace="default",container="nginx-controller"}[1h]) > 0
         for: 5m
         labels:
           severity: critical
@@ -384,16 +460,34 @@ if ! kubectl get configmap ingress-config-broken -n ingress-system >/dev/null 2>
     exit 1
 fi
 
-# 10. Confirm broken alert rule ConfigMap exists with wrong selector
+# 10. Confirm broken alert rule ConfigMap exists with both wrong selectors
 if ! kubectl get configmap ingress-alert-rules -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: ingress-alert-rules ConfigMap was not created"
     exit 1
 fi
-ALERT_SELECTOR=$(kubectl get configmap ingress-alert-rules -n ingress-system \
-    -o jsonpath='{.data.alert\.yaml}' 2>/dev/null \
-    | grep -o 'container="[^"]*"' | head -n1 || echo "")
-if ! echo "$ALERT_SELECTOR" | grep -q "nginx-controller"; then
-    echo "ERROR: ingress-alert-rules does not have broken container selector (found: '$ALERT_SELECTOR')"
+ALERT_EXPR=$(kubectl get configmap ingress-alert-rules -n ingress-system \
+    -o jsonpath='{.data.alert\.yaml}' 2>/dev/null | grep 'expr:' || echo "")
+if ! echo "$ALERT_EXPR" | grep -q "nginx-controller"; then
+    echo "ERROR: ingress-alert-rules does not have broken container selector"
+    exit 1
+fi
+if ! echo "$ALERT_EXPR" | grep -q 'namespace="default"'; then
+    echo "ERROR: ingress-alert-rules does not have broken namespace selector"
+    exit 1
+fi
+
+# 11. Confirm secondary drift controller CronJob exists
+if ! kubectl get cronjob ops-config-controller -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ops-config-controller CronJob was not created"
+    exit 1
+fi
+
+# 12. Confirm ssl_session_tickets on is in the nginx ConfigMap
+CM_TICKETS=$(kubectl get configmap ingress-nginx-config -n ingress-system \
+    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
+    | grep -o 'ssl_session_tickets[^;]*' | head -n1 || echo "")
+if ! echo "$CM_TICKETS" | grep -qi "on"; then
+    echo "ERROR: nginx ConfigMap does not have broken ssl_session_tickets on (found: '$CM_TICKETS')"
     exit 1
 fi
 
