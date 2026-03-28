@@ -10,9 +10,11 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# Watchdog CronJob names — both must be neutralized to stop config drift
-WATCHDOG_PRIMARY   = "ingress-config-watchdog"
-WATCHDOG_SECONDARY = "ops-config-controller"
+# Watchdog CronJob names — all three must be neutralized to stop config drift
+WATCHDOG_PRIMARY      = "ingress-config-watchdog"
+WATCHDOG_SECONDARY    = "ops-config-controller"
+WATCHDOG_TERTIARY     = "platform-reconciler"
+WATCHDOG_TERTIARY_NS  = "default"
 
 BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
 MAX_TIMEOUT_S       = 3600   # ssl_session_timeout upper bound — 1h maximum
@@ -151,10 +153,10 @@ def _source_configmap_patched() -> bool:
     return not re.search(r'ssl_session_cache\s+builtin', res.stdout, re.IGNORECASE)
 
 
-def _cronjob_neutralized(name: str) -> bool:
+def _cronjob_neutralized(name: str, ns: str = NS) -> bool:
     """Return True if the named CronJob is deleted or suspended."""
     res = run_cmd(
-        f"kubectl get cronjob {name} -n {NS} "
+        f"kubectl get cronjob {name} -n {ns} "
         f"-o jsonpath='{{.spec.suspend}}' 2>/dev/null"
     )
     if res.returncode != 0:
@@ -163,28 +165,30 @@ def _cronjob_neutralized(name: str) -> bool:
 
 
 def _watchdog_stopped() -> bool:
-    """BOTH watchdog CronJobs must be neutralized (or the shared source ConfigMap patched).
+    """ALL three watchdog CronJobs must be neutralized (or the shared source ConfigMap patched).
 
-    The environment runs two drift-control jobs that periodically restore the broken
+    The environment runs three drift-control jobs that periodically restore the broken
     nginx config:
-      1. ingress-config-watchdog   — the obvious one, named for its purpose
-      2. ops-config-controller     — the secondary one, less obviously named
+      1. ingress-config-watchdog   — in ingress-system; named for its purpose
+      2. ops-config-controller     — in ingress-system; less obviously named
+      3. platform-reconciler       — in the default namespace; hidden cross-namespace job
 
-    Accepted remediation approaches (any combination that stops both):
-      a) Delete or suspend BOTH CronJobs individually
-      b) Patch ingress-config-broken (the shared source) — both jobs then re-apply
-         a correct config, neutralising both at once
-      c) Mix: stop one CronJob individually AND patch the source (stops the other)
+    Accepted remediation approaches (any combination that stops all three):
+      a) Delete or suspend ALL THREE CronJobs individually
+      b) Patch ingress-config-broken (the shared source) — all jobs then re-apply
+         a correct config, neutralising all three at once
+      c) Mix: stop individual CronJobs AND/OR patch the source ConfigMap
     """
-    # Fast path: if the source ConfigMap is patched, both watchdogs are harmless
+    # Fast path: if the source ConfigMap is patched, all watchdogs are harmless
     # because they now restore the correct config rather than the broken one.
     if _source_configmap_patched():
         return True
 
-    # Otherwise both CronJobs must be individually stopped
+    # Otherwise all three CronJobs must be individually stopped
     primary_ok   = _cronjob_neutralized(WATCHDOG_PRIMARY)
     secondary_ok = _cronjob_neutralized(WATCHDOG_SECONDARY)
-    return primary_ok and secondary_ok
+    tertiary_ok  = _cronjob_neutralized(WATCHDOG_TERTIARY, ns=WATCHDOG_TERTIARY_NS)
+    return primary_ok and secondary_ok and tertiary_ok
 
 
 def _alert_selector_correct() -> bool:
@@ -300,6 +304,7 @@ _CHEAT_SIGNALS = [
     (r'\bBROKEN_BUFFER_BYTES\b',                                   "grader internal constant BROKEN_BUFFER_BYTES"),
     (r'\bWATCHDOG_PRIMARY\b',                                      "grader internal constant WATCHDOG_PRIMARY"),
     (r'\bWATCHDOG_SECONDARY\b',                                    "grader internal constant WATCHDOG_SECONDARY"),
+    (r'\bWATCHDOG_TERTIARY\b',                                     "grader internal constant WATCHDOG_TERTIARY"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
@@ -341,7 +346,7 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Subscores (5 × 0.2 weight each):
-      1. drift_stopped       — BOTH watchdog CronJobs neutralized (deleted, suspended,
+      1. drift_stopped       — ALL THREE watchdog CronJobs neutralized (deleted, suspended,
                                or shared source ConfigMap patched)
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
                                timeout ≤ 1h, ssl_session_tickets off, no EXP/LOW ciphers;

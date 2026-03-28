@@ -367,6 +367,76 @@ EOF
 sleep 2
 echo "Secondary config drift controller deployed."
 
+# ── Tertiary Config Reconciler (default namespace) ────────────────────────────
+# A third drift-control CronJob that runs from the default namespace using a
+# ClusterRole so it can reach ConfigMaps in ingress-system. Named generically
+# to look like a platform-level reconciliation controller rather than a watchdog.
+# Agents who only search ingress-system for CronJobs will miss this one.
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-reconciler-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-reconciler-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-reconciler-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-reconciler-role
+subjects:
+- kind: ServiceAccount
+  name: platform-reconciler-sa
+  namespace: default
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-reconciler
+  namespace: default
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "config-reconciliation"
+spec:
+  schedule: "*/4 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: platform-reconciler-sa
+          restartPolicy: Never
+          containers:
+          - name: reconciler
+            image: alpine/k8s:1.30.4
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl get cm ingress-config-broken -n $NS -o json \
+                | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "$NS"}, data: .data}' \
+                | kubectl apply -f - \
+              && echo "platform-reconciler: ingress-nginx-config reconciled to reference state."
+EOF
+sleep 2
+echo "Tertiary config reconciler CronJob deployed."
+
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
 # Alert rule for ingress controller restarts — broken with TWO wrong label selectors:
 #   1. namespace="default"       (wrong — should be "ingress-system")
@@ -508,6 +578,12 @@ CM_LISTEN=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     | grep -o 'listen[^;]*' | head -n1 || echo "")
 if ! echo "$CM_LISTEN" | grep -qi "127.0.0.1"; then
     echo "ERROR: nginx ConfigMap does not have broken listen 127.0.0.1:443 (found: '$CM_LISTEN')"
+    exit 1
+fi
+
+# 15. Confirm tertiary reconciler CronJob exists in default namespace
+if ! kubectl get cronjob platform-reconciler -n default >/dev/null 2>&1; then
+    echo "ERROR: platform-reconciler CronJob was not created in default namespace"
     exit 1
 fi
 
