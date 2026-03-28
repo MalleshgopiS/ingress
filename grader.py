@@ -108,15 +108,27 @@ def _session_tickets_disabled(text: str) -> bool:
 
 
 def _ciphers_secure(text: str) -> bool:
-    """ssl_ciphers must not include export-grade (EXP) or low-strength (LOW) ciphers.
-    The broken config includes HIGH:MEDIUM:LOW:EXP:!NULL — both LOW and EXP are
-    deprecated cipher classes. If the directive is absent after patching, nginx
-    secure defaults apply and that is also acceptable."""
+    """ssl_ciphers must not include export-grade (EXP) or low-strength (LOW) ciphers
+    as active (non-negated) cipher tokens.
+
+    The broken config includes HIGH:MEDIUM:LOW:EXP:!NULL — LOW and EXP are positive
+    (active) tokens. Correct remediation:
+      a) Remove the directive entirely — nginx secure defaults apply.
+      b) Use a cipher string that does not include EXP or LOW as positive tokens.
+      c) Explicitly exclude them (e.g. !EXP:!LOW) — also acceptable.
+
+    Token-based evaluation: each colon-separated token is checked individually;
+    tokens prefixed with '!' are exclusions and are not penalised."""
     m = re.search(r'ssl_ciphers\s+["\']?([^;"\';\n]+)["\']?\s*;', text or "")
     if not m:
         return True  # Removed → nginx secure defaults apply
-    ciphers = m.group(1).upper()
-    return not re.search(r'\bEXP\b|\bLOW\b', ciphers)
+    # Split cipher string into individual tokens and evaluate each one.
+    # Only reject if EXP or LOW appear as positive (non-negated) tokens.
+    tokens = [t.strip() for t in m.group(1).upper().split(':')]
+    return not any(
+        (not t.startswith('!')) and re.fullmatch(r'EXP|LOW', t)
+        for t in tokens
+    )
 
 
 def _listen_all_interfaces(text: str) -> bool:
@@ -203,7 +215,13 @@ def _alert_selector_correct() -> bool:
 
 
 def _postmortem_exists() -> bool:
-    """Agent must create /workdir/postmortem.md with ≥10 lines and relevant technical content."""
+    """Agent must create /workdir/postmortem.md with ≥10 lines of relevant technical content.
+
+    Two content checks are applied:
+      1. General TLS/nginx keywords — proves the agent documented the core memory issue.
+      2. Drift/watchdog keywords  — proves the agent discovered and documented the
+         automated config-revert mechanism; agents who never found the CronJobs would
+         not naturally include these terms in their write-up."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
@@ -211,6 +229,8 @@ def _postmortem_exists() -> bool:
     lines = int(parts[0]) if parts else 0
     if lines < 10:
         return False
+
+    # Check 1: general TLS/nginx technical content (≥5 matching lines)
     res2 = run_cmd(
         "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert' "
         "/workdir/postmortem.md"
@@ -219,7 +239,19 @@ def _postmortem_exists() -> bool:
         relevant = int(res2.stdout.strip())
     except (ValueError, TypeError):
         return False
-    return relevant >= 5
+    if relevant < 5:
+        return False
+
+    # Check 2: must document the configuration-drift / watchdog discovery
+    res3 = run_cmd(
+        "grep -icE 'cronjob|cron job|watchdog|config.*watchdog|config.*drift|drift.*config' "
+        "/workdir/postmortem.md"
+    )
+    try:
+        drift_docs = int(res3.stdout.strip())
+    except (ValueError, TypeError):
+        return False
+    return drift_docs >= 1
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
