@@ -87,6 +87,8 @@ http {
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
+        limit_rate 100;
+
         location /healthz {
             return 200 "ok";
             add_header Content-Type text/plain;
@@ -124,6 +126,8 @@ http {
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
+        limit_rate 100;
+
         location /healthz {
             return 200 "ok";
             add_header Content-Type text/plain;
@@ -151,7 +155,7 @@ metadata:
     incident.platform.io/oom-reason: "nginx worker memory exhaustion under sustained HTTPS load — root cause not yet confirmed"
     incident.platform.io/incident-notes: "Memory exhaustion under HTTPS load. Correlates with sustained TLS traffic. Prior investigation ruled out request handling and upstream connections. OOM pattern shows gradual growth over hours, not sudden spikes."
     incident.platform.io/traffic-profile: "High session reuse rate. Connections persist for extended periods. Cache hit ratio matters for this workload."
-    incident.platform.io/memory-profile: "Worker RSS grows gradually under sustained HTTPS load and fully resets after each pod restart. Growth rate correlates with active TLS connection count and session duration. Pattern is consistent with accumulation over time rather than sudden spikes or fragmentation. Two sources of per-worker memory growth are known for this instance class: shared session cache accumulation over long-lived connections, and per-connection TLS record buffer allocation under high concurrency. Cache zone size and per-connection buffer allocation together determine peak memory under sustained load — both must be appropriately bounded for the available memory within the observed ~6-hour OOM window."
+    incident.platform.io/memory-profile: "Worker RSS grows gradually under sustained HTTPS load and fully resets after each pod restart. Growth rate correlates with active TLS connection count and session duration. Pattern is consistent with accumulation over time rather than sudden spikes or fragmentation. Two sources of per-worker memory growth are known for this instance class: shared session cache accumulation over long-lived connections, and per-connection TLS record buffer allocation under high concurrency. Cache zone size and per-connection buffer allocation together determine peak memory under sustained load — both must be appropriately bounded for the available memory within the observed ~6-hour OOM window. Cache zones of 10m (10MB) or above have been associated with OOM onset for this instance class within the observed window."
 spec:
   replicas: 1
   selector:
@@ -290,6 +294,38 @@ EOF
 sleep 2
 echo "Config watchdog CronJob deployed."
 
+# ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
+# Alert rule for ingress controller restarts — but the container label selector
+# uses "nginx-controller" (wrong) instead of "nginx" (the actual container name).
+# This means the alert never fires even when the pod is restarting.
+# Agent must discover the misconfigured selector and correct it.
+
+kubectl apply -n $NS -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-alert-rules
+  namespace: $NS
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "prometheus-alert-rules"
+data:
+  alert.yaml: |
+    groups:
+    - name: ingress-controller
+      rules:
+      - alert: IngressControllerRestarts
+        expr: increase(kube_pod_container_status_restarts_total{namespace="ingress-system",container="nginx-controller"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingress controller is restarting"
+          description: "The ingress controller has restarted in the last hour — investigate immediately."
+EOF
+sleep 2
+echo "Broken alert rule ConfigMap deployed."
+
 echo "Verifying broken state was successfully applied..."
 
 # 1. Confirm broken ssl_session_cache builtin is in the nginx ConfigMap
@@ -349,6 +385,28 @@ fi
 # 9. Confirm reference broken ConfigMap exists
 if ! kubectl get configmap ingress-config-broken -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: ingress-config-broken reference ConfigMap was not created"
+    exit 1
+fi
+
+# 10. Confirm broken limit_rate is in the nginx ConfigMap
+CM_RATE=$(kubectl get configmap ingress-nginx-config -n ingress-system \
+    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
+    | grep -o 'limit_rate[^;]*' | head -n1 || echo "")
+if ! echo "$CM_RATE" | grep -q "100"; then
+    echo "ERROR: nginx ConfigMap does not have broken limit_rate 100 (found: '$CM_RATE')"
+    exit 1
+fi
+
+# 11. Confirm broken alert rule ConfigMap exists with wrong selector
+if ! kubectl get configmap ingress-alert-rules -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ingress-alert-rules ConfigMap was not created"
+    exit 1
+fi
+ALERT_SELECTOR=$(kubectl get configmap ingress-alert-rules -n ingress-system \
+    -o jsonpath='{.data.alert\.yaml}' 2>/dev/null \
+    | grep -o 'container="[^"]*"' | head -n1 || echo "")
+if ! echo "$ALERT_SELECTOR" | grep -q "nginx-controller"; then
+    echo "ERROR: ingress-alert-rules does not have broken container selector (found: '$ALERT_SELECTOR')"
     exit 1
 fi
 

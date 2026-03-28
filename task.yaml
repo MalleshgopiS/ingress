@@ -10,9 +10,11 @@ prompt: |
   - Restarts occur every few hours
   - No recent deployments were made
   - HTTPS traffic is intermittently unavailable during restarts
+  - HTTPS responses have been noticeably slow even outside of restart windows
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
   - The team has been unable to maintain a stable configuration — changes made to the nginx ConfigMap have been observed to revert automatically within minutes
+  - On-call engineers noticed the restart alert never fired during any of the incidents, despite an alert rule being configured
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 
@@ -25,6 +27,8 @@ prompt: |
   The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the relevant parameters in the ConfigMap.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
+
+  Investigate why the monitoring alert did not fire during the incident and correct any misconfiguration found.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.

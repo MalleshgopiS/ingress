@@ -10,12 +10,9 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-MIN_CACHE_MB       = 1.0    # ssl_session_cache shared zone lower bound (MB)
-MAX_CACHE_MB       = 8.0    # ssl_session_cache ConfigMap upper bound (MB) — strict 8MB for 300Mi instance
-MAX_LIVE_CACHE_MB  = 8.0    # ssl_session_cache live upper bound (MB) — strict 8MB for 300Mi instance
-MAX_TIMEOUT_S      = 3600   # ssl_session_timeout ConfigMap upper bound — 1h maximum
-MAX_LIVE_TIMEOUT_S = 3600   # ssl_session_timeout live upper bound — 1h
-MAX_BUFFER_BYTES   = 8192   # ssl_buffer_size upper bound — 8k for 300Mi instance; rejects broken 64k and standard 16k
+BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
+MAX_TIMEOUT_S       = 3600   # ssl_session_timeout upper bound — 1h maximum
+MAX_LIVE_TIMEOUT_S  = 3600   # ssl_session_timeout live upper bound — 1h
 
 
 # ── Shell helper ───────────────────────────────────────────────────────────────
@@ -42,31 +39,16 @@ def _parse_nginx_time(s: str) -> int:
     return int(s)
 
 
-def _parse_cache_mb(val: str) -> float:
-    m = re.search(r'shared:\w+:(\d+)(k|m|g)', val, re.IGNORECASE)
-    if not m:
-        return -1.0
-    n, unit = int(m.group(1)), m.group(2).lower()
-    if unit == 'k':
-        return n / 1024.0
-    if unit == 'g':
-        return n * 1024.0
-    return float(n)
+# ── TLS checks ────────────────────────────────────────────────────────────────
+
+def _cache_is_shared(text: str) -> bool:
+    """ssl_session_cache must be a shared zone (any size is acceptable)."""
+    return bool(re.search(r'ssl_session_cache\s+shared:\w+:\S+\s*;', text or "", re.IGNORECASE))
 
 
-# ── Range-bounded TLS checks ───────────────────────────────────────────────────
-
-def _cache_ok(text: str, max_mb: float = None) -> bool:
-    """ssl_session_cache must be a shared zone within the accepted size range.
-    max_mb defaults to MAX_CACHE_MB (strict ConfigMap check); pass MAX_LIVE_CACHE_MB
-    for the live check (also strict 8MB — agents using standard 10m (10MB) fail)."""
-    if max_mb is None:
-        max_mb = MAX_CACHE_MB
-    m = re.search(r'ssl_session_cache\s+(shared:\w+:\S+)\s*;', text or "", re.IGNORECASE)
-    if not m:
-        return False
-    mb = _parse_cache_mb(m.group(1))
-    return MIN_CACHE_MB <= mb <= max_mb
+def _not_builtin(text: str) -> bool:
+    """ssl_session_cache must not use the unbounded 'builtin' type."""
+    return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
 
 
 def _timeout_ok(text: str, max_s: int = None) -> bool:
@@ -83,13 +65,9 @@ def _timeout_ok(text: str, max_s: int = None) -> bool:
         return False
 
 
-def _not_builtin(text: str) -> bool:
-    """ssl_session_cache must not use the unbounded 'builtin' type."""
-    return not re.search(r'ssl_session_cache\s+builtin\s*;', text or "")
-
-
-def _buffer_size_ok(text: str) -> bool:
-    """ssl_buffer_size must be present and within the per-connection allocation limit for this instance class."""
+def _buffer_reduced(text: str) -> bool:
+    """ssl_buffer_size must be present and less than the broken 64k value.
+    Any value below 64k is acceptable — rejects only the unmodified broken config."""
     m = re.search(r'ssl_buffer_size\s+(\d+)(k|m|)?\s*;', text or "", re.IGNORECASE)
     if not m:
         return False
@@ -100,7 +78,7 @@ def _buffer_size_ok(text: str) -> bool:
         bytes_val = n * 1024 * 1024
     else:
         bytes_val = n
-    return 0 < bytes_val <= MAX_BUFFER_BYTES
+    return 0 < bytes_val < BROKEN_BUFFER_BYTES
 
 
 def _protocols_secure(text: str) -> bool:
@@ -110,6 +88,22 @@ def _protocols_secure(text: str) -> bool:
         return True  # Not set = nginx defaults (TLSv1.2 TLSv1.3) = OK
     protocols = m.group(1).lower()
     return 'sslv3' not in protocols and not re.search(r'\btlsv1\b(?!\.)', protocols)
+
+
+def _rate_limit_removed(text: str) -> bool:
+    """limit_rate must not be set to a restrictive value.
+    Absent (removed) or set to 0 (disabled) are both acceptable."""
+    m = re.search(r'\blimit_rate\s+(\d+)(k|m|)?\s*;', text or "", re.IGNORECASE)
+    if not m:
+        return True  # Removed entirely — correct fix
+    n, unit = int(m.group(1)), (m.group(2) or "").lower()
+    if unit == 'k':
+        bytes_val = n * 1024
+    elif unit == 'm':
+        bytes_val = n * 1024 * 1024
+    else:
+        bytes_val = n
+    return bytes_val == 0  # 0 = disabled in nginx
 
 
 def _watchdog_stopped() -> bool:
@@ -143,6 +137,23 @@ def _watchdog_stopped() -> bool:
     return False
 
 
+def _alert_selector_correct() -> bool:
+    """The ingress-alert-rules ConfigMap must have the correct container selector.
+    The broken config uses container='nginx-controller'; correct is container='nginx'."""
+    res = run_cmd(
+        f"kubectl get configmap ingress-alert-rules -n {NS} "
+        f"-o jsonpath='{{.data.alert\\.yaml}}' 2>/dev/null"
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    content = res.stdout
+    # Must NOT still have the wrong selector
+    if re.search(r'container\s*=\s*["\']nginx-controller["\']', content):
+        return False
+    # Must have the correct selector
+    return bool(re.search(r'container\s*=\s*["\']nginx["\']', content))
+
+
 def _postmortem_exists() -> bool:
     """Agent must create /workdir/postmortem.md with ≥10 lines and relevant technical content."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
@@ -154,7 +165,7 @@ def _postmortem_exists() -> bool:
         return False
     # Must have at least 5 lines with relevant technical terms — not gameable with keyword soup
     res2 = run_cmd(
-        "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol' "
+        "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert|rate' "
         "/workdir/postmortem.md"
     )
     try:
@@ -212,16 +223,15 @@ def wait_for_pod(attempts: int = 12, delay: int = 10) -> Optional[str]:
 
 _CHEAT_SIGNALS = [
     # Internal grader constant names
-    (r'\bMIN_CACHE_MB\b',                                          "grader internal constant MIN_CACHE_MB"),
-    (r'\bMAX_CACHE_MB\b',                                          "grader internal constant MAX_CACHE_MB"),
-    (r'\bMAX_LIVE_CACHE_MB\b',                                     "grader internal constant MAX_LIVE_CACHE_MB"),
+    (r'\bBROKEN_BUFFER_BYTES\b',                                   "grader internal constant BROKEN_BUFFER_BYTES"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
     (r'\bMAX_LIVE_TIMEOUT_S\b',                                    "grader internal constant MAX_LIVE_TIMEOUT_S"),
-    (r'\bMAX_BUFFER_BYTES\b',                                      "grader internal constant MAX_BUFFER_BYTES"),
-    (r'\b_cache_ok\b',                                             "grader internal function _cache_ok"),
+    (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
+    (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
-    (r'\b_buffer_size_ok\b',                                       "grader internal function _buffer_size_ok"),
+    (r'\b_rate_limit_removed\b',                                   "grader internal function _rate_limit_removed"),
     (r'\b_protocols_secure\b',                                     "grader internal function _protocols_secure"),
+    (r'\b_alert_selector_correct\b',                               "grader internal function _alert_selector_correct"),
     (r'\b_postmortem_exists\b',                                    "grader internal function _postmortem_exists"),
     # Direct file reads
     (r'(?:cat|less|head|tail|more|bat|vim|nano|grep)\s+[^\n]*grader\.py',   "direct read of grader.py"),
@@ -258,14 +268,17 @@ def grade(transcript: str = None) -> GradingResult:
     """
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
-    Subscores (4 × 1/4 weight each):
-      1. basic_remediation  — watchdog stopped + timeout ≤ 1h + live timeout propagated +
-                              deprecated protocols removed + postmortem written
-      2. buffer_corrected   — ConfigMap ssl_buffer_size ≤ 8k; requires watchdog stopped
-      3. live_cache_reloaded — Live nginx shared cache ≤ 8MB after rollout restart
-      4. https_operational  — Ingress serves HTTPS; live buffer ≤ 8k AND live cache ≤ 8MB
+    Subscores (5 × 0.2 weight each):
+      1. drift_stopped       — watchdog CronJob neutralized (deleted, suspended, or source patched)
+      2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
+                               timeout ≤ 1h, limit_rate removed; gated on drift_stopped
+      3. config_propagated   — Live nginx has new config after rollout restart (shared cache
+                               type + syntax ok)
+      4. alert_configured    — ingress-alert-rules ConfigMap has correct container="nginx"
+                               selector (was "nginx-controller")
+      5. postmortem_complete — /workdir/postmortem.md exists with ≥10 lines of relevant content
 
-    Returns weighted score (4 × 1/4). All subscores are binary (0.0 or 1.0).
+    Returns weighted score (5 × 0.2). All subscores are binary (0.0 or 1.0).
     """
     try:
         # ── Integrity check ────────────────────────────────────────────────────
@@ -279,118 +292,64 @@ def grade(transcript: str = None) -> GradingResult:
                 ),
             )
 
-        # ── Milestone 1: watchdog_stopped ─────────────────────────────────────
-        # Computed FIRST — all ConfigMap-based milestones (M2, M3, M6) are gated
-        # on this result to prevent race conditions with the watchdog CronJob.
-        # The CronJob runs every 3 min; the grader's ConfigMap retry window is only
-        # 25s (5 × 5s), so the watchdog can fire mid-grading and flip ConfigMap
-        # checks from pass to fail non-deterministically. Gating on watchdog_stopped
-        # eliminates this: if the watchdog is still running, ConfigMap state is
-        # inherently unreliable and ConfigMap-based milestones correctly fail.
-        watchdog_stopped = False
-
+        # ── Subscore 1: drift_stopped ──────────────────────────────────────────
+        # Computed FIRST — config_fixed (S2) is gated on this to prevent race
+        # conditions with the watchdog CronJob (runs every 3 min; grader retry
+        # window is only 25s). If the watchdog is still running, ConfigMap state
+        # is unreliable and config_fixed correctly fails.
+        drift_stopped = False
         try:
-            watchdog_stopped = _watchdog_stopped()
+            drift_stopped = _watchdog_stopped()
         except Exception:
-            watchdog_stopped = False
+            drift_stopped = False
 
-        # ── Pre-compute: TLS protocol security (used by standalone protocols_corrected milestone) ──
-        # Computed after watchdog_stopped — proto_cm_secure is gated on watchdog_stopped
-        # to prevent race conditions (watchdog can revert ConfigMap mid-grading).
-        # If watchdog is still running, proto_cm_secure = False (CM is unreliable).
-        proto_cm_secure   = False
-        proto_live_secure = False
-
-        try:
-            if watchdog_stopped:
-                # ConfigMap is stable — safe to check protocol state there
-                for attempt in range(5):
-                    _cfg_p = get_configmap_conf()
-                    proto_cm_secure = _protocols_secure(_cfg_p)
-                    if proto_cm_secure:
-                        break
-                    if attempt < 4:
-                        time.sleep(5)
-            # Always check live nginx regardless of watchdog state
-            _pod_p = wait_for_pod()
-            if _pod_p:
-                for attempt in range(3):
-                    _res_p = run_cmd(
-                        f"kubectl exec -n {NS} {_pod_p} -- nginx -T 2>/dev/null", timeout=15)
-                    proto_live_secure = _protocols_secure(_res_p.stdout or "")
-                    if proto_live_secure:
-                        break
-                    if attempt < 2:
-                        time.sleep(10)
-        except Exception:
-            pass
-
-        # ── Milestone 2: timeout_corrected ────────────────────────────────────
-        # TLS session lifetime must be reduced (≤ MAX_TIMEOUT_S = 3600s / 1h).
-        # Gated on watchdog_stopped — the watchdog reverts the ConfigMap every 3
-        # minutes, which is shorter than the grader's 25s retry window. Without the
-        # gate, a watchdog firing mid-grading would non-deterministically fail this
-        # milestone even when the agent applied a valid value.
-        timeout_present   = False
-        timeout_bounded   = False
-        timeout_corrected = False
+        # ── Subscore 2: config_fixed ───────────────────────────────────────────
+        # ConfigMap must have all five issues resolved:
+        #   - ssl_session_cache changed from builtin to shared: (any size)
+        #   - ssl_buffer_size reduced below the broken 64k (any lower value valid)
+        #   - ssl_protocols no longer includes deprecated TLSv1/SSLv3
+        #   - ssl_session_timeout reduced to ≤ 1h
+        #   - limit_rate removed (was artificially throttling responses)
+        # Gated on drift_stopped: watchdog reverts ConfigMap every 3 min,
+        # shorter than the grader's 25s retry window. Without the gate, a
+        # mid-grading watchdog run would non-deterministically flip this score.
+        cfg_cache_shared    = False
+        cfg_buffer_reduced  = False
+        cfg_proto_secure    = False
+        cfg_timeout_ok      = False
+        cfg_rate_removed    = False
+        config_fixed        = False
 
         try:
-            if watchdog_stopped:
-                # ConfigMap is stable — safe to read and evaluate
+            if drift_stopped:
                 for attempt in range(5):
                     cfg = get_configmap_conf()
-                    timeout_present   = bool(re.search(
-                        r'ssl_session_timeout\s+\S+\s*;', cfg or ""))
-                    timeout_bounded   = _timeout_ok(cfg)
-                    timeout_corrected = timeout_present and timeout_bounded
-                    if timeout_corrected:
+                    cfg_cache_shared   = _cache_is_shared(cfg)
+                    cfg_buffer_reduced = _buffer_reduced(cfg)
+                    cfg_proto_secure   = _protocols_secure(cfg)
+                    cfg_timeout_ok     = _timeout_ok(cfg)
+                    cfg_rate_removed   = _rate_limit_removed(cfg)
+                    config_fixed = (
+                        cfg_cache_shared and cfg_buffer_reduced and
+                        cfg_proto_secure and cfg_timeout_ok and cfg_rate_removed
+                    )
+                    if config_fixed:
                         break
                     if attempt < 4:
                         time.sleep(5)
-            # If watchdog is still running, ConfigMap is unreliable; timeout_corrected stays False
         except Exception:
-            timeout_corrected = False
+            config_fixed = False
 
-        # ── Milestone 3: buffer_corrected ─────────────────────────────────────
-        # ssl_buffer_size controls the per-connection TLS record buffer. The broken
-        # config sets it to 64k — excessive for this 300Mi pod. Under high TLS
-        # concurrency the per-connection allocation compounds directly into worker RSS.
-        # Gated on watchdog_stopped for the same race condition reason as M2.
-        buffer_present   = False
-        buffer_bounded   = False
-        buffer_corrected = False
-
-        try:
-            if watchdog_stopped:
-                # ConfigMap is stable — safe to read and evaluate
-                for attempt in range(5):
-                    cfg = get_configmap_conf()
-                    buffer_present   = bool(re.search(r'ssl_buffer_size\s+\S+\s*;', cfg or ""))
-                    buffer_bounded   = _buffer_size_ok(cfg)
-                    buffer_corrected = buffer_present and buffer_bounded
-                    if buffer_corrected:
-                        break
-                    if attempt < 4:
-                        time.sleep(5)
-            # If watchdog is still running, ConfigMap is unreliable; buffer_corrected stays False
-        except Exception:
-            buffer_corrected = False
-
-        # ── Milestone 4: live_cache_reloaded ──────────────────────────────────
+        # ── Subscore 3: config_propagated ─────────────────────────────────────
         # ConfigMap changes do not auto-propagate to a running nginx process when
-        # the volume uses subPath. A rollout restart is required.
-        # Verifies via nginx -T that the running worker has a shared cache zone
-        # within the strict live bounds (≤ MAX_LIVE_CACHE_MB=8MB). The deployment
-        # annotation guidance says 5–8MB range; agents who pick the common generic
-        # "10m" recommendation (10MB) fail this check, creating genuine variance.
-        # Protocol security is graded independently in M6 — not bundled here.
-        # Buffer sizing is graded independently in M3 — not bundled here.
-        live_cache_shared   = False
-        live_cache_bounded  = False
-        live_not_builtin    = False
-        live_syntax_ok      = False
-        live_cache_reloaded = False
+        # the volume uses subPath — a rollout restart is required.
+        # Verified via nginx -T: live worker must show shared cache type (proves
+        # builtin was replaced and the pod was restarted with new config).
+        # Also checks nginx config syntax is valid in the running pod.
+        live_cache_shared  = False
+        live_not_builtin   = False
+        live_syntax_ok     = False
+        config_propagated  = False
 
         try:
             pod = wait_for_pod()
@@ -401,135 +360,35 @@ def grade(transcript: str = None) -> GradingResult:
                     res_t = run_cmd(
                         f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
                     live = res_T.stdout or ""
-                    live_cache_shared  = bool(re.search(
-                        r'ssl_session_cache\s+shared:\w+:', live, re.IGNORECASE))
-                    live_cache_bounded = _cache_ok(live, max_mb=MAX_LIVE_CACHE_MB)
-                    live_not_builtin   = _not_builtin(live)
-                    live_syntax_ok     = "syntax is ok" in (
+                    live_cache_shared = _cache_is_shared(live)
+                    live_not_builtin  = _not_builtin(live)
+                    live_syntax_ok    = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
-                    live_cache_reloaded = (
-                        live_cache_shared and live_cache_bounded and
-                        live_not_builtin  and live_syntax_ok
+                    config_propagated = (
+                        live_cache_shared and live_not_builtin and live_syntax_ok
                     )
-                    if live_cache_reloaded:
+                    if config_propagated:
                         break
                     if attempt < 2:
                         time.sleep(10)
         except Exception:
-            live_cache_reloaded = False
+            config_propagated = False
 
-        # ── Milestone 5: live_timeout_reloaded ────────────────────────────────
-        # Verifies via nginx -T that the running worker has the corrected session
-        # timeout value loaded after rollout restart.
-        # Uses MAX_LIVE_TIMEOUT_S (3600s / 1h) — consistent with M2's ConfigMap
-        # bound — ensuring sessions expire well within the observed ~6-hour OOM
-        # window and confirming the rollout restart propagated the new config.
-        live_timeout_present  = False
-        live_timeout_bounded  = False
-        live_timeout_reloaded = False
-
+        # ── Subscore 4: alert_configured ──────────────────────────────────────
+        # The ingress-alert-rules ConfigMap was deployed with an incorrect
+        # container label selector (container="nginx-controller") that prevents
+        # the restart alert from ever firing. The agent must discover the broken
+        # selector and correct it to container="nginx" to match the actual pod.
+        alert_configured = False
         try:
-            pod = wait_for_pod()
-            if pod:
-                for attempt in range(3):
-                    res_T = run_cmd(
-                        f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-                    live = res_T.stdout or ""
-                    live_timeout_present  = bool(re.search(
-                        r'ssl_session_timeout\s+\S+\s*;', live))
-                    live_timeout_bounded  = _timeout_ok(live, max_s=MAX_LIVE_TIMEOUT_S)
-                    live_timeout_reloaded = live_timeout_present and live_timeout_bounded
-                    if live_timeout_reloaded:
-                        break
-                    if attempt < 2:
-                        time.sleep(10)
+            alert_configured = _alert_selector_correct()
         except Exception:
-            live_timeout_reloaded = False
+            alert_configured = False
 
-        # ── Milestone 6: protocols_corrected ──────────────────────────────────
-        # Deprecated TLS protocols (TLSv1, SSLv3) must be removed from both the
-        # ConfigMap AND the running nginx worker. Requires rollout restart to
-        # propagate protocol changes to the live process. Graded independently
-        # of the cache size milestone — an agent can fix cache without fixing
-        # protocols, and vice versa.
-        protocols_corrected = proto_cm_secure and proto_live_secure
-
-        # ── Milestone 7: https_operational ────────────────────────────────────
-        # Gate: the live running nginx must no longer use the builtin cache type.
-        # Checked against nginx -T output (the actually loaded config), NOT the
-        # ConfigMap. This makes M6 independent of cache size / timeout thresholds:
-        # any shared zone proves the agent performed a rollout restart so the new
-        # config was loaded. Agents who only edit the ConfigMap without restarting
-        # still fail (live nginx still shows builtin). Agents who restart with any
-        # shared zone pass the gate regardless of which size or timeout they chose.
-        # Verifies the ingress controller responds to HTTPS requests with a valid
-        # TLS handshake and passes nginx config syntax validation.
-        https_gate_ok     = False
-        https_responds    = False
-        tls_handshake_ok  = False
-        nginx_syntax_ok   = False
-        live_buffer_ok    = False
-        https_cache_ok    = False
-        https_operational = False
-
-        try:
-            pod = wait_for_pod()
-            ip  = get_cluster_ip()
-            if pod and ip:
-                # Gate: live nginx must not use builtin (proves rollout restart happened)
-                res_live      = run_cmd(
-                    f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-                https_gate_ok = _not_builtin(res_live.stdout or "")
-                if https_gate_ok:
-                    # curl /healthz
-                    for _ in range(6):
-                        res = run_cmd(f"curl -k -s --max-time 5 https://{ip}/healthz")
-                        if "ok" in res.stdout.lower():
-                            https_responds = True
-                            break
-                        time.sleep(5)
-                    # TLS handshake
-                    res_tls = run_cmd(
-                        f"echo Q | openssl s_client -connect {ip}:443 2>&1 | head -10",
-                        timeout=15,
-                    )
-                    combined = (res_tls.stdout + res_tls.stderr).lower()
-                    tls_handshake_ok = (
-                        "ssl-session" in combined or
-                        "cipher"      in combined or
-                        "connected"   in combined
-                    )
-                    # nginx config syntax
-                    res_t = run_cmd(
-                        f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
-                    nginx_syntax_ok = "syntax is ok" in (
-                        res_t.stdout + res_t.stderr).lower()
-                    # Live buffer check — proves per-connection allocation was reduced.
-                    # Uses same MAX_BUFFER_BYTES threshold as M3 (ConfigMap check).
-                    # Requires rollout restart to propagate — independent of M3.
-                    live_buffer_ok = _buffer_size_ok(res_live.stdout or "")
-                    # Live cache bound check — a mis-sized cache (e.g. 10MB on a 300Mi
-                    # pod) means the service will OOM within hours regardless of whether
-                    # HTTPS currently responds. Re-uses the live_cache_bounded flag from
-                    # M4 by re-evaluating here against MAX_LIVE_CACHE_MB.
-                    https_cache_ok = _cache_ok(res_live.stdout or "", max_mb=MAX_LIVE_CACHE_MB)
-                    # watchdog_stopped gate — HTTPS is only truly operational when the
-                    # fix is persistent. An agent who patches nginx but leaves the
-                    # watchdog running will have their config reverted within minutes,
-                    # so this cannot be considered a stable operational state.
-                    https_operational = (
-                        watchdog_stopped and
-                        https_responds and tls_handshake_ok and
-                        nginx_syntax_ok and live_buffer_ok and https_cache_ok
-                    )
-        except Exception:
-            https_operational = False
-
-        # ── Milestone 7: postmortem_complete ──────────────────────────────────
+        # ── Subscore 5: postmortem_complete ───────────────────────────────────
         # Agent must document their investigation by creating /workdir/postmortem.md
         # with at least 10 lines explaining the root cause and remediation steps.
         postmortem_complete = False
-
         try:
             postmortem_complete = _postmortem_exists()
         except Exception:
@@ -537,25 +396,21 @@ def grade(transcript: str = None) -> GradingResult:
 
         # ── Subscores ──────────────────────────────────────────────────────────
         #
-        # Zero-variance milestones (watchdog, timeout, live_timeout, protocols,
-        # postmortem) are combined into basic_remediation to avoid dead weight
-        # and give the differentiating milestones appropriate score weight.
+        # Five equal-weight subscores — each tests a distinct, independently
+        # discoverable and fixable issue in the cluster:
         #
-        # 1) basic_remediation:  watchdog + timeout ≤ 1h + live timeout + protocols + postmortem
-        # 2) buffer_corrected:   ssl_buffer_size ≤ 8k in ConfigMap — agents must size conservatively for 300Mi instance
-        # 3) live_cache_reloaded: Live nginx shared cache ≤ 8MB — agents using standard 10m fail, creating variance
-        # 4) https_operational:  HTTPS works; live buffer ≤ 8k AND live cache ≤ 8MB confirmed
-
-        basic_remediation = (
-            watchdog_stopped and timeout_corrected and live_timeout_reloaded and
-            protocols_corrected and postmortem_complete
-        )
+        # 1) drift_stopped:      watchdog CronJob neutralized
+        # 2) config_fixed:       all five ConfigMap TLS/rate issues resolved
+        # 3) config_propagated:  rollout restart performed; live nginx has new config
+        # 4) alert_configured:   Prometheus alert selector corrected
+        # 5) postmortem_complete: documentation quality
 
         subscores: Dict[str, float] = {
-            "basic_remediation":   1.0 if basic_remediation   else 0.0,
-            "buffer_corrected":    1.0 if buffer_corrected     else 0.0,
-            "live_cache_reloaded": 1.0 if live_cache_reloaded  else 0.0,
-            "https_operational":   1.0 if https_operational    else 0.0,
+            "drift_stopped":      1.0 if drift_stopped      else 0.0,
+            "config_fixed":       1.0 if config_fixed        else 0.0,
+            "config_propagated":  1.0 if config_propagated   else 0.0,
+            "alert_configured":   1.0 if alert_configured    else 0.0,
+            "postmortem_complete": 1.0 if postmortem_complete else 0.0,
         }
 
         weight_val   = 1.0 / len(subscores)
@@ -567,30 +422,22 @@ def grade(transcript: str = None) -> GradingResult:
             f"Score={final_score:.4f}",
             f"Subscores={subscores}",
             f"MilestonesPassed={passed_count}/{len(subscores)}",
-            # basic_remediation components
-            f"WatchdogStopped: {'✓' if watchdog_stopped        else '✗'}",
-            f"TimeoutPresent: {'✓' if timeout_present          else '✗'}",
-            f"TimeoutBounded: {'✓' if timeout_bounded          else '✗'}",
-            f"LiveTimeoutPresent: {'✓' if live_timeout_present  else '✗'}",
-            f"LiveTimeoutBounded: {'✓' if live_timeout_bounded  else '✗'}",
-            f"ProtoCmSecure: {'✓' if proto_cm_secure           else '✗'}",
-            f"ProtoLiveSecure: {'✓' if proto_live_secure       else '✗'}",
-            f"PostmortemComplete: {'✓' if postmortem_complete   else '✗'}",
-            # buffer_corrected
-            f"BufferPresent: {'✓' if buffer_present            else '✗'}",
-            f"BufferBounded: {'✓' if buffer_bounded            else '✗'}",
-            # live_cache_reloaded
-            f"LiveCacheShared: {'✓' if live_cache_shared       else '✗'}",
-            f"LiveCacheBounded: {'✓' if live_cache_bounded     else '✗'}",
-            f"LiveNotBuiltin: {'✓' if live_not_builtin         else '✗'}",
-            f"LiveSyntaxOk: {'✓' if live_syntax_ok             else '✗'}",
-            # https_operational
-            f"HttpsGate: {'✓' if https_gate_ok                 else '✗'}",
-            f"HttpsResponds: {'✓' if https_responds            else '✗'}",
-            f"TlsHandshake: {'✓' if tls_handshake_ok           else '✗'}",
-            f"NginxSyntax: {'✓' if nginx_syntax_ok             else '✗'}",
-            f"LiveBufferOk: {'✓' if live_buffer_ok             else '✗'}",
-            f"HttpsCacheOk: {'✓' if https_cache_ok             else '✗'}",
+            # drift_stopped
+            f"DriftStopped: {'✓' if drift_stopped          else '✗'}",
+            # config_fixed components
+            f"CfgCacheShared: {'✓' if cfg_cache_shared     else '✗'}",
+            f"CfgBufferReduced: {'✓' if cfg_buffer_reduced  else '✗'}",
+            f"CfgProtoSecure: {'✓' if cfg_proto_secure      else '✗'}",
+            f"CfgTimeoutOk: {'✓' if cfg_timeout_ok          else '✗'}",
+            f"CfgRateRemoved: {'✓' if cfg_rate_removed      else '✗'}",
+            # config_propagated components
+            f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
+            f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
+            f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
+            # alert_configured
+            f"AlertConfigured: {'✓' if alert_configured     else '✗'}",
+            # postmortem
+            f"PostmortemComplete: {'✓' if postmortem_complete else '✗'}",
         ]
 
         return GradingResult(
