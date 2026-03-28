@@ -30,6 +30,8 @@ echo "    ssl_session_timeout = $SSL_TIMEOUT       (replaces: 86400 — 24-hour 
 echo "    ssl_buffer_size     = $SSL_BUFFER         (replaces: 64k — excessive per-connection)"
 echo "    ssl_protocols       = $SSL_PROTOCOLS  (replaces: TLSv1 TLSv1.2 TLSv1.3 — deprecated)"
 echo "    ssl_session_tickets = $SSL_TICKETS           (replaces: on — sessions stored twice wasting memory)"
+echo "    ssl_ciphers         = <removed>          (removes: HIGH:MEDIUM:LOW:EXP:!NULL — weak ciphers)"
+echo "    listen              = 443 ssl            (replaces: 127.0.0.1:443 — loopback-only, blocked external)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
 
@@ -43,13 +45,15 @@ PATCHED_CONF=$(echo "$CURRENT_CONF" \
   | sed "s|ssl_session_timeout\s\+[^;]*;|ssl_session_timeout $SSL_TIMEOUT;|" \
   | sed "s|ssl_buffer_size\s\+[^;]*;|ssl_buffer_size     $SSL_BUFFER;|" \
   | sed "s|ssl_protocols\s\+[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|" \
-  | sed "s|ssl_session_tickets\s\+[^;]*;|ssl_session_tickets $SSL_TICKETS;|")
+  | sed "s|ssl_session_tickets\s\+[^;]*;|ssl_session_tickets $SSL_TICKETS;|" \
+  | sed "/ssl_ciphers/d" \
+  | sed "s|listen\s\+127\.0\.0\.1:443 ssl|listen 443 ssl|")
 
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf="$PATCHED_CONF" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "[Step 2] ConfigMap patched (original structure preserved, all four TLS parameters fixed)."
+echo "[Step 2] ConfigMap patched (original structure preserved, all six TLS parameters fixed)."
 
 # ── Step 3: Rollout restart ────────────────────────────────────────────────────
 
@@ -116,10 +120,12 @@ cat > /workdir/postmortem.md <<'POSTMORTEM'
 ## Incident Summary
 The ingress-controller in the ingress-system namespace experienced periodic OOM restarts
 every ~6 hours due to misconfigured TLS session parameters in the nginx ConfigMap.
-A monitoring alert was also silently misconfigured and never fired during the incident.
+HTTPS traffic was also completely unavailable (connection refused) due to nginx being
+restricted to listen on 127.0.0.1:443 only. A monitoring alert was silently misconfigured
+and never fired during the incident.
 
 ## Root Cause
-Five misconfigured TLS directives in the nginx ConfigMap caused unbounded memory growth under HTTPS load:
+Six misconfigured TLS/network directives in the nginx ConfigMap caused OOM restarts and HTTPS outage:
 
 1. **ssl_session_cache builtin** — OpenSSL builtin cache grows unboundedly per-worker.
    Replaced with shared:SSL:5m (fixed 5MB zone shared across all workers).
@@ -137,12 +143,23 @@ Five misconfigured TLS directives in the nginx ConfigMap caused unbounded memory
    session tickets enabled causes sessions to be persisted twice (cache zone + ticket),
    defeating the memory bound. Set to off to force all resumption through the cache.
 
+6. **ssl_ciphers HIGH:MEDIUM:LOW:EXP:!NULL** — Included deprecated LOW and EXP (export-grade)
+   cipher classes, exposing connections to weak cryptography. Removed entirely to apply
+   nginx secure defaults (TLSv1.2/1.3-appropriate ciphers).
+
+## Additional Issue: Loopback-Only Listen Directive
+The nginx config had `listen 127.0.0.1:443 ssl` — binding only to the loopback interface.
+Traffic routed through the Kubernetes ClusterIP Service arrives at the pod's external
+interface (not loopback), so all HTTPS connections were refused. Fixed to `listen 443 ssl`
+(binds to all interfaces including 0.0.0.0).
+
 ## Contributing Factor: Silent Monitoring Failure
 The ingress-alert-rules ConfigMap contained a Prometheus alert for pod restarts, but
-the container label selector was set to container="nginx-controller" — a label that
-does not match any container in the ingress-controller pod (actual container name
-is "nginx"). This meant the alert never fired during the incident window.
-Fixed by patching the selector to container="nginx".
+both label selectors were wrong:
+- container="nginx-controller" (actual name is "nginx")
+- namespace="default" (actual namespace is "ingress-system")
+This meant the alert never fired during the incident window.
+Fixed by patching both selectors to their correct values.
 
 ## Configuration Drift
 Two CronJobs were actively reverting the nginx ConfigMap to the broken state:
@@ -152,7 +169,7 @@ Both were deleted before applying the config fix.
 
 ## Fix Applied
 1. Deleted both drift-control CronJobs (ingress-config-watchdog, ops-config-controller).
-2. Patched ingress-nginx-config ConfigMap with all five corrected TLS settings.
+2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to reload config.
 4. Corrected both wrong selectors in ingress-alert-rules ConfigMap:
    - container="nginx-controller" → container="nginx"
@@ -161,7 +178,7 @@ Both were deleted before applying the config fix.
 ## Verification
 nginx -T confirms corrected parameters are active in the running worker process.
 HTTPS healthz endpoint responds correctly after remediation.
-Alert ConfigMap now references the correct container label.
+Alert ConfigMap now references the correct container and namespace labels.
 POSTMORTEM
 
 echo "[Step 6] Post-mortem written to /workdir/postmortem.md"
@@ -173,6 +190,8 @@ echo "    ssl_session_timeout → $SSL_TIMEOUT       (was: 86400 — 24-hour acc
 echo "    ssl_buffer_size     → $SSL_BUFFER         (was: 64k — 16x recommended size)"
 echo "    ssl_protocols       → $SSL_PROTOCOLS  (was: TLSv1 TLSv1.2 TLSv1.3 — deprecated)"
 echo "    ssl_session_tickets → $SSL_TICKETS           (was: on — sessions stored twice)"
+echo "    ssl_ciphers         → <removed>           (was: HIGH:MEDIUM:LOW:EXP:!NULL — weak ciphers)"
+echo "    listen              → 443 ssl             (was: 127.0.0.1:443 — loopback-only)"
 echo "    alert container     → nginx               (was: nginx-controller)"
 echo "    alert namespace     → ingress-system       (was: default)"
 echo "    drift controllers   → both stopped         (ingress-config-watchdog + ops-config-controller)"

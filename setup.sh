@@ -82,9 +82,10 @@ http {
     ssl_buffer_size     64k;
     ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
     ssl_session_tickets on;
+    ssl_ciphers         "HIGH:MEDIUM:LOW:EXP:!NULL";
 
     server {
-        listen 443 ssl;
+        listen 127.0.0.1:443 ssl;
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
@@ -120,9 +121,10 @@ http {
     ssl_buffer_size     64k;
     ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
     ssl_session_tickets on;
+    ssl_ciphers         "HIGH:MEDIUM:LOW:EXP:!NULL";
 
     server {
-        listen 443 ssl;
+        listen 127.0.0.1:443 ssl;
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
@@ -488,6 +490,24 @@ CM_TICKETS=$(kubectl get configmap ingress-nginx-config -n ingress-system \
     | grep -o 'ssl_session_tickets[^;]*' | head -n1 || echo "")
 if ! echo "$CM_TICKETS" | grep -qi "on"; then
     echo "ERROR: nginx ConfigMap does not have broken ssl_session_tickets on (found: '$CM_TICKETS')"
+    exit 1
+fi
+
+# 13. Confirm broken ssl_ciphers with EXP is in the nginx ConfigMap
+CM_CIPHERS=$(kubectl get configmap ingress-nginx-config -n ingress-system \
+    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
+    | grep -o 'ssl_ciphers[^;]*' | head -n1 || echo "")
+if ! echo "$CM_CIPHERS" | grep -qi "EXP"; then
+    echo "ERROR: nginx ConfigMap does not have broken ssl_ciphers with EXP (found: '$CM_CIPHERS')"
+    exit 1
+fi
+
+# 14. Confirm listen 127.0.0.1:443 is in the nginx ConfigMap
+CM_LISTEN=$(kubectl get configmap ingress-nginx-config -n ingress-system \
+    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
+    | grep -o 'listen[^;]*' | head -n1 || echo "")
+if ! echo "$CM_LISTEN" | grep -qi "127.0.0.1"; then
+    echo "ERROR: nginx ConfigMap does not have broken listen 127.0.0.1:443 (found: '$CM_LISTEN')"
     exit 1
 fi
 

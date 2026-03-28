@@ -107,6 +107,27 @@ def _session_tickets_disabled(text: str) -> bool:
     return m.group(1).lower() == 'off'
 
 
+def _ciphers_secure(text: str) -> bool:
+    """ssl_ciphers must not include export-grade (EXP) or low-strength (LOW) ciphers.
+    The broken config includes HIGH:MEDIUM:LOW:EXP:!NULL — both LOW and EXP are
+    deprecated cipher classes. If the directive is absent after patching, nginx
+    secure defaults apply and that is also acceptable."""
+    m = re.search(r'ssl_ciphers\s+["\']?([^;"\';\n]+)["\']?\s*;', text or "")
+    if not m:
+        return True  # Removed → nginx secure defaults apply
+    ciphers = m.group(1).upper()
+    return not re.search(r'\bEXP\b|\bLOW\b', ciphers)
+
+
+def _listen_all_interfaces(text: str) -> bool:
+    """Port 443 must not be restricted to loopback (127.0.0.1 / ::1 / localhost).
+    The broken config sets 'listen 127.0.0.1:443 ssl' — external traffic routed
+    via the ClusterIP Service never reaches nginx on the loopback-only socket."""
+    if re.search(r'listen\s+(?:127\.0\.0\.1|::1|localhost):443', text or "", re.IGNORECASE):
+        return False
+    return bool(re.search(r'listen\s+\S*443', text or ""))
+
+
 def _source_configmap_patched() -> bool:
     """Return True if ingress-config-broken no longer contains the broken session cache."""
     res = run_cmd(
@@ -267,6 +288,8 @@ _CHEAT_SIGNALS = [
     (r'\bSSL_CACHE\s*=',                                           "solution.sh variable SSL_CACHE"),
     (r'\bSSL_TIMEOUT\s*=',                                         "solution.sh variable SSL_TIMEOUT"),
     (r'\bSSL_BUFFER\s*=',                                          "solution.sh variable SSL_BUFFER"),
+    (r'\b_ciphers_secure\b',                                       "grader internal function _ciphers_secure"),
+    (r'\b_listen_all_interfaces\b',                                "grader internal function _listen_all_interfaces"),
 ]
 
 
@@ -289,9 +312,11 @@ def grade(transcript: str = None) -> GradingResult:
       1. drift_stopped       — BOTH watchdog CronJobs neutralized (deleted, suspended,
                                or shared source ConfigMap patched)
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
-                               timeout ≤ 1h, ssl_session_tickets off; gated on drift_stopped
-      3. https_serving       — End-to-end: live nginx has new config + actual HTTPS request
-                               returns correct response + TLS handshake succeeds
+                               timeout ≤ 1h, ssl_session_tickets off, no EXP/LOW ciphers;
+                               gated on drift_stopped
+      3. https_serving       — End-to-end: live nginx has new config, port 443 listens on
+                               all interfaces (not restricted to loopback), actual HTTPS
+                               request returns correct response + TLS handshake succeeds
       4. alert_configured    — ingress-alert-rules ConfigMap has BOTH selectors corrected:
                                container="nginx" (was "nginx-controller") AND
                                namespace="ingress-system" (was "default")
@@ -323,7 +348,7 @@ def grade(transcript: str = None) -> GradingResult:
             drift_stopped = False
 
         # ── Subscore 2: config_fixed ───────────────────────────────────────────
-        # All five TLS issues in the ConfigMap must be resolved:
+        # All six TLS issues in the ConfigMap must be resolved:
         #   1. ssl_session_cache  — changed from builtin to shared: (any size)
         #   2. ssl_buffer_size    — reduced below the broken 64k (any lower value valid)
         #   3. ssl_protocols      — deprecated TLSv1/SSLv3 removed
@@ -331,11 +356,14 @@ def grade(transcript: str = None) -> GradingResult:
         #   5. ssl_session_tickets — explicitly set to off (broken config has it on;
         #                            with both cache and tickets active sessions are
         #                            stored twice, defeating the cache size bound)
+        #   6. ssl_ciphers        — must not include export-grade (EXP) or low-strength
+        #                           (LOW) cipher classes; absent = nginx defaults = OK
         cfg_cache_shared    = False
         cfg_buffer_reduced  = False
         cfg_proto_secure    = False
         cfg_timeout_ok      = False
         cfg_tickets_off     = False
+        cfg_ciphers_ok      = False
         config_fixed        = False
 
         try:
@@ -347,10 +375,11 @@ def grade(transcript: str = None) -> GradingResult:
                     cfg_proto_secure   = _protocols_secure(cfg)
                     cfg_timeout_ok     = _timeout_ok(cfg)
                     cfg_tickets_off    = _session_tickets_disabled(cfg)
+                    cfg_ciphers_ok     = _ciphers_secure(cfg)
                     config_fixed = (
                         cfg_cache_shared   and cfg_buffer_reduced and
                         cfg_proto_secure   and cfg_timeout_ok     and
-                        cfg_tickets_off
+                        cfg_tickets_off    and cfg_ciphers_ok
                     )
                     if config_fixed:
                         break
@@ -363,12 +392,14 @@ def grade(transcript: str = None) -> GradingResult:
         # Primary objective: restore reliable HTTPS service. Verified end-to-end:
         #   1. Live nginx -T shows shared cache (proves rollout restart was done)
         #   2. nginx -t syntax valid in running pod
-        #   3. Actual HTTPS curl request to /healthz returns "ok"
-        #   4. TLS handshake completes (openssl s_client)
+        #   3. Port 443 must not be restricted to loopback (127.0.0.1:443)
+        #   4. Actual HTTPS curl request to /healthz returns "ok"
+        #   5. TLS handshake completes (openssl s_client)
         # NOT gated on drift_stopped — live pod state is independently verifiable.
         live_cache_shared  = False
         live_not_builtin   = False
         live_syntax_ok     = False
+        live_listen_ok     = False
         https_responds     = False
         tls_handshake_ok   = False
         https_serving      = False
@@ -387,12 +418,13 @@ def grade(transcript: str = None) -> GradingResult:
                     live_not_builtin  = _not_builtin(live)
                     live_syntax_ok    = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
-                    if live_cache_shared and live_not_builtin and live_syntax_ok:
+                    live_listen_ok    = _listen_all_interfaces(live)
+                    if live_cache_shared and live_not_builtin and live_syntax_ok and live_listen_ok:
                         break
                     if attempt < 2:
                         time.sleep(10)
 
-                if live_cache_shared and live_not_builtin:
+                if live_cache_shared and live_not_builtin and live_listen_ok:
                     for _ in range(6):
                         res_curl = run_cmd(
                             f"curl -k -s --max-time 5 https://{ip}/healthz")
@@ -414,7 +446,7 @@ def grade(transcript: str = None) -> GradingResult:
 
                 https_serving = (
                     live_cache_shared and live_not_builtin and live_syntax_ok and
-                    https_responds    and tls_handshake_ok
+                    live_listen_ok    and https_responds   and tls_handshake_ok
                 )
         except Exception:
             https_serving = False
@@ -462,9 +494,11 @@ def grade(transcript: str = None) -> GradingResult:
             f"CfgProtoSecure: {'✓' if cfg_proto_secure       else '✗'}",
             f"CfgTimeoutOk: {'✓' if cfg_timeout_ok           else '✗'}",
             f"CfgTicketsOff: {'✓' if cfg_tickets_off         else '✗'}",
+            f"CfgCiphersOk: {'✓' if cfg_ciphers_ok           else '✗'}",
             f"LiveCacheShared: {'✓' if live_cache_shared     else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin       else '✗'}",
             f"LiveSyntaxOk: {'✓' if live_syntax_ok           else '✗'}",
+            f"LiveListenOk: {'✓' if live_listen_ok           else '✗'}",
             f"HttpsResponds: {'✓' if https_responds          else '✗'}",
             f"TlsHandshake: {'✓' if tls_handshake_ok         else '✗'}",
             f"AlertConfigured: {'✓' if alert_configured      else '✗'}",

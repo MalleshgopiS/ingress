@@ -9,7 +9,7 @@ prompt: |
   Observations from the team:
   - Restarts occur every few hours
   - No recent deployments were made
-  - HTTPS traffic is intermittently unavailable during restarts
+  - HTTPS traffic is unavailable — connection attempts to the endpoint are consistently refused
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
   - Prior attempts to stabilise the configuration have not held — changes do not appear to persist as expected
@@ -23,7 +23,7 @@ prompt: |
 
   Investigate the cluster resources to understand the memory profile and operational context for this instance class.
 
-  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate all TLS session-related parameters in the ConfigMap, including session cache, session lifetime, session tickets, buffer sizing, and protocol versions.
+  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate all TLS session-related parameters in the ConfigMap, including session cache, session lifetime, session tickets, buffer sizing, protocol versions, and cipher suites.
 
   Ensure the TLS configuration does not use deprecated protocol versions.
 
