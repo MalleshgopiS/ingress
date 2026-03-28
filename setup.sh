@@ -87,8 +87,6 @@ http {
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
 
-        limit_rate 100;
-
         location /healthz {
             return 200 "ok";
             add_header Content-Type text/plain;
@@ -125,8 +123,6 @@ http {
         listen 443 ssl;
         ssl_certificate     /etc/tls/tls.crt;
         ssl_certificate_key /etc/tls/tls.key;
-
-        limit_rate 100;
 
         location /healthz {
             return 200 "ok";
@@ -388,16 +384,7 @@ if ! kubectl get configmap ingress-config-broken -n ingress-system >/dev/null 2>
     exit 1
 fi
 
-# 10. Confirm broken limit_rate is in the nginx ConfigMap
-CM_RATE=$(kubectl get configmap ingress-nginx-config -n ingress-system \
-    -o jsonpath='{.data.nginx\.conf}' 2>/dev/null \
-    | grep -o 'limit_rate[^;]*' | head -n1 || echo "")
-if ! echo "$CM_RATE" | grep -q "100"; then
-    echo "ERROR: nginx ConfigMap does not have broken limit_rate 100 (found: '$CM_RATE')"
-    exit 1
-fi
-
-# 11. Confirm broken alert rule ConfigMap exists with wrong selector
+# 10. Confirm broken alert rule ConfigMap exists with wrong selector
 if ! kubectl get configmap ingress-alert-rules -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: ingress-alert-rules ConfigMap was not created"
     exit 1

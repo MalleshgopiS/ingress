@@ -90,22 +90,6 @@ def _protocols_secure(text: str) -> bool:
     return 'sslv3' not in protocols and not re.search(r'\btlsv1\b(?!\.)', protocols)
 
 
-def _rate_limit_removed(text: str) -> bool:
-    """limit_rate must not be set to a restrictive value.
-    Absent (removed) or set to 0 (disabled) are both acceptable."""
-    m = re.search(r'\blimit_rate\s+(\d+)(k|m|)?\s*;', text or "", re.IGNORECASE)
-    if not m:
-        return True  # Removed entirely — correct fix
-    n, unit = int(m.group(1)), (m.group(2) or "").lower()
-    if unit == 'k':
-        bytes_val = n * 1024
-    elif unit == 'm':
-        bytes_val = n * 1024 * 1024
-    else:
-        bytes_val = n
-    return bytes_val == 0  # 0 = disabled in nginx
-
-
 def _watchdog_stopped() -> bool:
     """The ingress-config-watchdog CronJob must be stopped or rendered harmless.
     Accepts three valid remediation approaches:
@@ -165,7 +149,7 @@ def _postmortem_exists() -> bool:
         return False
     # Must have at least 5 lines with relevant technical terms — not gameable with keyword soup
     res2 = run_cmd(
-        "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert|rate' "
+        "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert' "
         "/workdir/postmortem.md"
     )
     try:
@@ -229,7 +213,6 @@ _CHEAT_SIGNALS = [
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
     (r'\b_timeout_ok\b',                                           "grader internal function _timeout_ok"),
-    (r'\b_rate_limit_removed\b',                                   "grader internal function _rate_limit_removed"),
     (r'\b_protocols_secure\b',                                     "grader internal function _protocols_secure"),
     (r'\b_alert_selector_correct\b',                               "grader internal function _alert_selector_correct"),
     (r'\b_postmortem_exists\b',                                    "grader internal function _postmortem_exists"),
@@ -271,9 +254,10 @@ def grade(transcript: str = None) -> GradingResult:
     Subscores (5 × 0.2 weight each):
       1. drift_stopped       — watchdog CronJob neutralized (deleted, suspended, or source patched)
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
-                               timeout ≤ 1h, limit_rate removed; gated on drift_stopped
-      3. config_propagated   — Live nginx has new config after rollout restart (shared cache
-                               type + syntax ok)
+                               timeout ≤ 1h; gated on drift_stopped
+      3. https_serving       — Service functionally verified: live nginx has new config after
+                               rollout restart AND actual HTTPS request returns correct response
+                               AND TLS handshake succeeds
       4. alert_configured    — ingress-alert-rules ConfigMap has correct container="nginx"
                                selector (was "nginx-controller")
       5. postmortem_complete — /workdir/postmortem.md exists with ≥10 lines of relevant content
@@ -304,12 +288,11 @@ def grade(transcript: str = None) -> GradingResult:
             drift_stopped = False
 
         # ── Subscore 2: config_fixed ───────────────────────────────────────────
-        # ConfigMap must have all five issues resolved:
+        # ConfigMap must have all four TLS issues resolved:
         #   - ssl_session_cache changed from builtin to shared: (any size)
         #   - ssl_buffer_size reduced below the broken 64k (any lower value valid)
         #   - ssl_protocols no longer includes deprecated TLSv1/SSLv3
         #   - ssl_session_timeout reduced to ≤ 1h
-        #   - limit_rate removed (was artificially throttling responses)
         # Gated on drift_stopped: watchdog reverts ConfigMap every 3 min,
         # shorter than the grader's 25s retry window. Without the gate, a
         # mid-grading watchdog run would non-deterministically flip this score.
@@ -317,7 +300,6 @@ def grade(transcript: str = None) -> GradingResult:
         cfg_buffer_reduced  = False
         cfg_proto_secure    = False
         cfg_timeout_ok      = False
-        cfg_rate_removed    = False
         config_fixed        = False
 
         try:
@@ -328,10 +310,9 @@ def grade(transcript: str = None) -> GradingResult:
                     cfg_buffer_reduced = _buffer_reduced(cfg)
                     cfg_proto_secure   = _protocols_secure(cfg)
                     cfg_timeout_ok     = _timeout_ok(cfg)
-                    cfg_rate_removed   = _rate_limit_removed(cfg)
                     config_fixed = (
                         cfg_cache_shared and cfg_buffer_reduced and
-                        cfg_proto_secure and cfg_timeout_ok and cfg_rate_removed
+                        cfg_proto_secure and cfg_timeout_ok
                     )
                     if config_fixed:
                         break
@@ -340,20 +321,31 @@ def grade(transcript: str = None) -> GradingResult:
         except Exception:
             config_fixed = False
 
-        # ── Subscore 3: config_propagated ─────────────────────────────────────
-        # ConfigMap changes do not auto-propagate to a running nginx process when
-        # the volume uses subPath — a rollout restart is required.
-        # Verified via nginx -T: live worker must show shared cache type (proves
-        # builtin was replaced and the pod was restarted with new config).
-        # Also checks nginx config syntax is valid in the running pod.
+        # ── Subscore 3: https_serving ─────────────────────────────────────────
+        # The primary objective is to restore reliable HTTPS service. This subscore
+        # verifies the service is actually working end-to-end — not just that the
+        # ConfigMap has the right values. Requires:
+        #   1. Live nginx process has the new config loaded (shared cache, not builtin)
+        #      — proves the agent performed a rollout restart (subPath volumes do not
+        #      auto-reload; ConfigMap changes only take effect after pod restart)
+        #   2. nginx config syntax is valid in the running pod
+        #   3. Actual HTTPS request to /healthz returns a valid response
+        #   4. TLS handshake completes successfully (correct protocol negotiation)
+        # NOT gated on drift_stopped: the live pod state is independently verifiable.
+        # An agent who fixes the config and restarts but forgets the watchdog still
+        # gets partial credit here, since HTTPS is functional at grading time.
         live_cache_shared  = False
         live_not_builtin   = False
         live_syntax_ok     = False
-        config_propagated  = False
+        https_responds     = False
+        tls_handshake_ok   = False
+        https_serving      = False
 
         try:
             pod = wait_for_pod()
-            if pod:
+            ip  = get_cluster_ip()
+            if pod and ip:
+                # Step 1 & 2: verify live nginx loaded the new config
                 for attempt in range(3):
                     res_T = run_cmd(
                         f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
@@ -364,15 +356,40 @@ def grade(transcript: str = None) -> GradingResult:
                     live_not_builtin  = _not_builtin(live)
                     live_syntax_ok    = "syntax is ok" in (
                         res_t.stdout + res_t.stderr).lower()
-                    config_propagated = (
-                        live_cache_shared and live_not_builtin and live_syntax_ok
-                    )
-                    if config_propagated:
+                    if live_cache_shared and live_not_builtin and live_syntax_ok:
                         break
                     if attempt < 2:
                         time.sleep(10)
+
+                # Step 3: actual HTTPS request — proves the service is reachable
+                # and serving correct content, not just that the config looks right
+                if live_cache_shared and live_not_builtin:
+                    for _ in range(6):
+                        res_curl = run_cmd(
+                            f"curl -k -s --max-time 5 https://{ip}/healthz")
+                        if "ok" in res_curl.stdout.lower():
+                            https_responds = True
+                            break
+                        time.sleep(5)
+
+                    # Step 4: TLS handshake — verifies protocol negotiation works
+                    res_tls = run_cmd(
+                        f"echo Q | openssl s_client -connect {ip}:443 2>&1 | head -10",
+                        timeout=15,
+                    )
+                    combined = (res_tls.stdout + res_tls.stderr).lower()
+                    tls_handshake_ok = (
+                        "ssl-session" in combined or
+                        "cipher"      in combined or
+                        "connected"   in combined
+                    )
+
+                https_serving = (
+                    live_cache_shared and live_not_builtin and live_syntax_ok and
+                    https_responds    and tls_handshake_ok
+                )
         except Exception:
-            config_propagated = False
+            https_serving = False
 
         # ── Subscore 4: alert_configured ──────────────────────────────────────
         # The ingress-alert-rules ConfigMap was deployed with an incorrect
@@ -400,17 +417,17 @@ def grade(transcript: str = None) -> GradingResult:
         # discoverable and fixable issue in the cluster:
         #
         # 1) drift_stopped:      watchdog CronJob neutralized
-        # 2) config_fixed:       all five ConfigMap TLS/rate issues resolved
-        # 3) config_propagated:  rollout restart performed; live nginx has new config
+        # 2) config_fixed:       all four ConfigMap TLS issues resolved (gated)
+        # 3) https_serving:      end-to-end HTTPS functional test (live config + curl + TLS)
         # 4) alert_configured:   Prometheus alert selector corrected
         # 5) postmortem_complete: documentation quality
 
         subscores: Dict[str, float] = {
-            "drift_stopped":      1.0 if drift_stopped      else 0.0,
-            "config_fixed":       1.0 if config_fixed        else 0.0,
-            "config_propagated":  1.0 if config_propagated   else 0.0,
-            "alert_configured":   1.0 if alert_configured    else 0.0,
-            "postmortem_complete": 1.0 if postmortem_complete else 0.0,
+            "drift_stopped":       1.0 if drift_stopped       else 0.0,
+            "config_fixed":        1.0 if config_fixed         else 0.0,
+            "https_serving":       1.0 if https_serving        else 0.0,
+            "alert_configured":    1.0 if alert_configured     else 0.0,
+            "postmortem_complete": 1.0 if postmortem_complete  else 0.0,
         }
 
         weight_val   = 1.0 / len(subscores)
@@ -429,11 +446,12 @@ def grade(transcript: str = None) -> GradingResult:
             f"CfgBufferReduced: {'✓' if cfg_buffer_reduced  else '✗'}",
             f"CfgProtoSecure: {'✓' if cfg_proto_secure      else '✗'}",
             f"CfgTimeoutOk: {'✓' if cfg_timeout_ok          else '✗'}",
-            f"CfgRateRemoved: {'✓' if cfg_rate_removed      else '✗'}",
-            # config_propagated components
+            # https_serving components
             f"LiveCacheShared: {'✓' if live_cache_shared    else '✗'}",
             f"LiveNotBuiltin: {'✓' if live_not_builtin      else '✗'}",
             f"LiveSyntaxOk: {'✓' if live_syntax_ok          else '✗'}",
+            f"HttpsResponds: {'✓' if https_responds         else '✗'}",
+            f"TlsHandshake: {'✓' if tls_handshake_ok        else '✗'}",
             # alert_configured
             f"AlertConfigured: {'✓' if alert_configured     else '✗'}",
             # postmortem

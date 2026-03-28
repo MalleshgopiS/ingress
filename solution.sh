@@ -27,7 +27,6 @@ echo "    ssl_session_cache   = $SSL_CACHE        (replaces: builtin — unbound
 echo "    ssl_session_timeout = $SSL_TIMEOUT       (replaces: 86400 — 24-hour sessions)"
 echo "    ssl_buffer_size     = $SSL_BUFFER         (replaces: 64k — excessive per-connection)"
 echo "    ssl_protocols       = $SSL_PROTOCOLS  (replaces: TLSv1 TLSv1.2 TLSv1.3 — deprecated protocol included)"
-echo "    limit_rate          = removed             (replaces: 100 — was throttling all responses)"
 
 # ── Step 2: Patch nginx ConfigMap — surgically, not from scratch ───────────────
 
@@ -35,19 +34,18 @@ echo "[Step 2] Reading current nginx.conf from ConfigMap..."
 CURRENT_CONF=$(kubectl get configmap ingress-nginx-config -n $NS \
   -o jsonpath='{.data.nginx\.conf}')
 
-echo "[Step 2] Patching broken TLS parameters and removing rate limit in-place..."
+echo "[Step 2] Patching the four broken TLS parameters in-place..."
 PATCHED_CONF=$(echo "$CURRENT_CONF" \
   | sed "s|ssl_session_cache\s\+[^;]*;|ssl_session_cache   $SSL_CACHE;|" \
   | sed "s|ssl_session_timeout\s\+[^;]*;|ssl_session_timeout $SSL_TIMEOUT;|" \
   | sed "s|ssl_buffer_size\s\+[^;]*;|ssl_buffer_size     $SSL_BUFFER;|" \
-  | sed "s|ssl_protocols\s\+[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|" \
-  | sed '/limit_rate\s\+[^;]*;/d')
+  | sed "s|ssl_protocols\s\+[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|")
 
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf="$PATCHED_CONF" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-echo "[Step 2] ConfigMap patched (original structure preserved, TLS parameters fixed, limit_rate removed)."
+echo "[Step 2] ConfigMap patched (original structure preserved, all four TLS parameters fixed)."
 
 # ── Step 3: Rollout restart ────────────────────────────────────────────────────
 
@@ -113,26 +111,22 @@ cat > /workdir/postmortem.md <<'POSTMORTEM'
 ## Incident Summary
 The ingress-controller in the ingress-system namespace experienced periodic OOM restarts
 every ~6 hours due to misconfigured TLS session parameters in the nginx ConfigMap.
-Additionally, a rate limit directive was throttling HTTPS responses, and a monitoring
-alert was silently misconfigured and never firing during the incident.
+A monitoring alert was also silently misconfigured and never fired during the incident.
 
 ## Root Cause
-Five misconfigured directives were identified in the nginx ConfigMap:
+Four misconfigured TLS directives in the nginx ConfigMap caused unbounded memory growth under HTTPS load:
 
 1. **ssl_session_cache builtin** — OpenSSL builtin cache grows unboundedly per-worker.
    Replaced with shared:SSL:5m (fixed 5MB zone shared across all workers).
 
-2. **ssl_session_timeout 86400** — 24-hour session lifetime caused accumulation far
+2. **ssl_session_timeout 86400** — 24-hour session lifetime caused session accumulation far
    exceeding the ~6-hour OOM cycle. Reduced to 20m to allow multiple eviction cycles.
 
-3. **ssl_buffer_size 64k** — Per-connection buffer sized for a larger instance class.
+3. **ssl_buffer_size 64k** — Per-connection TLS record buffer sized for a larger instance.
    Reduced to 4k (nginx default), appropriate for the 300Mi memory limit.
 
 4. **ssl_protocols TLSv1 TLSv1.2 TLSv1.3** — Deprecated TLSv1 included, exposing
    clients to downgrade attacks. Fixed to TLSv1.2 TLSv1.3 only.
-
-5. **limit_rate 100** — Response throughput was artificially capped at 100 bytes/s,
-   causing slow responses under all load conditions. Directive removed.
 
 ## Contributing Factor: Silent Monitoring Failure
 The ingress-alert-rules ConfigMap contained a Prometheus alert for pod restarts, but
@@ -166,6 +160,5 @@ echo "    ssl_session_cache   → $SSL_CACHE        (was: builtin — unbounded 
 echo "    ssl_session_timeout → $SSL_TIMEOUT       (was: 86400 — 24-hour accumulation)"
 echo "    ssl_buffer_size     → $SSL_BUFFER         (was: 64k — 16x recommended size)"
 echo "    ssl_protocols       → $SSL_PROTOCOLS  (was: TLSv1 TLSv1.2 TLSv1.3 — deprecated protocol)"
-echo "    limit_rate          → removed             (was: 100 — throttling all responses)"
 echo "    alert selector      → container=nginx     (was: nginx-controller — alert never fired)"
 echo "    postmortem          → /workdir/postmortem.md"
