@@ -15,6 +15,7 @@ echo "[Step 0] Stopping all configuration drift controllers to prevent further c
 kubectl delete cronjob ingress-config-watchdog -n $NS     --ignore-not-found
 kubectl delete cronjob ops-config-controller   -n $NS     --ignore-not-found
 kubectl delete cronjob audit-log-exporter      -n default --ignore-not-found
+kubectl delete cronjob log-rotation-helper     -n default --ignore-not-found
 # Delete the telemetry-agent Deployment and force-kill its pod immediately
 # (graceful termination is not sufficient — pod can still revert config during grace period)
 kubectl delete deployment telemetry-agent      -n default --ignore-not-found
@@ -23,7 +24,7 @@ kubectl delete pods -n default -l app=telemetry-agent --grace-period=0 --force 2
 # proceeding — prevents a last-gasp kubectl apply from the dying container
 # reverting the ConfigMap between our patch and the rollout restart.
 sleep 5
-echo "[Step 0] All four drift controllers stopped (3 CronJobs + telemetry-agent Deployment)."
+echo "[Step 0] All five drift controllers stopped (4 CronJobs + telemetry-agent Deployment)."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
@@ -174,11 +175,12 @@ three issues prevented it from ever firing:
 All three were fixed: both label selectors corrected and metric name typo resolved.
 
 ## Configuration Drift
-Four drift controllers were actively reverting the nginx ConfigMap to the broken state:
+Five drift controllers were actively reverting the nginx ConfigMap to the broken state:
 - ingress-config-watchdog (CronJob, every 3 min, ingress-system) — reads from ingress-config-broken
 - ops-config-controller (CronJob, every 5 min, ingress-system) — reads from ingress-config-broken
 - audit-log-exporter (CronJob, every 4 min, default namespace) — reads from ingress-config-snapshot; easy to miss because it is in the default namespace and uses a non-obvious name
 - telemetry-agent (Deployment, every 2 min, default namespace) — reads from ingress-config-broken; disguised as a telemetry/metrics agent, not a CronJob
+- log-rotation-helper (CronJob, every 7 min, default namespace) — reads from ingress-config-broken; disguised as a log management/cleanup job
 
 The primary source ConfigMap is ingress-config-broken (ingress-system); the tertiary CronJob uses
 ingress-config-snapshot (also ingress-system) as a separate reference — patching only one source is
@@ -188,13 +190,15 @@ All four controllers were stopped before applying any config changes to prevent 
 the fix during the remediation window.
 
 ## Fix Applied
-1. Stopped all four drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller,
-   audit-log-exporter; force-deleted telemetry-agent Deployment and its pod.
+1. Stopped all five drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller,
+   audit-log-exporter, log-rotation-helper; force-deleted telemetry-agent Deployment and its pod.
 2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to pick up ConfigMap changes.
-4. Corrected both broken label selectors in ingress-alert-rules ConfigMap:
+4. Corrected all three broken elements in ingress-alert-rules ConfigMap:
    - container="nginx-controller" → container="nginx"
    - namespace="default" → namespace="ingress-system"
+   - kube_pod_container_status_restart_total → kube_pod_container_status_restarts_total
+     (metric name typo — confirmed against kube-state-metrics-reference ConfigMap)
 
 ## Verification
 nginx -T confirms corrected parameters are active in the running worker process.

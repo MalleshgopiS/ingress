@@ -13,7 +13,7 @@ prompt: |
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
   - Previous attempts to stabilise the configuration appear to have been short-lived — the broken state keeps returning after interventions, suggesting automated processes in the cluster may be restoring it
-  - Automated monitoring alerts for the ingress-system namespace did not fire during the incident despite the repeated restarts — these alert rules must be found, reviewed, and corrected so they target the correct container and namespace
+  - Automated monitoring alerts for the ingress-system namespace did not fire during the incident despite the repeated restarts — these alert rules must be found, reviewed, and fully corrected (including verifying that the Prometheus metric name in the expression is exact; a kube-state-metrics reference ConfigMap is available in the cluster to cross-check metric names)
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 
@@ -23,7 +23,7 @@ prompt: |
 
   Investigate the cluster resources and identify all factors contributing to the instability.
 
-  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS session parameters, cipher suite selection, and the interface the server listens on for settings that may cause unbounded memory accumulation or prevent external traffic from reaching the service under Kubernetes routing.
+  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS session parameters (including session resumption mechanisms; having session data persisted via multiple independent paths simultaneously can undermine the memory bound set by any single mechanism), cipher suite selection, and the interface the server listens on for settings that may cause unbounded memory accumulation or prevent external traffic from reaching the service under Kubernetes routing.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.
@@ -34,7 +34,7 @@ prompt: |
   - Have functional monitoring alerts correctly targeting the ingress controller
   - Preserve the overall nginx configuration structure while updating TLS parameters as needed
 
-  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md. The postmortem should include the specific resources responsible for the recurring configuration drift and the reference ConfigMaps they were reading from.
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md. The postmortem should document all resources involved in the incident, including any automated processes that were found to be active.
 
   [Constraints]
   - Do not increase memory limits

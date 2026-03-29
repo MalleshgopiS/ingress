@@ -552,6 +552,74 @@ EOF
 sleep 2
 echo "Quaternary drift controller (telemetry-agent) deployed."
 
+# ── Quinary Config Drift Controller (default namespace, disguised as log helper) ──
+# A CronJob in default namespace that periodically re-applies the broken nginx config.
+# Deliberately named and annotated to look like a routine log management/cleanup task.
+# Agents who only scan for "watchdog" or "controller" named resources will miss it.
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ops-helper-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ops-helper-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ops-helper-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ops-helper-role
+subjects:
+- kind: ServiceAccount
+  name: ops-helper-sa
+  namespace: default
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-rotation-helper
+  namespace: default
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "log-rotation-and-cleanup"
+    platform.io/description: "Rotates and archives log artifacts for ingress components"
+spec:
+  schedule: "*/7 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ops-helper-sa
+          containers:
+          - name: helper
+            image: alpine/k8s:1.30.4
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # platform-ops: log rotation and cleanup for ingress components
+              # Syncs configuration baseline as part of scheduled cleanup procedure
+              kubectl get cm ingress-config-broken -n ingress-system -o json \
+                | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "ingress-system"}, data: .data}' \
+                | kubectl apply -f - >/dev/null 2>&1 || true
+          restartPolicy: OnFailure
+EOF
+sleep 2
+echo "Quinary drift controller (log-rotation-helper) deployed."
+
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
 # Alert rule for ingress controller restarts — broken with THREE issues:
 #   1. namespace="default"          (wrong — should be "ingress-system")
@@ -584,6 +652,42 @@ data:
 EOF
 sleep 2
 echo "Broken alert rule ConfigMap deployed."
+
+# ── kube-state-metrics Reference ConfigMap ────────────────────────────────────
+# Provides a reference list of available kube-state-metrics metric names.
+# Agents investigating the alert expression can cross-reference the metric name
+# used in the broken rule against this list to catch the restart_total typo.
+
+kubectl apply -n $NS -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-state-metrics-reference
+  namespace: $NS
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "monitoring-metric-reference"
+data:
+  metrics.txt: |
+    # kube-state-metrics pod container metrics (available subset for this cluster)
+    kube_pod_container_info
+    kube_pod_container_resource_limits
+    kube_pod_container_resource_requests
+    kube_pod_container_status_last_terminated_reason
+    kube_pod_container_status_ready
+    kube_pod_container_status_restarts_total
+    kube_pod_container_status_running
+    kube_pod_container_status_terminated
+    kube_pod_container_status_terminated_reason
+    kube_pod_container_status_waiting
+    kube_pod_container_status_waiting_reason
+    kube_pod_info
+    kube_pod_labels
+    kube_pod_status_phase
+    kube_pod_status_ready
+EOF
+sleep 2
+echo "kube-state-metrics reference ConfigMap deployed."
 
 echo "Verifying broken state was successfully applied..."
 
@@ -729,6 +833,18 @@ TELEM_REPLICAS=$(kubectl get deployment telemetry-agent -n default \
     -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
 if [ "$TELEM_REPLICAS" != "1" ]; then
     echo "ERROR: telemetry-agent Deployment does not have 1 replica (found: '$TELEM_REPLICAS')"
+    exit 1
+fi
+
+# 19. Confirm quinary drift controller (log-rotation-helper CronJob) exists in default namespace
+if ! kubectl get cronjob log-rotation-helper -n default >/dev/null 2>&1; then
+    echo "ERROR: log-rotation-helper CronJob was not created in default namespace"
+    exit 1
+fi
+
+# 20. Confirm kube-state-metrics reference ConfigMap exists
+if ! kubectl get configmap kube-state-metrics-reference -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: kube-state-metrics-reference ConfigMap was not created"
     exit 1
 fi
 

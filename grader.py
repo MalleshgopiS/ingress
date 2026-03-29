@@ -17,6 +17,8 @@ WATCHDOG_TERTIARY     = "audit-log-exporter"         # CronJob, default namespac
 WATCHDOG_TERTIARY_NS  = "default"
 WATCHDOG_QUATERNARY   = "telemetry-agent"            # Deployment, default namespace (disguised)
 WATCHDOG_QUATERNARY_NS = "default"
+WATCHDOG_QUINARY      = "log-rotation-helper"        # CronJob, default namespace (disguised as log mgmt)
+WATCHDOG_QUINARY_NS   = "default"
 
 # Source ConfigMaps used by the watchdog controllers
 # Primary + secondary + quaternary share ingress-config-broken.
@@ -212,6 +214,8 @@ def _watchdog_stopped() -> bool:
                                     does NOT stop this job)
       4. telemetry-agent         — Deployment in default namespace; reads from ingress-config-broken
                                    (disguised as a telemetry/metrics tool; runs every 2 minutes)
+      5. log-rotation-helper     — CronJob in default namespace; reads from ingress-config-broken
+                                   (disguised as a log management job; runs every 7 minutes)
 
     Accepted remediation approaches:
       a) Delete/suspend ALL FOUR controllers individually
@@ -240,19 +244,27 @@ def _watchdog_stopped() -> bool:
     else:
         quaternary_ok = _deployment_neutralized(WATCHDOG_QUATERNARY, ns=WATCHDOG_QUATERNARY_NS)
 
-    return primary_ok and secondary_ok and tertiary_ok and quaternary_ok
+    # Quinary: CronJob in default namespace disguised as log management
+    if _source_configmap_patched():
+        quinary_ok = True
+    else:
+        quinary_ok = _cronjob_neutralized(WATCHDOG_QUINARY, ns=WATCHDOG_QUINARY_NS)
+
+    return primary_ok and secondary_ok and tertiary_ok and quaternary_ok and quinary_ok
 
 
 def _alert_selector_correct() -> bool:
-    """The ingress-alert-rules ConfigMap must have BOTH label selectors corrected:
+    """The ingress-alert-rules ConfigMap must have ALL THREE issues corrected:
       1. container="nginx"          (broken: "nginx-controller")
       2. namespace="ingress-system" (broken: "default")
+      3. metric name: kube_pod_container_status_restarts_total
+                      (broken: restart_total — missing trailing 's')
 
-    Both are discoverable by comparing the alert rule against the actual running
-    deployment/namespace in the cluster.  The metric name (kube_pod_container_status_
-    restart_total vs restarts_total) is a separate documentation finding but is not
-    graded here — there is no Prometheus/kube-state-metrics in the cluster for an
-    agent to validate metric names against."""
+    All three are discoverable:
+      - container + namespace: compare alert selectors against the running pod
+      - metric name: the kube-state-metrics-reference ConfigMap in ingress-system
+        lists available metric names; agents who check it will see
+        'restarts_total' vs the broken 'restart_total'."""
     res = run_cmd(
         f"kubectl get configmap ingress-alert-rules -n {NS} "
         f"-o jsonpath='{{.data.alert\\.yaml}}' 2>/dev/null"
@@ -271,7 +283,12 @@ def _alert_selector_correct() -> bool:
         return False
     namespace_ok = bool(re.search(r'namespace\s*=\s*["\']ingress-system["\']', content))
 
-    return container_ok and namespace_ok
+    # metric name must be corrected (broken: restart_total, correct: restarts_total)
+    if 'restart_total' in content and 'restarts_total' not in content:
+        return False
+    metric_ok = 'restarts_total' in content
+
+    return container_ok and namespace_ok and metric_ok
 
 
 def _postmortem_exists() -> bool:
@@ -397,6 +414,7 @@ _CHEAT_SIGNALS = [
     (r'\bWATCHDOG_SECONDARY\b',                                    "grader internal constant WATCHDOG_SECONDARY"),
     (r'\bWATCHDOG_TERTIARY\b',                                     "grader internal constant WATCHDOG_TERTIARY"),
     (r'\bWATCHDOG_QUATERNARY\b',                                   "grader internal constant WATCHDOG_QUATERNARY"),
+    (r'\bWATCHDOG_QUINARY\b',                                      "grader internal constant WATCHDOG_QUINARY"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
@@ -438,11 +456,11 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Subscores (5 × 0.2 weight each):
-      1. drift_stopped       — ALL FOUR drift controllers neutralized: three CronJobs
-                               (ingress-config-watchdog, ops-config-controller,
-                               audit-log-exporter) plus telemetry-agent Deployment
-                               in default namespace; deleted, suspended/scaled, or
-                               shared source ConfigMap patched
+      1. drift_stopped       — ALL FIVE drift controllers neutralized: three CronJobs in
+                               ingress-system (ingress-config-watchdog, ops-config-controller),
+                               two CronJobs in default (audit-log-exporter, log-rotation-helper),
+                               plus telemetry-agent Deployment in default namespace;
+                               deleted, suspended/scaled, or shared source ConfigMap patched
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
                                timeout ≤ 1h, ssl_session_tickets off, no EXP/LOW ciphers;
                                gated on drift_stopped
@@ -450,9 +468,11 @@ def grade(transcript: str = None) -> GradingResult:
                                all interfaces (not restricted to loopback), actual HTTPS
                                request returns correct response + TLS handshake succeeds;
                                GATED on drift_stopped (reliable HTTPS requires stable config)
-      4. alert_configured    — ingress-alert-rules ConfigMap has BOTH label selectors
-                               corrected: container="nginx" (was "nginx-controller"),
-                               namespace="ingress-system" (was "default");
+      4. alert_configured    — ingress-alert-rules ConfigMap has ALL THREE issues corrected:
+                               container="nginx" (was "nginx-controller"),
+                               namespace="ingress-system" (was "default"),
+                               metric restarts_total (was restart_total — typo, metric
+                               name can be verified via kube-state-metrics-reference CM);
                                GATED on drift_stopped
       5. postmortem_complete — /workdir/postmortem.md with ≥25 lines of relevant content
 
