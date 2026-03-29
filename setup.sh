@@ -182,6 +182,48 @@ http {
 }'
 sleep 2
 
+# ── Senary Reference ConfigMap: separate source for cert-renewal-agent ────────
+# The SENARY drift controller (cert-renewal-agent) uses this ConfigMap as its
+# source — NOT ingress-config-broken or ingress-config-snapshot.  Patching
+# either of those alone will NOT stop the senary CronJob because it reads from
+# this separate archive.  Agents must either patch THIS ConfigMap or delete
+# cert-renewal-agent directly.
+
+kubectl delete configmap ingress-config-archive -n $NS --ignore-not-found
+kubectl create configmap ingress-config-archive -n $NS \
+  --from-literal=nginx.conf='events {
+    worker_connections 1024;
+}
+
+http {
+    keepalive_timeout 75;
+    server_tokens off;
+
+    ssl_session_cache   builtin;
+    ssl_session_timeout 86400;
+    ssl_buffer_size     64k;
+    ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
+    ssl_session_tickets on;
+    ssl_ciphers         "HIGH:MEDIUM:LOW:EXP:!NULL";
+
+    server {
+        listen 127.0.0.1:443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+
+        location /healthz {
+            return 200 "ok";
+            add_header Content-Type text/plain;
+        }
+
+        location / {
+            return 200 "Ingress Controller Running";
+            add_header Content-Type text/plain;
+        }
+    }
+}'
+sleep 2
+
 # ── nginx Deployment ───────────────────────────────────────────────────────────
 
 kubectl apply -n $NS -f - <<EOF
@@ -620,6 +662,80 @@ EOF
 sleep 2
 echo "Quinary drift controller (log-rotation-helper) deployed."
 
+# ── Senary Config Drift Controller (default namespace, disguised as cert renewal) ──
+# A CronJob in default namespace that periodically re-applies the broken nginx
+# config from ingress-config-archive — a SEPARATE source ConfigMap that is not
+# ingress-config-broken or ingress-config-snapshot.  Deliberately named and
+# annotated to look like a certificate lifecycle management tool; agents who
+# only scan for "watchdog" / "controller" names or only patch ingress-config-broken
+# will miss this controller.
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-renewal-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-renewal-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-renewal-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-renewal-role
+subjects:
+- kind: ServiceAccount
+  name: cert-renewal-sa
+  namespace: default
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-renewal-agent
+  namespace: default
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "certificate-lifecycle-management"
+    platform.io/description: "Manages TLS certificate renewal and configuration baseline for ingress components"
+spec:
+  schedule: "*/11 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: cert-renewal-sa
+          restartPolicy: Never
+          containers:
+          - name: renewer
+            image: alpine/k8s:1.30.4
+            imagePullPolicy: Never
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # platform-ops: certificate lifecycle management
+              # Ensures ingress component configuration aligns with certificate baseline archive
+              kubectl get cm ingress-config-archive -n ingress-system -o json \
+                | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "ingress-system"}, data: .data}' \
+                | kubectl apply -f - >/dev/null 2>&1 || true
+EOF
+sleep 2
+echo "Senary drift controller (cert-renewal-agent) deployed."
+
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
 # Alert rule for ingress controller restarts — broken with THREE issues:
 #   1. namespace="default"          (wrong — should be "ingress-system")
@@ -845,6 +961,18 @@ fi
 # 20. Confirm kube-state-metrics reference ConfigMap exists
 if ! kubectl get configmap kube-state-metrics-reference -n ingress-system >/dev/null 2>&1; then
     echo "ERROR: kube-state-metrics-reference ConfigMap was not created"
+    exit 1
+fi
+
+# 21. Confirm senary drift controller (cert-renewal-agent CronJob) exists in default namespace
+if ! kubectl get cronjob cert-renewal-agent -n default >/dev/null 2>&1; then
+    echo "ERROR: cert-renewal-agent CronJob was not created in default namespace"
+    exit 1
+fi
+
+# 22. Confirm ingress-config-archive (senary source ConfigMap) exists
+if ! kubectl get configmap ingress-config-archive -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ingress-config-archive ConfigMap was not created"
     exit 1
 fi
 

@@ -16,6 +16,7 @@ kubectl delete cronjob ingress-config-watchdog -n $NS     --ignore-not-found
 kubectl delete cronjob ops-config-controller   -n $NS     --ignore-not-found
 kubectl delete cronjob audit-log-exporter      -n default --ignore-not-found
 kubectl delete cronjob log-rotation-helper     -n default --ignore-not-found
+kubectl delete cronjob cert-renewal-agent      -n default --ignore-not-found
 # Delete the telemetry-agent Deployment and force-kill its pod immediately
 # (graceful termination is not sufficient — pod can still revert config during grace period)
 kubectl delete deployment telemetry-agent      -n default --ignore-not-found
@@ -24,7 +25,7 @@ kubectl delete pods -n default -l app=telemetry-agent --grace-period=0 --force 2
 # proceeding — prevents a last-gasp kubectl apply from the dying container
 # reverting the ConfigMap between our patch and the rollout restart.
 sleep 5
-echo "[Step 0] All five drift controllers stopped (4 CronJobs + telemetry-agent Deployment)."
+echo "[Step 0] All six drift controllers stopped (5 CronJobs + telemetry-agent Deployment)."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
 
@@ -62,6 +63,17 @@ PATCHED_CONF=$(echo "$CURRENT_CONF" \
 kubectl create configmap ingress-nginx-config -n $NS \
   --from-literal=nginx.conf="$PATCHED_CONF" \
   --dry-run=client -o yaml | kubectl apply -f -
+
+# Also patch all three source ConfigMaps so any in-flight job pods cannot revert the config
+kubectl create configmap ingress-config-broken -n $NS \
+  --from-literal=nginx.conf="$PATCHED_CONF" \
+  --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+kubectl create configmap ingress-config-snapshot -n $NS \
+  --from-literal=nginx.conf="$PATCHED_CONF" \
+  --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+kubectl create configmap ingress-config-archive -n $NS \
+  --from-literal=nginx.conf="$PATCHED_CONF" \
+  --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
 
 echo "[Step 2] ConfigMap patched (original structure preserved, all six TLS parameters fixed)."
 
@@ -175,30 +187,34 @@ three issues prevented it from ever firing:
 All three were fixed: both label selectors corrected and metric name typo resolved.
 
 ## Configuration Drift
-Five drift controllers were actively reverting the nginx ConfigMap to the broken state:
+Six drift controllers were actively reverting the nginx ConfigMap to the broken state:
 - ingress-config-watchdog (CronJob, every 3 min, ingress-system) — reads from ingress-config-broken
 - ops-config-controller (CronJob, every 5 min, ingress-system) — reads from ingress-config-broken
 - audit-log-exporter (CronJob, every 4 min, default namespace) — reads from ingress-config-snapshot; easy to miss because it is in the default namespace and uses a non-obvious name
 - telemetry-agent (Deployment, every 2 min, default namespace) — reads from ingress-config-broken; disguised as a telemetry/metrics agent, not a CronJob
 - log-rotation-helper (CronJob, every 7 min, default namespace) — reads from ingress-config-broken; disguised as a log management/cleanup job
+- cert-renewal-agent (CronJob, every 11 min, default namespace) — reads from ingress-config-archive; disguised as certificate lifecycle management
 
-The primary source ConfigMap is ingress-config-broken (ingress-system); the tertiary CronJob uses
-ingress-config-snapshot (also ingress-system) as a separate reference — patching only one source is
-insufficient because the other CronJob will still revert ingress-nginx-config.
+There are THREE separate source ConfigMaps: ingress-config-broken (primary, used by 4 controllers),
+ingress-config-snapshot (used by audit-log-exporter), and ingress-config-archive (used by
+cert-renewal-agent). Patching only ingress-config-broken is insufficient because audit-log-exporter
+reads from ingress-config-snapshot and cert-renewal-agent reads from ingress-config-archive.
 
-All four controllers were stopped before applying any config changes to prevent drift from reverting
+All six controllers were stopped before applying any config changes to prevent drift from reverting
 the fix during the remediation window.
 
 ## Fix Applied
-1. Stopped all five drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller,
-   audit-log-exporter, log-rotation-helper; force-deleted telemetry-agent Deployment and its pod.
+1. Stopped all six drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller,
+   audit-log-exporter, log-rotation-helper, cert-renewal-agent; force-deleted telemetry-agent
+   Deployment and its pod. Also patched all three source ConfigMaps (ingress-config-broken,
+   ingress-config-snapshot, ingress-config-archive) to prevent any in-flight job pods from reverting.
 2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to pick up ConfigMap changes.
 4. Corrected all three broken elements in ingress-alert-rules ConfigMap:
    - container="nginx-controller" → container="nginx"
    - namespace="default" → namespace="ingress-system"
    - kube_pod_container_status_restart_total → kube_pod_container_status_restarts_total
-     (metric name typo — confirmed against kube-state-metrics-reference ConfigMap)
+     (metric name typo — verified against kube-state-metrics-reference ConfigMap in ingress-system)
 
 ## Verification
 nginx -T confirms corrected parameters are active in the running worker process.
@@ -248,5 +264,5 @@ echo "    listen              → 443 ssl             (was: 127.0.0.1:443 — lo
 echo "    alert container     → nginx               (was: nginx-controller)"
 echo "    alert namespace     → ingress-system       (was: default)"
 echo "    alert metric        → restarts_total       (was: restart_total — typo, metric did not exist)"
-echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + audit-log-exporter + telemetry-agent)"
+echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + audit-log-exporter + log-rotation-helper + cert-renewal-agent + telemetry-agent)"
 echo "    postmortem          → /workdir/postmortem.md"

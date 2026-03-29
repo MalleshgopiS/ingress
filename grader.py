@@ -10,7 +10,7 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# Watchdog names — all four must be neutralized to stop config drift
+# Watchdog names — all six must be neutralized to stop config drift
 WATCHDOG_PRIMARY      = "ingress-config-watchdog"   # CronJob, ingress-system
 WATCHDOG_SECONDARY    = "ops-config-controller"      # CronJob, ingress-system
 WATCHDOG_TERTIARY     = "audit-log-exporter"         # CronJob, default namespace
@@ -19,12 +19,16 @@ WATCHDOG_QUATERNARY   = "telemetry-agent"            # Deployment, default names
 WATCHDOG_QUATERNARY_NS = "default"
 WATCHDOG_QUINARY      = "log-rotation-helper"        # CronJob, default namespace (disguised as log mgmt)
 WATCHDOG_QUINARY_NS   = "default"
+WATCHDOG_SENARY       = "cert-renewal-agent"         # CronJob, default namespace (disguised as cert lifecycle)
+WATCHDOG_SENARY_NS    = "default"
 
 # Source ConfigMaps used by the watchdog controllers
-# Primary + secondary + quaternary share ingress-config-broken.
+# Primary + secondary + quaternary + quinary share ingress-config-broken.
 # Tertiary uses ingress-config-snapshot — a SEPARATE source.
-# Patching ingress-config-broken alone does NOT stop the tertiary.
+# Senary uses ingress-config-archive — a THIRD separate source.
+# Patching ingress-config-broken alone does NOT stop the tertiary or senary.
 SNAPSHOT_CM = "ingress-config-snapshot"
+ARCHIVE_CM  = "ingress-config-archive"
 
 BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
 MAX_TIMEOUT_S       = 3600   # ssl_session_timeout upper bound — 1h maximum
@@ -177,6 +181,20 @@ def _snapshot_configmap_patched() -> bool:
     return not re.search(r'ssl_session_cache\s+builtin', res.stdout, re.IGNORECASE)
 
 
+def _archive_configmap_patched() -> bool:
+    """Return True if ingress-config-archive no longer contains the broken session cache.
+    Covers the senary watchdog (cert-renewal-agent reads from ingress-config-archive,
+    NOT from ingress-config-broken or ingress-config-snapshot — patching either of those
+    alone does NOT stop the senary CronJob)."""
+    res = run_cmd(
+        f"kubectl get configmap {ARCHIVE_CM} -n {NS} "
+        f"-o jsonpath='{{.data.nginx\\.conf}}' 2>/dev/null"
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    return not re.search(r'ssl_session_cache\s+builtin', res.stdout, re.IGNORECASE)
+
+
 def _cronjob_neutralized(name: str, ns: str = NS) -> bool:
     """Return True if the named CronJob is deleted or suspended."""
     res = run_cmd(
@@ -203,9 +221,9 @@ def _deployment_neutralized(name: str, ns: str = "default") -> bool:
 
 
 def _watchdog_stopped() -> bool:
-    """ALL FOUR drift controllers must be neutralized.
+    """ALL SIX drift controllers must be neutralized.
 
-    The environment runs four drift-control resources that periodically restore
+    The environment runs six drift-control resources that periodically restore
     the broken nginx config:
       1. ingress-config-watchdog — CronJob in ingress-system; reads from ingress-config-broken
       2. ops-config-controller   — CronJob in ingress-system; reads from ingress-config-broken
@@ -216,11 +234,16 @@ def _watchdog_stopped() -> bool:
                                    (disguised as a telemetry/metrics tool; runs every 2 minutes)
       5. log-rotation-helper     — CronJob in default namespace; reads from ingress-config-broken
                                    (disguised as a log management job; runs every 7 minutes)
+      6. cert-renewal-agent      — CronJob in default namespace; reads from ingress-config-archive
+                                   (a THIRD separate source — patching ingress-config-broken or
+                                    ingress-config-snapshot alone does NOT stop this job;
+                                    disguised as certificate lifecycle management)
 
     Accepted remediation approaches:
-      a) Delete/suspend ALL FOUR controllers individually
-      b) Patch ingress-config-broken  → stops 1 + 2 + 4; then handle 3 separately
+      a) Delete/suspend ALL SIX controllers individually
+      b) Patch ingress-config-broken  → stops 1 + 2 + 4 + 5; handle 3 and 6 separately
          Patch ingress-config-snapshot → stops 3
+         Patch ingress-config-archive  → stops 6
       c) Mix: patch sources and/or delete/scale controllers individually
     """
     # Primary + secondary: neutralized if ingress-config-broken is patched OR deleted/suspended
@@ -250,7 +273,14 @@ def _watchdog_stopped() -> bool:
     else:
         quinary_ok = _cronjob_neutralized(WATCHDOG_QUINARY, ns=WATCHDOG_QUINARY_NS)
 
-    return primary_ok and secondary_ok and tertiary_ok and quaternary_ok and quinary_ok
+    # Senary: CronJob in default namespace disguised as certificate lifecycle management
+    # Uses ingress-config-archive — a SEPARATE source; patching ingress-config-broken is insufficient
+    if _archive_configmap_patched():
+        senary_ok = True
+    else:
+        senary_ok = _cronjob_neutralized(WATCHDOG_SENARY, ns=WATCHDOG_SENARY_NS)
+
+    return primary_ok and secondary_ok and tertiary_ok and quaternary_ok and quinary_ok and senary_ok
 
 
 def _alert_selector_correct() -> bool:
@@ -415,6 +445,7 @@ _CHEAT_SIGNALS = [
     (r'\bWATCHDOG_TERTIARY\b',                                     "grader internal constant WATCHDOG_TERTIARY"),
     (r'\bWATCHDOG_QUATERNARY\b',                                   "grader internal constant WATCHDOG_QUATERNARY"),
     (r'\bWATCHDOG_QUINARY\b',                                      "grader internal constant WATCHDOG_QUINARY"),
+    (r'\bWATCHDOG_SENARY\b',                                       "grader internal constant WATCHDOG_SENARY"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
@@ -456,10 +487,10 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Subscores (5 × 0.2 weight each):
-      1. drift_stopped       — ALL FIVE drift controllers neutralized: three CronJobs in
+      1. drift_stopped       — ALL SIX drift controllers neutralized: two CronJobs in
                                ingress-system (ingress-config-watchdog, ops-config-controller),
-                               two CronJobs in default (audit-log-exporter, log-rotation-helper),
-                               plus telemetry-agent Deployment in default namespace;
+                               three CronJobs in default (audit-log-exporter, log-rotation-helper,
+                               cert-renewal-agent), plus telemetry-agent Deployment in default;
                                deleted, suspended/scaled, or shared source ConfigMap patched
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
                                timeout ≤ 1h, ssl_session_tickets off, no EXP/LOW ciphers;
@@ -491,9 +522,9 @@ def grade(transcript: str = None) -> GradingResult:
             )
 
         # ── Subscore 1: drift_stopped ──────────────────────────────────────────
-        # Four drift controllers actively revert the nginx ConfigMap on a schedule.
+        # Six drift controllers actively revert the nginx ConfigMap on a schedule.
         # config_fixed AND https_serving are gated on this: if any controller is still
-        # running, ConfigMap state is unreliable (reverted within 2-5 min) and both
+        # running, ConfigMap state is unreliable (reverted within 2-11 min) and both
         # subscores would non-deterministically flip. The gate eliminates this.
         drift_stopped = False
         try:
