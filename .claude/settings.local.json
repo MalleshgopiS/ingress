@@ -9,7 +9,8 @@
       "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" log --oneline --all)",
       "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" add solution.sh)",
       "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" diff --staged --stat)",
-      "Bash(git -C:*)"
+      "Bash(git -C:*)",
+      "Bash(grep -icE:*)"
     ]
   }
 }
