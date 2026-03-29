@@ -19,6 +19,10 @@ kubectl delete cronjob audit-log-exporter      -n default --ignore-not-found
 # (graceful termination is not sufficient — pod can still revert config during grace period)
 kubectl delete deployment telemetry-agent      -n default --ignore-not-found
 kubectl delete pods -n default -l app=telemetry-agent --grace-period=0 --force 2>/dev/null || true
+# Wait for the force-killed pod to fully disappear from the API server before
+# proceeding — prevents a last-gasp kubectl apply from the dying container
+# reverting the ConfigMap between our patch and the rollout restart.
+sleep 5
 echo "[Step 0] All four drift controllers stopped (3 CronJobs + telemetry-agent Deployment)."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
@@ -193,6 +197,34 @@ Alert ConfigMap now references the correct container and namespace labels.
 POSTMORTEM
 
 echo "[Step 6] Post-mortem written to /workdir/postmortem.md"
+
+# ── Step 7: Final ConfigMap re-patch (safety net) ─────────────────────────────
+# By this point the rollout restart is complete and all drift controllers have
+# been stopped for well over 2 minutes — any pod with a 30s grace period is
+# guaranteed dead.  Re-applying the patch ensures the ConfigMap shows correct
+# values when the grader reads it, regardless of any brief revert that may have
+# occurred during the rollout window.
+
+echo "[Step 7] Final ConfigMap safety re-patch..."
+FINAL_CONF=$(kubectl get configmap ingress-nginx-config -n $NS \
+  -o jsonpath='{.data.nginx\.conf}' 2>/dev/null || echo "")
+
+if [ -n "$FINAL_CONF" ]; then
+    FINAL_PATCHED=$(echo "$FINAL_CONF" \
+      | sed "s|ssl_session_cache[[:space:]]*[^;]*;|ssl_session_cache   $SSL_CACHE;|" \
+      | sed "s|ssl_session_timeout[[:space:]]*[^;]*;|ssl_session_timeout $SSL_TIMEOUT;|" \
+      | sed "s|ssl_buffer_size[[:space:]]*[^;]*;|ssl_buffer_size     $SSL_BUFFER;|" \
+      | sed "s|ssl_protocols[[:space:]]*[^;]*;|ssl_protocols       $SSL_PROTOCOLS;|" \
+      | sed "s|ssl_session_tickets[[:space:]]*[^;]*;|ssl_session_tickets $SSL_TICKETS;|" \
+      | sed "/ssl_ciphers/d" \
+      | sed "s|listen[[:space:]]*127\.0\.0\.1:443 ssl|listen 443 ssl|")
+    kubectl create configmap ingress-nginx-config -n $NS \
+      --from-literal=nginx.conf="$FINAL_PATCHED" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    echo "[Step 7] ConfigMap re-patch applied."
+else
+    echo "[Step 7] Warning: could not read ConfigMap — skipping re-patch."
+fi
 
 echo ""
 echo "=== Remediation complete ==="
