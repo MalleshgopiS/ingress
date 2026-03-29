@@ -175,20 +175,26 @@ All three were fixed: both label selectors corrected and metric name typo resolv
 
 ## Configuration Drift
 Four drift controllers were actively reverting the nginx ConfigMap to the broken state:
-- ingress-config-watchdog (every 3 minutes, ingress-system) — named for its purpose
-- ops-config-controller (every 5 minutes, ingress-system) — secondary drift controller
-- audit-log-exporter (every 4 minutes, default namespace) — disguised as audit logging, easy to miss
-- telemetry-agent (every 2 minutes, default namespace) — disguised as a telemetry/metrics Deployment, not a CronJob
-All four were stopped before applying the config fix.
+- ingress-config-watchdog (CronJob, every 3 min, ingress-system) — reads from ingress-config-broken
+- ops-config-controller (CronJob, every 5 min, ingress-system) — reads from ingress-config-broken
+- audit-log-exporter (CronJob, every 4 min, default namespace) — reads from ingress-config-snapshot; easy to miss because it is in the default namespace and uses a non-obvious name
+- telemetry-agent (Deployment, every 2 min, default namespace) — reads from ingress-config-broken; disguised as a telemetry/metrics agent, not a CronJob
+
+The primary source ConfigMap is ingress-config-broken (ingress-system); the tertiary CronJob uses
+ingress-config-snapshot (also ingress-system) as a separate reference — patching only one source is
+insufficient because the other CronJob will still revert ingress-nginx-config.
+
+All four controllers were stopped before applying any config changes to prevent drift from reverting
+the fix during the remediation window.
 
 ## Fix Applied
-1. Stopped all four drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller, audit-log-exporter; scaled telemetry-agent Deployment to 0.
+1. Stopped all four drift controllers: deleted CronJobs ingress-config-watchdog, ops-config-controller,
+   audit-log-exporter; force-deleted telemetry-agent Deployment and its pod.
 2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
-3. Performed rollout restart — subPath volume mounts require a pod restart to reload config.
-4. Corrected all three issues in ingress-alert-rules ConfigMap:
+3. Performed rollout restart — subPath volume mounts require a pod restart to pick up ConfigMap changes.
+4. Corrected both broken label selectors in ingress-alert-rules ConfigMap:
    - container="nginx-controller" → container="nginx"
    - namespace="default" → namespace="ingress-system"
-   - kube_pod_container_status_restart_total → kube_pod_container_status_restarts_total
 
 ## Verification
 nginx -T confirms corrected parameters are active in the running worker process.

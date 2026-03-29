@@ -277,14 +277,18 @@ def _alert_selector_correct() -> bool:
 def _postmortem_exists() -> bool:
     """Agent must create /workdir/postmortem.md with ≥25 lines of relevant technical content.
 
-    Three content checks are applied:
+    Four content checks are applied:
       1. General TLS/nginx keywords — proves the agent documented the core memory issue
          in sufficient depth (≥10 matching lines required).
       2. Drift/watchdog keywords  — proves the agent discovered and documented the
-         automated config-revert mechanism in multiple places (≥3 matching lines required);
+         automated config-revert mechanism in multiple places (≥4 matching lines required);
          agents who never found the CronJobs would not naturally include these terms.
       3. Alert/monitoring keywords — proves the agent documented the monitoring failure
-         (≥2 matching lines required); agents who missed the alert fix won't include these."""
+         (≥2 matching lines required); agents who missed the alert fix won't include these.
+      4. Drift source ConfigMap — proves the agent investigated WHY drift kept happening
+         (not just that controllers existed) by examining what reference ConfigMap the
+         controllers read from.  Agents who merely deleted controllers without inspecting
+         their source will not naturally mention ingress-config-broken/ingress-config-snapshot."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
@@ -305,7 +309,7 @@ def _postmortem_exists() -> bool:
     if relevant < 10:
         return False
 
-    # Check 2: must document the configuration-drift / watchdog discovery (≥3 matching lines)
+    # Check 2: must document the configuration-drift / watchdog discovery (≥4 matching lines)
     res3 = run_cmd(
         "grep -icE 'cronjob|cron job|watchdog|config.*watchdog|config.*drift|drift.*config' "
         "/workdir/postmortem.md"
@@ -314,7 +318,7 @@ def _postmortem_exists() -> bool:
         drift_docs = int(res3.stdout.strip())
     except (ValueError, TypeError):
         return False
-    if drift_docs < 3:
+    if drift_docs < 4:
         return False
 
     # Check 3: must document the alert/monitoring failure (≥2 matching lines)
@@ -326,7 +330,23 @@ def _postmortem_exists() -> bool:
         alert_docs = int(res4.stdout.strip())
     except (ValueError, TypeError):
         return False
-    return alert_docs >= 2
+    if alert_docs < 2:
+        return False
+
+    # Check 4: must name the source/reference ConfigMap the drift controllers read from
+    # (proves agent understood the drift mechanism — not just that controllers existed but
+    # what broken reference they were applying).  Matches the specific ConfigMap names
+    # ingress-config-broken and ingress-config-snapshot as well as descriptive references.
+    res5 = run_cmd(
+        "grep -icE "
+        "'ingress.config.broken|config-broken|ingress.config.snapshot|config-snapshot' "
+        "/workdir/postmortem.md"
+    )
+    try:
+        source_docs = int(res5.stdout.strip())
+    except (ValueError, TypeError):
+        return False
+    return source_docs >= 1
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
