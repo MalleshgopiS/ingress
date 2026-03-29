@@ -14,7 +14,7 @@ echo "=== Applying TLS memory leak remediation ==="
 echo "[Step 0] Stopping all configuration drift controllers to prevent further config drift..."
 kubectl delete cronjob ingress-config-watchdog -n $NS      --ignore-not-found
 kubectl delete cronjob ops-config-controller   -n $NS      --ignore-not-found
-kubectl delete cronjob platform-reconciler     -n default  --ignore-not-found
+kubectl delete cronjob audit-log-exporter      -n default  --ignore-not-found
 echo "[Step 0] All three drift controllers stopped."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────
@@ -166,11 +166,11 @@ Fixed by patching both selectors to their correct values.
 Three CronJobs were actively reverting the nginx ConfigMap to the broken state:
 - ingress-config-watchdog (every 3 minutes, ingress-system) — named for its purpose
 - ops-config-controller (every 5 minutes, ingress-system) — secondary drift controller
-- platform-reconciler (every 4 minutes, default namespace) — cross-namespace reconciler, easy to miss
+- audit-log-exporter (every 4 minutes, default namespace) — disguised as audit logging, easy to miss
 All three were deleted before applying the config fix.
 
 ## Fix Applied
-1. Deleted all three drift-control CronJobs (ingress-config-watchdog, ops-config-controller, platform-reconciler).
+1. Deleted all three drift-control CronJobs (ingress-config-watchdog, ops-config-controller, audit-log-exporter).
 2. Patched ingress-nginx-config ConfigMap with all six corrected TLS/network settings.
 3. Performed rollout restart — subPath volume mounts require a pod restart to reload config.
 4. Corrected both wrong selectors in ingress-alert-rules ConfigMap:
@@ -196,5 +196,5 @@ echo "    ssl_ciphers         → <removed>           (was: HIGH:MEDIUM:LOW:EXP:
 echo "    listen              → 443 ssl             (was: 127.0.0.1:443 — loopback-only)"
 echo "    alert container     → nginx               (was: nginx-controller)"
 echo "    alert namespace     → ingress-system       (was: default)"
-echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + platform-reconciler)"
+echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + audit-log-exporter)"
 echo "    postmortem          → /workdir/postmortem.md"

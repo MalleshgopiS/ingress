@@ -13,7 +13,7 @@ SVC    = "ingress-controller-svc"
 # Watchdog CronJob names — all three must be neutralized to stop config drift
 WATCHDOG_PRIMARY      = "ingress-config-watchdog"
 WATCHDOG_SECONDARY    = "ops-config-controller"
-WATCHDOG_TERTIARY     = "platform-reconciler"
+WATCHDOG_TERTIARY     = "audit-log-exporter"
 WATCHDOG_TERTIARY_NS  = "default"
 
 BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
@@ -219,22 +219,23 @@ def _alert_selector_correct() -> bool:
 
 
 def _postmortem_exists() -> bool:
-    """Agent must create /workdir/postmortem.md with ≥10 lines of relevant technical content.
+    """Agent must create /workdir/postmortem.md with ≥20 lines of relevant technical content.
 
     Two content checks are applied:
-      1. General TLS/nginx keywords — proves the agent documented the core memory issue.
+      1. General TLS/nginx keywords — proves the agent documented the core memory issue
+         in sufficient depth (≥8 matching lines required).
       2. Drift/watchdog keywords  — proves the agent discovered and documented the
-         automated config-revert mechanism; agents who never found the CronJobs would
-         not naturally include these terms in their write-up."""
+         automated config-revert mechanism in multiple places (≥2 matching lines required);
+         agents who never found the CronJobs would not naturally include these terms."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
     parts = res.stdout.strip().split()
     lines = int(parts[0]) if parts else 0
-    if lines < 10:
+    if lines < 20:
         return False
 
-    # Check 1: general TLS/nginx technical content (≥5 matching lines)
+    # Check 1: general TLS/nginx technical content (≥8 matching lines)
     res2 = run_cmd(
         "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert' "
         "/workdir/postmortem.md"
@@ -243,10 +244,10 @@ def _postmortem_exists() -> bool:
         relevant = int(res2.stdout.strip())
     except (ValueError, TypeError):
         return False
-    if relevant < 5:
+    if relevant < 8:
         return False
 
-    # Check 2: must document the configuration-drift / watchdog discovery
+    # Check 2: must document the configuration-drift / watchdog discovery (≥2 matching lines)
     res3 = run_cmd(
         "grep -icE 'cronjob|cron job|watchdog|config.*watchdog|config.*drift|drift.*config' "
         "/workdir/postmortem.md"
@@ -255,7 +256,7 @@ def _postmortem_exists() -> bool:
         drift_docs = int(res3.stdout.strip())
     except (ValueError, TypeError):
         return False
-    return drift_docs >= 1
+    return drift_docs >= 2
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────

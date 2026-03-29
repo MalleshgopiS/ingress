@@ -9,10 +9,10 @@ prompt: |
   Observations from the team:
   - Restarts occur every few hours
   - No recent deployments were made
-  - External HTTPS connections to the ingress endpoint are failing — direct connection attempts are not succeeding
+  - The service has been intermittently unreachable to some clients during the incident window
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
-  - The team was not automatically notified about any of the OOM events
+  - The on-call team only became aware of the incidents through manual checks
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 

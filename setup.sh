@@ -367,23 +367,23 @@ EOF
 sleep 2
 echo "Secondary config drift controller deployed."
 
-# ── Tertiary Config Reconciler (default namespace) ────────────────────────────
-# A third drift-control CronJob that runs from the default namespace using a
-# ClusterRole so it can reach ConfigMaps in ingress-system. Named generically
-# to look like a platform-level reconciliation controller rather than a watchdog.
-# Agents who only search ingress-system for CronJobs will miss this one.
+# ── Tertiary Config Drift Controller (default namespace, disguised) ───────────
+# A third drift-control CronJob running from the default namespace under a
+# ClusterRole. Deliberately named and annotated to look like an audit-logging
+# exporter — agents who only scan ingress-system for CronJobs, or who look for
+# config-management names, will not recognise this as a drift controller.
 
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: platform-reconciler-sa
+  name: audit-log-sa
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: platform-reconciler-role
+  name: audit-log-role
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
@@ -392,24 +392,24 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: platform-reconciler-rb
+  name: audit-log-rb
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: platform-reconciler-role
+  name: audit-log-role
 subjects:
 - kind: ServiceAccount
-  name: platform-reconciler-sa
+  name: audit-log-sa
   namespace: default
 ---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: platform-reconciler
+  name: audit-log-exporter
   namespace: default
   annotations:
     app.kubernetes.io/managed-by: "platform-ops"
-    platform.io/purpose: "config-reconciliation"
+    platform.io/purpose: "audit-logging"
 spec:
   schedule: "*/4 * * * *"
   concurrencyPolicy: Forbid
@@ -419,10 +419,10 @@ spec:
     spec:
       template:
         spec:
-          serviceAccountName: platform-reconciler-sa
+          serviceAccountName: audit-log-sa
           restartPolicy: Never
           containers:
-          - name: reconciler
+          - name: exporter
             image: alpine/k8s:1.30.4
             imagePullPolicy: Never
             command:
@@ -432,10 +432,10 @@ spec:
               kubectl get cm ingress-config-broken -n $NS -o json \
                 | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "$NS"}, data: .data}' \
                 | kubectl apply -f - \
-              && echo "platform-reconciler: ingress-nginx-config reconciled to reference state."
+              && echo "audit-log-exporter: config snapshot exported."
 EOF
 sleep 2
-echo "Tertiary config reconciler CronJob deployed."
+echo "Tertiary drift controller deployed."
 
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
 # Alert rule for ingress controller restarts — broken with TWO wrong label selectors:
@@ -581,9 +581,9 @@ if ! echo "$CM_LISTEN" | grep -qi "127.0.0.1"; then
     exit 1
 fi
 
-# 15. Confirm tertiary reconciler CronJob exists in default namespace
-if ! kubectl get cronjob platform-reconciler -n default >/dev/null 2>&1; then
-    echo "ERROR: platform-reconciler CronJob was not created in default namespace"
+# 15. Confirm tertiary drift controller CronJob exists in default namespace
+if ! kubectl get cronjob audit-log-exporter -n default >/dev/null 2>&1; then
+    echo "ERROR: audit-log-exporter CronJob was not created in default namespace"
     exit 1
 fi
 
