@@ -9,10 +9,9 @@ prompt: |
   Observations from the team:
   - Restarts occur every few hours
   - No recent deployments were made
-  - The service has been intermittently unreachable to some clients during the incident window
+  - HTTPS requests to the service are not completing — the pod is Running but not responding on port 443
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
-  - The on-call team only became aware of the incidents through manual checks
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 
@@ -22,7 +21,7 @@ prompt: |
 
   Investigate the cluster resources and identify all factors contributing to the instability.
 
-  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS configuration for parameters that may cause unbounded memory accumulation under sustained HTTPS load, paying particular attention to how session establishment and resumption are configured.
+  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS configuration for parameters that may cause unbounded memory accumulation under sustained HTTPS load. Ensure that session resumption is controlled through a single bounded mechanism — having both a session cache and session tickets active simultaneously can cause sessions to be persisted via two independent paths, undermining the memory bound set by the cache.
 
   [Objective]
   Investigate the issue and restore stable operation of the ingress controller.

@@ -103,11 +103,52 @@ http {
 sleep 2
 
 # ── Reference ConfigMap: broken config snapshot ───────────────────────────────
-# Used by the config watchdog CronJob to restore the broken state after any
-# agent edits — simulates active configuration drift in the environment.
+# Used by the PRIMARY and SECONDARY config watchdog CronJobs to restore the
+# broken state after any agent edits — simulates active configuration drift.
 
 kubectl delete configmap ingress-config-broken -n $NS --ignore-not-found
 kubectl create configmap ingress-config-broken -n $NS \
+  --from-literal=nginx.conf='events {
+    worker_connections 1024;
+}
+
+http {
+    keepalive_timeout 75;
+    server_tokens off;
+
+    ssl_session_cache   builtin;
+    ssl_session_timeout 86400;
+    ssl_buffer_size     64k;
+    ssl_protocols       TLSv1 TLSv1.2 TLSv1.3;
+    ssl_session_tickets on;
+    ssl_ciphers         "HIGH:MEDIUM:LOW:EXP:!NULL";
+
+    server {
+        listen 127.0.0.1:443 ssl;
+        ssl_certificate     /etc/tls/tls.crt;
+        ssl_certificate_key /etc/tls/tls.key;
+
+        location /healthz {
+            return 200 "ok";
+            add_header Content-Type text/plain;
+        }
+
+        location / {
+            return 200 "Ingress Controller Running";
+            add_header Content-Type text/plain;
+        }
+    }
+}'
+sleep 2
+
+# ── Tertiary Reference ConfigMap: separate source for audit-log-exporter ──────
+# The TERTIARY drift controller (audit-log-exporter) uses this ConfigMap as its
+# source — NOT ingress-config-broken. Patching ingress-config-broken alone will
+# NOT stop the tertiary CronJob because it reads from this separate snapshot.
+# Agents must either patch THIS ConfigMap or delete audit-log-exporter directly.
+
+kubectl delete configmap ingress-config-snapshot -n $NS --ignore-not-found
+kubectl create configmap ingress-config-snapshot -n $NS \
   --from-literal=nginx.conf='events {
     worker_connections 1024;
 }
@@ -429,7 +470,7 @@ spec:
             - /bin/sh
             - -c
             - |
-              kubectl get cm ingress-config-broken -n $NS -o json \
+              kubectl get cm ingress-config-snapshot -n $NS -o json \
                 | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "$NS"}, data: .data}' \
                 | kubectl apply -f - \
               && echo "audit-log-exporter: config snapshot exported."
@@ -438,11 +479,11 @@ sleep 2
 echo "Tertiary drift controller deployed."
 
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
-# Alert rule for ingress controller restarts — broken with TWO wrong label selectors:
-#   1. namespace="default"       (wrong — should be "ingress-system")
+# Alert rule for ingress controller restarts — broken with THREE issues:
+#   1. namespace="default"          (wrong — should be "ingress-system")
 #   2. container="nginx-controller" (wrong — should be "nginx")
-# Both selectors must be corrected for the alert to fire correctly.
-# Agent must inspect the full expression and fix both issues.
+#   3. metric name typo: restart_total (wrong — should be restarts_total)
+# All three must be corrected for the alert to fire correctly.
 
 kubectl apply -n $NS -f - <<EOF
 apiVersion: v1
@@ -459,7 +500,7 @@ data:
     - name: ingress-controller
       rules:
       - alert: IngressControllerRestarts
-        expr: increase(kube_pod_container_status_restarts_total{namespace="default",container="nginx-controller"}[1h]) > 0
+        expr: increase(kube_pod_container_status_restart_total{namespace="default",container="nginx-controller"}[1h]) > 0
         for: 5m
         labels:
           severity: critical
@@ -584,6 +625,24 @@ fi
 # 15. Confirm tertiary drift controller CronJob exists in default namespace
 if ! kubectl get cronjob audit-log-exporter -n default >/dev/null 2>&1; then
     echo "ERROR: audit-log-exporter CronJob was not created in default namespace"
+    exit 1
+fi
+
+# 16. Confirm ingress-config-snapshot (tertiary source ConfigMap) exists
+if ! kubectl get configmap ingress-config-snapshot -n ingress-system >/dev/null 2>&1; then
+    echo "ERROR: ingress-config-snapshot ConfigMap was not created"
+    exit 1
+fi
+
+# 17. Confirm alert has the metric name typo (restart_total not restarts_total)
+ALERT_EXPR2=$(kubectl get configmap ingress-alert-rules -n ingress-system \
+    -o jsonpath='{.data.alert\.yaml}' 2>/dev/null | grep 'expr:' || echo "")
+if ! echo "$ALERT_EXPR2" | grep -q "restart_total"; then
+    echo "ERROR: ingress-alert-rules does not have metric name typo (restart_total)"
+    exit 1
+fi
+if echo "$ALERT_EXPR2" | grep -q "restarts_total"; then
+    echo "ERROR: ingress-alert-rules has correct restarts_total — typo was not applied"
     exit 1
 fi
 

@@ -90,24 +90,26 @@ if [ -n "$IP" ]; then
 fi
 
 # ── Step 5: Fix broken Prometheus alert rule ──────────────────────────────────
-# The ingress-alert-rules ConfigMap has a wrong container label selector:
-#   container="nginx-controller"  (wrong — this label never matches any pod)
-# Should be:
-#   container="nginx"             (correct — matches the nginx container in the pod)
-# Fix by patching the ConfigMap data in-place.
+# The ingress-alert-rules ConfigMap has THREE broken elements:
+#   1. container="nginx-controller" (wrong — should be "nginx")
+#   2. namespace="default"          (wrong — should be "ingress-system")
+#   3. metric: kube_pod_container_status_restart_total (typo — missing 's',
+#      should be kube_pod_container_status_restarts_total)
+# All three must be corrected for the alert to function correctly.
 
-echo "[Step 5] Fixing Prometheus alert rule — correcting both wrong label selectors..."
+echo "[Step 5] Fixing Prometheus alert rule — correcting all three broken elements..."
 CURRENT_ALERT=$(kubectl get configmap ingress-alert-rules -n $NS \
   -o jsonpath='{.data.alert\.yaml}' 2>/dev/null || echo "")
 
 if [ -n "$CURRENT_ALERT" ]; then
     FIXED_ALERT=$(echo "$CURRENT_ALERT" \
       | sed 's|container="nginx-controller"|container="nginx"|g' \
-      | sed 's|namespace="default"|namespace="ingress-system"|g')
+      | sed 's|namespace="default"|namespace="ingress-system"|g' \
+      | sed 's|kube_pod_container_status_restart_total|kube_pod_container_status_restarts_total|g')
     kubectl create configmap ingress-alert-rules -n $NS \
       --from-literal=alert.yaml="$FIXED_ALERT" \
       --dry-run=client -o yaml | kubectl apply -f -
-    echo "[Step 5] Alert rule patched — container='nginx', namespace='ingress-system'."
+    echo "[Step 5] Alert rule patched — container='nginx', namespace='ingress-system', metric='restarts_total'."
 else
     echo "[Step 5] Warning: ingress-alert-rules ConfigMap not found — skipping alert fix."
 fi
@@ -156,11 +158,12 @@ interface (not loopback), so all HTTPS connections were refused. Fixed to `liste
 
 ## Contributing Factor: Silent Monitoring Failure
 The ingress-alert-rules ConfigMap contained a Prometheus alert for pod restarts, but
-both label selectors were wrong:
-- container="nginx-controller" (actual name is "nginx")
+three issues prevented it from ever firing:
+- container="nginx-controller" (actual container name is "nginx")
 - namespace="default" (actual namespace is "ingress-system")
-This meant the alert never fired during the incident window.
-Fixed by patching both selectors to their correct values.
+- metric name typo: kube_pod_container_status_restart_total (missing 's' — metric does not exist;
+  correct name is kube_pod_container_status_restarts_total)
+All three were fixed: both label selectors corrected and metric name typo resolved.
 
 ## Configuration Drift
 Three CronJobs were actively reverting the nginx ConfigMap to the broken state:
@@ -196,5 +199,6 @@ echo "    ssl_ciphers         → <removed>           (was: HIGH:MEDIUM:LOW:EXP:
 echo "    listen              → 443 ssl             (was: 127.0.0.1:443 — loopback-only)"
 echo "    alert container     → nginx               (was: nginx-controller)"
 echo "    alert namespace     → ingress-system       (was: default)"
+echo "    alert metric        → restarts_total       (was: restart_total — typo, metric did not exist)"
 echo "    drift controllers   → all stopped           (ingress-config-watchdog + ops-config-controller + audit-log-exporter)"
 echo "    postmortem          → /workdir/postmortem.md"

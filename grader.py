@@ -16,6 +16,12 @@ WATCHDOG_SECONDARY    = "ops-config-controller"
 WATCHDOG_TERTIARY     = "audit-log-exporter"
 WATCHDOG_TERTIARY_NS  = "default"
 
+# Source ConfigMaps used by the watchdog CronJobs
+# Primary + secondary share ingress-config-broken.
+# Tertiary uses ingress-config-snapshot — a SEPARATE source.
+# Patching ingress-config-broken alone does NOT stop the tertiary.
+SNAPSHOT_CM = "ingress-config-snapshot"
+
 BROKEN_BUFFER_BYTES = 65536  # ssl_buffer_size broken value (64k); any reduction is valid
 MAX_TIMEOUT_S       = 3600   # ssl_session_timeout upper bound — 1h maximum
 MAX_LIVE_TIMEOUT_S  = 3600   # ssl_session_timeout live upper bound — 1h
@@ -143,9 +149,23 @@ def _listen_all_interfaces(text: str) -> bool:
 
 
 def _source_configmap_patched() -> bool:
-    """Return True if ingress-config-broken no longer contains the broken session cache."""
+    """Return True if ingress-config-broken no longer contains the broken session cache.
+    Covers primary + secondary watchdogs (both read from ingress-config-broken)."""
     res = run_cmd(
         f"kubectl get configmap ingress-config-broken -n {NS} "
+        f"-o jsonpath='{{.data.nginx\\.conf}}' 2>/dev/null"
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    return not re.search(r'ssl_session_cache\s+builtin', res.stdout, re.IGNORECASE)
+
+
+def _snapshot_configmap_patched() -> bool:
+    """Return True if ingress-config-snapshot no longer contains the broken session cache.
+    Covers the tertiary watchdog (audit-log-exporter reads from ingress-config-snapshot,
+    NOT from ingress-config-broken — patching the primary source alone is insufficient)."""
+    res = run_cmd(
+        f"kubectl get configmap {SNAPSHOT_CM} -n {NS} "
         f"-o jsonpath='{{.data.nginx\\.conf}}' 2>/dev/null"
     )
     if res.returncode != 0 or not res.stdout.strip():
@@ -165,38 +185,49 @@ def _cronjob_neutralized(name: str, ns: str = NS) -> bool:
 
 
 def _watchdog_stopped() -> bool:
-    """ALL three watchdog CronJobs must be neutralized (or the shared source ConfigMap patched).
+    """ALL three watchdog CronJobs must be neutralized.
 
     The environment runs three drift-control jobs that periodically restore the broken
     nginx config:
-      1. ingress-config-watchdog   — in ingress-system; named for its purpose
-      2. ops-config-controller     — in ingress-system; less obviously named
-      3. platform-reconciler       — in the default namespace; hidden cross-namespace job
+      1. ingress-config-watchdog — in ingress-system; reads from ingress-config-broken
+      2. ops-config-controller   — in ingress-system; reads from ingress-config-broken
+      3. audit-log-exporter      — in default namespace; reads from ingress-config-snapshot
+                                   (a SEPARATE source — patching ingress-config-broken
+                                    alone does NOT stop this job)
 
-    Accepted remediation approaches (any combination that stops all three):
+    Accepted remediation approaches:
       a) Delete or suspend ALL THREE CronJobs individually
-      b) Patch ingress-config-broken (the shared source) — all jobs then re-apply
-         a correct config, neutralising all three at once
-      c) Mix: stop individual CronJobs AND/OR patch the source ConfigMap
+      b) Patch ingress-config-broken  → stops 1 + 2; then handle 3 separately
+         Patch ingress-config-snapshot → stops 3
+      c) Mix: patch sources and/or delete CronJobs individually
     """
-    # Fast path: if the source ConfigMap is patched, all watchdogs are harmless
-    # because they now restore the correct config rather than the broken one.
+    # Primary + secondary: neutralized if ingress-config-broken is patched OR deleted/suspended
     if _source_configmap_patched():
-        return True
+        primary_ok = True
+        secondary_ok = True
+    else:
+        primary_ok   = _cronjob_neutralized(WATCHDOG_PRIMARY)
+        secondary_ok = _cronjob_neutralized(WATCHDOG_SECONDARY)
 
-    # Otherwise all three CronJobs must be individually stopped
-    primary_ok   = _cronjob_neutralized(WATCHDOG_PRIMARY)
-    secondary_ok = _cronjob_neutralized(WATCHDOG_SECONDARY)
-    tertiary_ok  = _cronjob_neutralized(WATCHDOG_TERTIARY, ns=WATCHDOG_TERTIARY_NS)
+    # Tertiary uses ingress-config-snapshot — must be independently handled
+    if _snapshot_configmap_patched():
+        tertiary_ok = True
+    else:
+        tertiary_ok = _cronjob_neutralized(WATCHDOG_TERTIARY, ns=WATCHDOG_TERTIARY_NS)
+
     return primary_ok and secondary_ok and tertiary_ok
 
 
 def _alert_selector_correct() -> bool:
-    """The ingress-alert-rules ConfigMap must have BOTH correct selectors fixed:
+    """The ingress-alert-rules ConfigMap must have ALL THREE issues corrected:
       1. container="nginx"          (broken: "nginx-controller")
       2. namespace="ingress-system" (broken: "default")
-    Both are wrong in the broken config — an agent who only fixes the container
-    selector but misses the namespace will still have an alert that never fires."""
+      3. metric: kube_pod_container_status_restarts_total
+                 (broken: kube_pod_container_status_restart_total — missing 's')
+
+    All three are wrong in the broken config. Agents who fix only the two label
+    selectors but miss the metric name typo will still have a non-firing alert
+    (the metric does not exist so increase() always returns 0)."""
     res = run_cmd(
         f"kubectl get configmap ingress-alert-rules -n {NS} "
         f"-o jsonpath='{{.data.alert\\.yaml}}' 2>/dev/null"
@@ -215,27 +246,35 @@ def _alert_selector_correct() -> bool:
         return False
     namespace_ok = bool(re.search(r'namespace\s*=\s*["\']ingress-system["\']', content))
 
-    return container_ok and namespace_ok
+    # metric name must be corrected (broken: restart_total, correct: restarts_total)
+    # Note: 'restart_total' does NOT appear as a substring of 'restarts_total'
+    if 'restart_total' in content and 'restarts_total' not in content:
+        return False
+    metric_ok = 'restarts_total' in content
+
+    return container_ok and namespace_ok and metric_ok
 
 
 def _postmortem_exists() -> bool:
-    """Agent must create /workdir/postmortem.md with ≥20 lines of relevant technical content.
+    """Agent must create /workdir/postmortem.md with ≥25 lines of relevant technical content.
 
-    Two content checks are applied:
+    Three content checks are applied:
       1. General TLS/nginx keywords — proves the agent documented the core memory issue
-         in sufficient depth (≥8 matching lines required).
+         in sufficient depth (≥10 matching lines required).
       2. Drift/watchdog keywords  — proves the agent discovered and documented the
-         automated config-revert mechanism in multiple places (≥2 matching lines required);
-         agents who never found the CronJobs would not naturally include these terms."""
+         automated config-revert mechanism in multiple places (≥3 matching lines required);
+         agents who never found the CronJobs would not naturally include these terms.
+      3. Alert/monitoring keywords — proves the agent documented the monitoring failure
+         (≥2 matching lines required); agents who missed the alert fix won't include these."""
     res = run_cmd("test -f /workdir/postmortem.md && wc -l /workdir/postmortem.md")
     if res.returncode != 0:
         return False
     parts = res.stdout.strip().split()
     lines = int(parts[0]) if parts else 0
-    if lines < 20:
+    if lines < 25:
         return False
 
-    # Check 1: general TLS/nginx technical content (≥8 matching lines)
+    # Check 1: general TLS/nginx technical content (≥10 matching lines)
     res2 = run_cmd(
         "grep -icE 'ssl|tls|cache|nginx|session|memory|buffer|timeout|protocol|alert' "
         "/workdir/postmortem.md"
@@ -244,10 +283,10 @@ def _postmortem_exists() -> bool:
         relevant = int(res2.stdout.strip())
     except (ValueError, TypeError):
         return False
-    if relevant < 8:
+    if relevant < 10:
         return False
 
-    # Check 2: must document the configuration-drift / watchdog discovery (≥2 matching lines)
+    # Check 2: must document the configuration-drift / watchdog discovery (≥3 matching lines)
     res3 = run_cmd(
         "grep -icE 'cronjob|cron job|watchdog|config.*watchdog|config.*drift|drift.*config' "
         "/workdir/postmortem.md"
@@ -256,7 +295,19 @@ def _postmortem_exists() -> bool:
         drift_docs = int(res3.stdout.strip())
     except (ValueError, TypeError):
         return False
-    return drift_docs >= 2
+    if drift_docs < 3:
+        return False
+
+    # Check 3: must document the alert/monitoring failure (≥2 matching lines)
+    res4 = run_cmd(
+        "grep -icE 'alert|prometheus|selector|monitor|notification|pagerduty|oncall|on-call' "
+        "/workdir/postmortem.md"
+    )
+    try:
+        alert_docs = int(res4.stdout.strip())
+    except (ValueError, TypeError):
+        return False
+    return alert_docs >= 2
 
 
 # ── Cluster helpers ────────────────────────────────────────────────────────────
@@ -355,10 +406,11 @@ def grade(transcript: str = None) -> GradingResult:
       3. https_serving       — End-to-end: live nginx has new config, port 443 listens on
                                all interfaces (not restricted to loopback), actual HTTPS
                                request returns correct response + TLS handshake succeeds
-      4. alert_configured    — ingress-alert-rules ConfigMap has BOTH selectors corrected:
-                               container="nginx" (was "nginx-controller") AND
-                               namespace="ingress-system" (was "default")
-      5. postmortem_complete — /workdir/postmortem.md with ≥10 lines of relevant content
+      4. alert_configured    — ingress-alert-rules ConfigMap has ALL THREE issues corrected:
+                               container="nginx" (was "nginx-controller"),
+                               namespace="ingress-system" (was "default"), AND
+                               metric name restarts_total (was restart_total — typo)
+      5. postmortem_complete — /workdir/postmortem.md with ≥25 lines of relevant content
 
     Returns weighted score (5 × 0.2). All subscores are binary (0.0 or 1.0).
     """
@@ -375,9 +427,9 @@ def grade(transcript: str = None) -> GradingResult:
             )
 
         # ── Subscore 1: drift_stopped ──────────────────────────────────────────
-        # Two CronJobs actively revert the nginx ConfigMap on a schedule.
-        # config_fixed is gated on this: if either watchdog is still running,
-        # ConfigMap state is unreliable (reverted within 3 min) and config_fixed
+        # Three CronJobs actively revert the nginx ConfigMap on a schedule.
+        # config_fixed is gated on this: if any watchdog is still running,
+        # ConfigMap state is unreliable (reverted within 3-5 min) and config_fixed
         # would non-deterministically flip. The gate eliminates this race condition.
         drift_stopped = False
         try:
@@ -490,11 +542,12 @@ def grade(transcript: str = None) -> GradingResult:
             https_serving = False
 
         # ── Subscore 4: alert_configured ──────────────────────────────────────
-        # The broken alert expression has TWO wrong label selectors:
+        # The broken alert expression has THREE issues:
         #   container="nginx-controller"  (actual container name is "nginx")
         #   namespace="default"           (actual namespace is "ingress-system")
-        # Both must be corrected — fixing only the container selector leaves the
-        # alert still non-functional because namespace="default" matches nothing.
+        #   metric: restart_total         (typo — correct is restarts_total)
+        # All three must be corrected — the metric typo means the metric does not
+        # exist so increase() always returns 0 even with correct selectors.
         alert_configured = False
         try:
             alert_configured = _alert_selector_correct()
