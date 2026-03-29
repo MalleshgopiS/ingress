@@ -10,14 +10,16 @@ NS     = "ingress-system"
 DEPLOY = "ingress-controller"
 SVC    = "ingress-controller-svc"
 
-# Watchdog CronJob names — all three must be neutralized to stop config drift
-WATCHDOG_PRIMARY      = "ingress-config-watchdog"
-WATCHDOG_SECONDARY    = "ops-config-controller"
-WATCHDOG_TERTIARY     = "audit-log-exporter"
+# Watchdog names — all four must be neutralized to stop config drift
+WATCHDOG_PRIMARY      = "ingress-config-watchdog"   # CronJob, ingress-system
+WATCHDOG_SECONDARY    = "ops-config-controller"      # CronJob, ingress-system
+WATCHDOG_TERTIARY     = "audit-log-exporter"         # CronJob, default namespace
 WATCHDOG_TERTIARY_NS  = "default"
+WATCHDOG_QUATERNARY   = "telemetry-agent"            # Deployment, default namespace (disguised)
+WATCHDOG_QUATERNARY_NS = "default"
 
-# Source ConfigMaps used by the watchdog CronJobs
-# Primary + secondary share ingress-config-broken.
+# Source ConfigMaps used by the watchdog controllers
+# Primary + secondary + quaternary share ingress-config-broken.
 # Tertiary uses ingress-config-snapshot — a SEPARATE source.
 # Patching ingress-config-broken alone does NOT stop the tertiary.
 SNAPSHOT_CM = "ingress-config-snapshot"
@@ -184,22 +186,38 @@ def _cronjob_neutralized(name: str, ns: str = NS) -> bool:
     return res.stdout.strip().lower() == "true"  # CronJob suspended ✓
 
 
-def _watchdog_stopped() -> bool:
-    """ALL three watchdog CronJobs must be neutralized.
+def _deployment_neutralized(name: str, ns: str = "default") -> bool:
+    """Return True if the named Deployment is deleted or scaled to 0 replicas."""
+    res = run_cmd(
+        f"kubectl get deployment {name} -n {ns} "
+        f"-o jsonpath='{{.spec.replicas}}' 2>/dev/null"
+    )
+    if res.returncode != 0 or not res.stdout.strip():
+        return True   # Deployment deleted ✓
+    try:
+        return int(res.stdout.strip()) == 0  # Deployment scaled to 0 ✓
+    except (ValueError, TypeError):
+        return False
 
-    The environment runs three drift-control jobs that periodically restore the broken
-    nginx config:
-      1. ingress-config-watchdog — in ingress-system; reads from ingress-config-broken
-      2. ops-config-controller   — in ingress-system; reads from ingress-config-broken
-      3. audit-log-exporter      — in default namespace; reads from ingress-config-snapshot
-                                   (a SEPARATE source — patching ingress-config-broken
-                                    alone does NOT stop this job)
+
+def _watchdog_stopped() -> bool:
+    """ALL FOUR drift controllers must be neutralized.
+
+    The environment runs four drift-control resources that periodically restore
+    the broken nginx config:
+      1. ingress-config-watchdog — CronJob in ingress-system; reads from ingress-config-broken
+      2. ops-config-controller   — CronJob in ingress-system; reads from ingress-config-broken
+      3. audit-log-exporter      — CronJob in default namespace; reads from ingress-config-snapshot
+                                   (a SEPARATE source — patching ingress-config-broken alone
+                                    does NOT stop this job)
+      4. telemetry-agent         — Deployment in default namespace; reads from ingress-config-broken
+                                   (disguised as a telemetry/metrics tool; runs every 2 minutes)
 
     Accepted remediation approaches:
-      a) Delete or suspend ALL THREE CronJobs individually
-      b) Patch ingress-config-broken  → stops 1 + 2; then handle 3 separately
+      a) Delete/suspend ALL FOUR controllers individually
+      b) Patch ingress-config-broken  → stops 1 + 2 + 4; then handle 3 separately
          Patch ingress-config-snapshot → stops 3
-      c) Mix: patch sources and/or delete CronJobs individually
+      c) Mix: patch sources and/or delete/scale controllers individually
     """
     # Primary + secondary: neutralized if ingress-config-broken is patched OR deleted/suspended
     if _source_configmap_patched():
@@ -215,7 +233,14 @@ def _watchdog_stopped() -> bool:
     else:
         tertiary_ok = _cronjob_neutralized(WATCHDOG_TERTIARY, ns=WATCHDOG_TERTIARY_NS)
 
-    return primary_ok and secondary_ok and tertiary_ok
+    # Quaternary: Deployment in default namespace reading from ingress-config-broken
+    # Fast path: if ingress-config-broken is patched, Deployment cannot restore broken config
+    if _source_configmap_patched():
+        quaternary_ok = True
+    else:
+        quaternary_ok = _deployment_neutralized(WATCHDOG_QUATERNARY, ns=WATCHDOG_QUATERNARY_NS)
+
+    return primary_ok and secondary_ok and tertiary_ok and quaternary_ok
 
 
 def _alert_selector_correct() -> bool:
@@ -357,6 +382,7 @@ _CHEAT_SIGNALS = [
     (r'\bWATCHDOG_PRIMARY\b',                                      "grader internal constant WATCHDOG_PRIMARY"),
     (r'\bWATCHDOG_SECONDARY\b',                                    "grader internal constant WATCHDOG_SECONDARY"),
     (r'\bWATCHDOG_TERTIARY\b',                                     "grader internal constant WATCHDOG_TERTIARY"),
+    (r'\bWATCHDOG_QUATERNARY\b',                                   "grader internal constant WATCHDOG_QUATERNARY"),
     (r'\bMAX_TIMEOUT_S\b',                                         "grader internal constant MAX_TIMEOUT_S"),
     (r'\b_cache_is_shared\b',                                      "grader internal function _cache_is_shared"),
     (r'\b_buffer_reduced\b',                                       "grader internal function _buffer_reduced"),
@@ -398,14 +424,18 @@ def grade(transcript: str = None) -> GradingResult:
     Outcome-based grader for Ingress Controller TLS session memory leak (issue #488).
 
     Subscores (5 × 0.2 weight each):
-      1. drift_stopped       — ALL THREE watchdog CronJobs neutralized (deleted, suspended,
-                               or shared source ConfigMap patched)
+      1. drift_stopped       — ALL FOUR drift controllers neutralized: three CronJobs
+                               (ingress-config-watchdog, ops-config-controller,
+                               audit-log-exporter) plus telemetry-agent Deployment
+                               in default namespace; deleted, suspended/scaled, or
+                               shared source ConfigMap patched
       2. config_fixed        — ConfigMap: shared cache (any size), buffer < 64k, no TLSv1,
                                timeout ≤ 1h, ssl_session_tickets off, no EXP/LOW ciphers;
                                gated on drift_stopped
       3. https_serving       — End-to-end: live nginx has new config, port 443 listens on
                                all interfaces (not restricted to loopback), actual HTTPS
-                               request returns correct response + TLS handshake succeeds
+                               request returns correct response + TLS handshake succeeds;
+                               GATED on drift_stopped (reliable HTTPS requires stable config)
       4. alert_configured    — ingress-alert-rules ConfigMap has ALL THREE issues corrected:
                                container="nginx" (was "nginx-controller"),
                                namespace="ingress-system" (was "default"), AND
@@ -485,7 +515,9 @@ def grade(transcript: str = None) -> GradingResult:
         #   3. Port 443 must not be restricted to loopback (127.0.0.1:443)
         #   4. Actual HTTPS curl request to /healthz returns "ok"
         #   5. TLS handshake completes (openssl s_client)
-        # NOT gated on drift_stopped — live pod state is independently verifiable.
+        # GATED on drift_stopped — without all four drift controllers neutralized,
+        # the nginx ConfigMap will be reverted within minutes, making any working
+        # HTTPS state transient and unreliable rather than stably restored.
         live_cache_shared  = False
         live_not_builtin   = False
         live_syntax_ok     = False
@@ -495,49 +527,52 @@ def grade(transcript: str = None) -> GradingResult:
         https_serving      = False
 
         try:
-            pod = wait_for_pod()
-            ip  = get_cluster_ip()
-            if pod and ip:
-                for attempt in range(3):
-                    res_T = run_cmd(
-                        f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
-                    res_t = run_cmd(
-                        f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
-                    live = res_T.stdout or ""
-                    live_cache_shared = _cache_is_shared(live)
-                    live_not_builtin  = _not_builtin(live)
-                    live_syntax_ok    = "syntax is ok" in (
-                        res_t.stdout + res_t.stderr).lower()
-                    live_listen_ok    = _listen_all_interfaces(live)
-                    if live_cache_shared and live_not_builtin and live_syntax_ok and live_listen_ok:
-                        break
-                    if attempt < 2:
-                        time.sleep(10)
-
-                if live_cache_shared and live_not_builtin and live_listen_ok:
-                    for _ in range(6):
-                        res_curl = run_cmd(
-                            f"curl -k -s --max-time 5 https://{ip}/healthz")
-                        if "ok" in res_curl.stdout.lower():
-                            https_responds = True
+            if not drift_stopped:
+                pass  # Skip live checks — HTTPS cannot be reliably served without drift stopped
+            else:
+                pod = wait_for_pod()
+                ip  = get_cluster_ip()
+                if pod and ip:
+                    for attempt in range(3):
+                        res_T = run_cmd(
+                            f"kubectl exec -n {NS} {pod} -- nginx -T 2>/dev/null", timeout=15)
+                        res_t = run_cmd(
+                            f"kubectl exec -n {NS} {pod} -- nginx -t", timeout=10)
+                        live = res_T.stdout or ""
+                        live_cache_shared = _cache_is_shared(live)
+                        live_not_builtin  = _not_builtin(live)
+                        live_syntax_ok    = "syntax is ok" in (
+                            res_t.stdout + res_t.stderr).lower()
+                        live_listen_ok    = _listen_all_interfaces(live)
+                        if live_cache_shared and live_not_builtin and live_syntax_ok and live_listen_ok:
                             break
-                        time.sleep(5)
+                        if attempt < 2:
+                            time.sleep(10)
 
-                    res_tls = run_cmd(
-                        f"echo Q | openssl s_client -connect {ip}:443 2>&1 | head -10",
-                        timeout=15,
-                    )
-                    combined = (res_tls.stdout + res_tls.stderr).lower()
-                    tls_handshake_ok = (
-                        "ssl-session" in combined or
-                        "cipher"      in combined or
-                        "connected"   in combined
-                    )
+                    if live_cache_shared and live_not_builtin and live_listen_ok:
+                        for _ in range(6):
+                            res_curl = run_cmd(
+                                f"curl -k -s --max-time 5 https://{ip}/healthz")
+                            if "ok" in res_curl.stdout.lower():
+                                https_responds = True
+                                break
+                            time.sleep(5)
 
-                https_serving = (
-                    live_cache_shared and live_not_builtin and live_syntax_ok and
-                    live_listen_ok    and https_responds   and tls_handshake_ok
-                )
+                        res_tls = run_cmd(
+                            f"echo Q | openssl s_client -connect {ip}:443 2>&1 | head -10",
+                            timeout=15,
+                        )
+                        combined = (res_tls.stdout + res_tls.stderr).lower()
+                        tls_handshake_ok = (
+                            "ssl-session" in combined or
+                            "cipher"      in combined or
+                            "connected"   in combined
+                        )
+
+                    https_serving = (
+                        live_cache_shared and live_not_builtin and live_syntax_ok and
+                        live_listen_ok    and https_responds   and tls_handshake_ok
+                    )
         except Exception:
             https_serving = False
 

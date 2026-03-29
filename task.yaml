@@ -12,6 +12,7 @@ prompt: |
   - HTTPS requests to the service are not completing — the pod is Running but not responding on port 443
   - The deployment history shows repeated worker memory exhaustion under sustained HTTPS load
   - Memory usage grows gradually during active HTTPS traffic and fully resets after each pod restart
+  - Automated monitoring alerts for the ingress-system namespace did not fire during the incident despite the repeated restarts, suggesting a possible misconfiguration in the alerting setup
 
   Some engineers suspect this might be related to how the nginx TLS configuration interacts with the memory constraints of this instance under sustained load, but no clear root cause has been identified yet.
 

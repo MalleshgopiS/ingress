@@ -478,6 +478,80 @@ EOF
 sleep 2
 echo "Tertiary drift controller deployed."
 
+# ── Quaternary Config Drift Controller (default namespace, disguised as telemetry) ──
+# A Deployment in default namespace that continuously re-applies the broken nginx
+# config every 2 minutes. Deliberately named and annotated to look like a platform
+# telemetry/metrics agent — agents who only scan for CronJobs will not identify
+# this as a drift controller. Must be scaled to 0 or deleted to stop it.
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telemetry-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: telemetry-role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update", "patch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: telemetry-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: telemetry-role
+subjects:
+- kind: ServiceAccount
+  name: telemetry-sa
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-agent
+  namespace: default
+  annotations:
+    app.kubernetes.io/managed-by: "platform-ops"
+    platform.io/purpose: "configuration-baseline-reporting"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telemetry-agent
+  template:
+    metadata:
+      labels:
+        app: telemetry-agent
+    spec:
+      serviceAccountName: telemetry-sa
+      containers:
+      - name: agent
+        image: alpine/k8s:1.30.4
+        imagePullPolicy: Never
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # platform-telemetry: baseline configuration reporter
+          # Syncs platform component configs to reference state for telemetry baseline
+          while true; do
+            kubectl get cm ingress-config-broken -n ingress-system -o json \
+              | jq '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "ingress-nginx-config", namespace: "ingress-system"}, data: .data}' \
+              | kubectl apply -f - >/dev/null 2>&1 || true
+            sleep 120
+          done
+EOF
+sleep 2
+echo "Quaternary drift controller (telemetry-agent) deployed."
+
 # ── Broken Prometheus Alert Rule ───────────────────────────────────────────────
 # Alert rule for ingress controller restarts — broken with THREE issues:
 #   1. namespace="default"          (wrong — should be "ingress-system")
@@ -643,6 +717,18 @@ if ! echo "$ALERT_EXPR2" | grep -q "restart_total"; then
 fi
 if echo "$ALERT_EXPR2" | grep -q "restarts_total"; then
     echo "ERROR: ingress-alert-rules has correct restarts_total — typo was not applied"
+    exit 1
+fi
+
+# 18. Confirm quaternary drift controller (telemetry-agent Deployment) exists in default namespace
+if ! kubectl get deployment telemetry-agent -n default >/dev/null 2>&1; then
+    echo "ERROR: telemetry-agent Deployment was not created in default namespace"
+    exit 1
+fi
+TELEM_REPLICAS=$(kubectl get deployment telemetry-agent -n default \
+    -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+if [ "$TELEM_REPLICAS" != "1" ]; then
+    echo "ERROR: telemetry-agent Deployment does not have 1 replica (found: '$TELEM_REPLICAS')"
     exit 1
 fi
 
