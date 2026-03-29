@@ -12,11 +12,13 @@ echo "=== Applying TLS memory leak remediation ==="
 # before any ConfigMap edits will stick permanently.
 
 echo "[Step 0] Stopping all configuration drift controllers to prevent further config drift..."
-kubectl delete cronjob ingress-config-watchdog -n $NS      --ignore-not-found
-kubectl delete cronjob ops-config-controller   -n $NS      --ignore-not-found
-kubectl delete cronjob audit-log-exporter      -n default  --ignore-not-found
-kubectl scale  deployment telemetry-agent      -n default  --replicas=0 2>/dev/null || \
-  kubectl delete deployment telemetry-agent    -n default  --ignore-not-found
+kubectl delete cronjob ingress-config-watchdog -n $NS     --ignore-not-found
+kubectl delete cronjob ops-config-controller   -n $NS     --ignore-not-found
+kubectl delete cronjob audit-log-exporter      -n default --ignore-not-found
+# Delete the telemetry-agent Deployment and force-kill its pod immediately
+# (graceful termination is not sufficient — pod can still revert config during grace period)
+kubectl delete deployment telemetry-agent      -n default --ignore-not-found
+kubectl delete pods -n default -l app=telemetry-agent --grace-period=0 --force 2>/dev/null || true
 echo "[Step 0] All four drift controllers stopped (3 CronJobs + telemetry-agent Deployment)."
 
 # ── Step 1: Diagnose the broken TLS configuration ─────────────────────────────

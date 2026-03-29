@@ -457,10 +457,10 @@ def grade(transcript: str = None) -> GradingResult:
             )
 
         # ── Subscore 1: drift_stopped ──────────────────────────────────────────
-        # Three CronJobs actively revert the nginx ConfigMap on a schedule.
-        # config_fixed is gated on this: if any watchdog is still running,
-        # ConfigMap state is unreliable (reverted within 3-5 min) and config_fixed
-        # would non-deterministically flip. The gate eliminates this race condition.
+        # Four drift controllers actively revert the nginx ConfigMap on a schedule.
+        # config_fixed AND https_serving are gated on this: if any controller is still
+        # running, ConfigMap state is unreliable (reverted within 2-5 min) and both
+        # subscores would non-deterministically flip. The gate eliminates this.
         drift_stopped = False
         try:
             drift_stopped = _watchdog_stopped()
