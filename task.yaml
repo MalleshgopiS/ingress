@@ -23,7 +23,7 @@ prompt: |
 
   Investigate the cluster resources and identify all factors contributing to the instability.
 
-  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS session parameters,  session cache configuration and session ticket settings, cipher suite selection, and the interface the server listens on for settings that may cause unbounded memory accumulation or prevent external traffic from reaching the service under Kubernetes routing.
+  The memory growth pattern suggests the nginx TLS configuration is a contributing factor — investigate the TLS session parameters, session cache configuration and session ticket settings, cipher suite selection, and the interface the server listens on for settings that may cause unbounded memory accumulation or prevent external traffic from reaching the service under Kubernetes routing.
 
 
   [Objective]
@@ -35,7 +35,7 @@ prompt: |
   - Have functional monitoring alerts correctly targeting the ingress controller
   - Preserve the overall nginx configuration structure while updating TLS parameters as needed
 
-  When you have completed your investigation and remediation, write a postmortem report at /workdir/postmortem.
+  When you have completed your investigation and remediation, write a postmortem report at /workdir/postmortem.md.
   
   [Constraints]
   - Do not increase memory limits
