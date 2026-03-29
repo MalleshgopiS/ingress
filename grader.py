@@ -244,15 +244,15 @@ def _watchdog_stopped() -> bool:
 
 
 def _alert_selector_correct() -> bool:
-    """The ingress-alert-rules ConfigMap must have ALL THREE issues corrected:
+    """The ingress-alert-rules ConfigMap must have BOTH label selectors corrected:
       1. container="nginx"          (broken: "nginx-controller")
       2. namespace="ingress-system" (broken: "default")
-      3. metric: kube_pod_container_status_restarts_total
-                 (broken: kube_pod_container_status_restart_total — missing 's')
 
-    All three are wrong in the broken config. Agents who fix only the two label
-    selectors but miss the metric name typo will still have a non-firing alert
-    (the metric does not exist so increase() always returns 0)."""
+    Both are discoverable by comparing the alert rule against the actual running
+    deployment/namespace in the cluster.  The metric name (kube_pod_container_status_
+    restart_total vs restarts_total) is a separate documentation finding but is not
+    graded here — there is no Prometheus/kube-state-metrics in the cluster for an
+    agent to validate metric names against."""
     res = run_cmd(
         f"kubectl get configmap ingress-alert-rules -n {NS} "
         f"-o jsonpath='{{.data.alert\\.yaml}}' 2>/dev/null"
@@ -271,13 +271,7 @@ def _alert_selector_correct() -> bool:
         return False
     namespace_ok = bool(re.search(r'namespace\s*=\s*["\']ingress-system["\']', content))
 
-    # metric name must be corrected (broken: restart_total, correct: restarts_total)
-    # Note: 'restart_total' does NOT appear as a substring of 'restarts_total'
-    if 'restart_total' in content and 'restarts_total' not in content:
-        return False
-    metric_ok = 'restarts_total' in content
-
-    return container_ok and namespace_ok and metric_ok
+    return container_ok and namespace_ok
 
 
 def _postmortem_exists() -> bool:
@@ -436,10 +430,10 @@ def grade(transcript: str = None) -> GradingResult:
                                all interfaces (not restricted to loopback), actual HTTPS
                                request returns correct response + TLS handshake succeeds;
                                GATED on drift_stopped (reliable HTTPS requires stable config)
-      4. alert_configured    — ingress-alert-rules ConfigMap has ALL THREE issues corrected:
-                               container="nginx" (was "nginx-controller"),
-                               namespace="ingress-system" (was "default"), AND
-                               metric name restarts_total (was restart_total — typo)
+      4. alert_configured    — ingress-alert-rules ConfigMap has BOTH label selectors
+                               corrected: container="nginx" (was "nginx-controller"),
+                               namespace="ingress-system" (was "default");
+                               GATED on drift_stopped
       5. postmortem_complete — /workdir/postmortem.md with ≥25 lines of relevant content
 
     Returns weighted score (5 × 0.2). All subscores are binary (0.0 or 1.0).
@@ -577,15 +571,15 @@ def grade(transcript: str = None) -> GradingResult:
             https_serving = False
 
         # ── Subscore 4: alert_configured ──────────────────────────────────────
-        # The broken alert expression has THREE issues:
-        #   container="nginx-controller"  (actual container name is "nginx")
-        #   namespace="default"           (actual namespace is "ingress-system")
-        #   metric: restart_total         (typo — correct is restarts_total)
-        # All three must be corrected — the metric typo means the metric does not
-        # exist so increase() always returns 0 even with correct selectors.
+        # Both label selectors in the ingress-alert-rules ConfigMap must be fixed:
+        #   container="nginx"          (broken: "nginx-controller")
+        #   namespace="ingress-system" (broken: "default")
+        # GATED on drift_stopped — an agent who hasn't stabilised the config has
+        # not finished the investigation and may not have reached the alert step.
         alert_configured = False
         try:
-            alert_configured = _alert_selector_correct()
+            if drift_stopped:
+                alert_configured = _alert_selector_correct()
         except Exception:
             alert_configured = False
 
