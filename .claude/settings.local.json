@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(done)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" log --oneline -5)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" status)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" show HEAD:solution.sh)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" log --oneline --all)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" add solution.sh)",
+      "Bash(git -C \"C:/Users/malle/Desktop/Bespoke documents/Pod 3 task/Inprogress/ingress\" diff --staged --stat)",
+      "Bash(git -C:*)"
     ]
   }
 }
