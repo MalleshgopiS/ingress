@@ -15,7 +15,10 @@
       "Bash(where apex-arena:*)",
       "Read(//c/Users/malle/.local/bin/**)",
       "Bash(cmd /c \"where apex-arena\")",
-      "Bash(cmd /c \"where apex\")"
+      "Bash(cmd /c \"where apex\")",
+      "Bash(cmd /c 'where nebula')",
+      "Bash(cmd /c 'where arena')",
+      "Read(//c/Users/malle/**)"
     ]
   }
 }
