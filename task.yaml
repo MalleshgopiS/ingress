@@ -34,8 +34,7 @@ prompt: |
   - Have functional monitoring alerts correctly targeting the ingress controller
   - Preserve the overall nginx configuration structure while updating TLS parameters as needed
 
-  When you have completed your investigation and remediation, write a postmortem report at /workdir/postmortem.md summarising your root cause analysis and the remediation steps taken.
-
+  When you have completed your investigation and remediation, document your root cause analysis and the changes you made in a postmortem report at /workdir/postmortem.md. The postmortem should document all resources involved in the incident, including any automated processes that were found to be active.
 
   [Constraints]
   - Do not increase memory limits
