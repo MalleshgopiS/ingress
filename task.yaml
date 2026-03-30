@@ -1,63 +1,43 @@
 id: ingress-controller-oom-restart
 prompt: |
   [Context]
-  You are the on-call SRE responsible for maintaining the ingress layer of a Kubernetes cluster.
+  You are a DevOps engineer working on Bleater, a distributed microservices-based social media platform.
+  Bleater is deployed on Kubernetes (k3s) in the bleater namespace. You can check all available namespaces at /home/ubuntu/.allowed_namespaces.
+
+  Information about the application and supporting infrastructure is available at http://gitea.devops.local/root/bleater-app/wiki. Passwords are stored here: http://passwords.devops.local/.
+
+  Your email is set up at devops@nebula.local and can be accessed via http://maddy.devops.local/.
+  For team communication, Mattermost is used and is available at http://mattermost.devops.local/.
 
   [Task]
-  The ingress controller running in the `ingress-system` namespace has been restarting periodically over the past few days. 
-  These restarts tend to happen every few hours, even though there have been no recent deployments or intentional configuration changes.
+  The ingress controller in the ingress-system namespace has been restarting
+  every few hours with no recent deployments or intentional config changes.
+  HTTPS traffic through the ingress is failing — the pod appears Running but
+  is not responding on port 443.
 
-  During this period, HTTPS requests to services routed through the ingress are failing to complete. Although the ingress controller pod 
-  appears to be in a Running state, it is not responding on port 443.
+  The pattern suggests memory exhaustion under HTTPS load. Previous fixes have
+  not held — something in the cluster appears to be reverting them.
 
-  Investigation into the deployment history shows a recurring pattern of memory exhaustion under sustained HTTPS traffic. 
-  Memory usage increases gradually as traffic flows through the system and then drops back to normal after each restart, 
-  suggesting that memory is not being released properly during operation.
+  Monitoring has also been silent throughout: no alerts have fired despite
+  repeated restarts. The alerting rules may need review, including whether the
+  metric names in alert expressions match what's actually being emitted.
 
-  Previous attempts to stabilise the system have only worked temporarily. The issue keeps reappearing after fixes are applied, 
-  which indicates that automated processes in the cluster have been reverting the configuration — a thorough investigation of all running workloads and the 
-  configuration sources they reference will be needed to identify and permanently stop the drift.
-
-  It is also notable that monitoring did not detect this issue. Despite repeated restarts, no alerts were triggered for 
-  the ingress-system namespace. This suggests that the alerting rules need to be carefully reviewed and corrected, including 
-  ensuring that the Prometheus metric names used in alert expressions are accurate and match the actual metrics being emitted.
-
-  There is a suspicion among the team that the problem may be related to how the NGINX TLS configuration behaves under sustained load, 
-  particularly in combination with the current memory constraints. However, no definitive root cause has been identified so far.
-
-  The active NGINX configuration is managed through the `ingress-nginx-config` ConfigMap in the `ingress-system` namespace. 
-  While there are multiple configuration references across the cluster, not all of them can be trusted to be correct or up to date. 
-  The live ConfigMap should be treated as the authoritative source.
-
-  You should investigate the relevant cluster resources and determine all contributing factors to this instability. 
-  Pay close attention to the TLS configuration, including session handling behaviour such as session caching and session tickets, 
-  as well as cipher suite selection. Also consider whether the network interface configuration could be preventing external traffic from 
-  reaching the service correctly or contributing to resource issues.
+  The active config is in the ingress-nginx-config ConfigMap in
+  ingress-system. There are other configuration references across the cluster
+  that may not be accurate — treat the live ConfigMap as authoritative.
 
   [Objective]
-  Investigate the issue and restore stable operation of the ingress controller.
+  Investigate and restore stable operation of the ingress controller: no
+  unexpected restarts, HTTPS traffic served reliably, and alerts correctly
+  configured. Preserve the overall NGINX config structure.
 
-  After remediation, the system should operate without unexpected restarts, serve HTTPS traffic reliably, 
-  and have monitoring alerts that correctly detect and report issues with the ingress controller. The overall structure 
-  of the NGINX configuration should be preserved, with only necessary adjustments made to TLS-related settings.
-
-  Once the issue has been resolved, document your findings and actions by writing a postmortem report at /workdir/postmortem.md.
+  Write a postmortem at /workdir/postmortem.md once resolved.
 
   [Constraints]
   Do not increase memory limits.
-  Do not replace the deployment.
-  Do not delete and recreate the deployment.
-
+  Do not replace or recreate the deployment.
+  Do NOT use interactive commands (e.g. -i, -it flags).
 metadata:
   category: kubernetes
   difficulty: hard
-  estimated_time: 1H
-  tags:
-    - kubernetes
-    - ingress
-    - nginx
-    - incident-response
-
-allowed_namespaces:
-  - ingress-system
-  - default
+  estimated_time: 4H 
