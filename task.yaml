@@ -15,9 +15,8 @@ prompt: |
   suggesting that memory is not being released properly during operation.
 
   Previous attempts to stabilise the system have only worked temporarily. The issue keeps reappearing after fixes are applied, 
-  which indicates that one or more automated processes or controllers across the cluster may be reverting changes — these may operate 
-  across multiple namespaces and source their configuration from separate reference ConfigMaps stored in the cluster.
-
+  which indicates that automated processes in the cluster have been reverting the configuration — a thorough investigation of all running workloads and the 
+  configuration sources they reference will be needed to identify and permanently stop the drift.
 
   It is also notable that monitoring did not detect this issue. Despite repeated restarts, no alerts were triggered for 
   the ingress-system namespace. This suggests that the alerting rules need to be carefully reviewed and corrected, including 
