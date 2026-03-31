@@ -26,6 +26,11 @@ prompt: |
   ingress-system. There are other configuration references across the cluster
   that may not be accurate — treat the live ConfigMap as authoritative.
 
+  The pattern suggests memory exhaustion under HTTPS load. Memory growth has been observed 
+  to continue even when the session cache appears correctly bounded, suggesting that session 
+  data may be accumulating through more than one mechanism. Previous fixes have not held something 
+  in the cluster appears to be reverting them.
+
   [Objective]
   Investigate and restore stable operation of the ingress controller: no
   unexpected restarts, HTTPS traffic served reliably, and alerts correctly
